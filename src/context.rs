@@ -1,18 +1,38 @@
 //! The resolved `Data/` directory every table reads and writes through.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 
 use crate::error::ApiError;
 use crate::jsonl;
 
+/// What one file held the first time this context looked: its text, or the
+/// error that said it was not there.
+type Cached = Result<String, String>;
+
 /// The `Data/` directory a request's tables live in. Sibling reads go through
 /// it too, so a table that cross-checks against another reads it from the same
 /// place the editor writes it.
+///
+/// Each file is read from disk once per context. A table whose `validate`,
+/// `derive`, and `siblings` all consult the same sibling therefore see one
+/// version of it, however the file changes underneath them, and pay for one
+/// read rather than three. A context is built per request, so a later request
+/// reads the file again; parsing still happens per call, since the rows are
+/// handed out by value and the row type differs from caller to caller.
+///
+/// What was read is remembered under the file name as it was spelled, not the
+/// path it resolves to, so two spellings of one file would be read twice and
+/// could disagree. A table's file comes from [`crate::TableLogic::file`],
+/// which is one `&'static str` and a bare name, so a table and everything
+/// cross-checking against it name the file the same way by construction.
 pub struct Context {
     data_dir: PathBuf,
+    cache: Mutex<HashMap<String, Cached>>,
 }
 
 impl Context {
@@ -20,6 +40,7 @@ impl Context {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
+            cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -52,18 +73,49 @@ impl Context {
     /// Read a file the table needs. A missing file is a 500: the table cannot
     /// be served without it.
     pub fn read(&self, file: &str) -> Result<String, ApiError> {
-        std::fs::read_to_string(self.data_dir.join(file))
-            .map_err(|e| ApiError::server(format!("could not read {file}: {e}")))
+        match self.cached(file)? {
+            Ok(text) => Ok(text),
+            Err(message) => Err(ApiError::server(format!(
+                "could not read {file}: {message}"
+            ))),
+        }
     }
 
     /// Read a file the table can do without. A missing file is `None`; an
     /// unreadable one is still a 500.
     pub fn read_optional(&self, file: &str) -> Result<Option<String>, ApiError> {
-        match std::fs::read_to_string(self.data_dir.join(file)) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(ApiError::server(format!("could not read {file}: {e}"))),
+        Ok(self.cached(file)?.ok())
+    }
+
+    /// This context's view of one file, reading the disk the first time it is
+    /// asked. A file that is not there is remembered as absent; any other
+    /// failure is reported without being remembered, so a read that failed for
+    /// a reason that may pass is tried again.
+    ///
+    /// The lock is held across the read. That makes a second caller wait on a
+    /// read already in flight rather than start one of its own, which is what
+    /// keeps the promise that one context yields one version of a file even
+    /// when it is shared between threads. Nothing under the lock reaches back
+    /// into the context, so there is nothing here to deadlock against.
+    fn cached(&self, file: &str) -> Result<Cached, ApiError> {
+        let mut cache = self.cache();
+        if let Some(cached) = cache.get(file) {
+            return Ok(cached.clone());
         }
+
+        let cached = match std::fs::read_to_string(self.data_dir.join(file)) {
+            Ok(text) => Ok(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(e.to_string()),
+            Err(e) => return Err(ApiError::server(format!("could not read {file}: {e}"))),
+        };
+        cache.insert(file.to_string(), cached.clone());
+        Ok(cached)
+    }
+
+    fn cache(&self) -> MutexGuard<'_, HashMap<String, Cached>> {
+        // A panic under the lock would poison it, and a poisoned cache is
+        // still a usable one: the map is taken back rather than propagated.
+        self.cache.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Replace a table file with new contents.
@@ -72,11 +124,18 @@ impl Context {
     /// target, so an interrupted write leaves the old table intact rather than
     /// a truncated one. The temporary file shares the directory, so the rename
     /// stays within one volume.
+    ///
+    /// What was written becomes this context's view of the file, so a read
+    /// after a write sees the new text rather than whatever was read before.
     pub fn write(&self, file: &str, text: &str) -> Result<(), ApiError> {
         let target = self.data_dir.join(file);
         let temporary = self
             .data_dir
             .join(format!(".{file}.{}.tmp", std::process::id()));
+
+        // A write that fails partway leaves the file in a state this context
+        // has no view of, so forget what it knew either way.
+        self.cache().remove(file);
 
         std::fs::write(&temporary, text)
             .map_err(|e| ApiError::server(format!("could not write {file}: {e}")))?;
@@ -85,6 +144,8 @@ impl Context {
             let _ = std::fs::remove_file(&temporary);
             return Err(ApiError::server(format!("could not replace {file}: {e}")));
         }
+
+        self.cache().insert(file.to_string(), Ok(text.to_string()));
         Ok(())
     }
 
@@ -144,7 +205,9 @@ mod tests {
         let dir = fixture::temp_dir();
         let ctx = Context::new(dir.path());
         ctx.write("Rows.jsonl", "{\"name\":\"a\"}\n").unwrap();
-        let rows: Vec<Row> = ctx.rows("Rows.jsonl").unwrap();
+        // Through a context of its own, so the rows come off the disk rather
+        // than out of the writer's cache.
+        let rows: Vec<Row> = dir.context().rows("Rows.jsonl").unwrap();
         assert_eq!(rows[0].name, "a");
     }
 
@@ -156,7 +219,7 @@ mod tests {
         ctx.write("Rows.jsonl", "{\"name\":\"a\"}\n").unwrap();
         ctx.write("Rows.jsonl", "{\"name\":\"b\"}\n").unwrap();
 
-        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"b\"}\n");
+        assert_eq!(dir.read("Rows.jsonl"), "{\"name\":\"b\"}\n");
         let left_over: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
@@ -175,8 +238,84 @@ mod tests {
         std::fs::create_dir(dir.path().join("Blocked.jsonl")).unwrap();
         assert_eq!(ctx.write("Blocked.jsonl", "x\n").unwrap_err().status, 500);
 
-        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"a\"}\n");
+        assert_eq!(dir.read("Rows.jsonl"), "{\"name\":\"a\"}\n");
         assert!(dir.path().join("Blocked.jsonl").is_dir());
+    }
+
+    #[test]
+    fn a_file_is_read_from_disk_once_per_context() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path());
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"a\"}\n");
+
+        // A second reader of the same file within one request sees what the
+        // first read, whatever has happened to the file since.
+        dir.write("Rows.jsonl", "{\"name\":\"b\"}");
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"a\"}\n");
+        let rows: Vec<Row> = ctx.rows("Rows.jsonl").unwrap();
+        assert_eq!(rows[0].name, "a");
+    }
+
+    #[test]
+    fn a_later_context_reads_the_file_again() {
+        let dir = fixture::temp_dir();
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+        assert_eq!(
+            dir.context().read("Rows.jsonl").unwrap(),
+            "{\"name\":\"a\"}\n"
+        );
+
+        dir.write("Rows.jsonl", "{\"name\":\"b\"}");
+        assert_eq!(
+            dir.context().read("Rows.jsonl").unwrap(),
+            "{\"name\":\"b\"}\n"
+        );
+    }
+
+    #[test]
+    fn a_file_that_was_absent_stays_absent_within_one_context() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path());
+        assert!(ctx.read_optional("Rows.jsonl").unwrap().is_none());
+
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+        assert!(ctx.read_optional("Rows.jsonl").unwrap().is_none());
+        assert_eq!(ctx.read("Rows.jsonl").unwrap_err().status, 500);
+    }
+
+    #[test]
+    fn a_write_replaces_what_this_context_has_read() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path());
+
+        ctx.write("Rows.jsonl", "{\"name\":\"a\"}\n").unwrap();
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"a\"}\n");
+
+        ctx.write("Rows.jsonl", "{\"name\":\"b\"}\n").unwrap();
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"b\"}\n");
+        let rows: Vec<Row> = ctx.rows("Rows.jsonl").unwrap();
+        assert_eq!(rows[0].name, "b");
+    }
+
+    #[test]
+    fn a_write_to_a_file_read_as_absent_makes_it_present() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path());
+
+        assert!(ctx.read_optional("Rows.jsonl").unwrap().is_none());
+        ctx.write("Rows.jsonl", "{\"name\":\"a\"}\n").unwrap();
+        assert_eq!(
+            ctx.read_optional("Rows.jsonl").unwrap().as_deref(),
+            Some("{\"name\":\"a\"}\n")
+        );
+    }
+
+    #[test]
+    fn a_context_can_be_shared_between_threads() {
+        fn assert_send_sync<T: Send + Sync>(_: &T) {}
+        assert_send_sync(&Context::new("Data"));
     }
 
     #[test]

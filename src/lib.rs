@@ -18,23 +18,46 @@
 //! browser at it); `--restart` shuts the old one down first and starts fresh.
 //! The server itself runs as a detached worker process, marked by an
 //! environment variable so it serves rather than re-spawning itself.
+//!
+//! # Features
+//!
+//! `server` is on by default and is everything above. Without it the crate is
+//! the file format alone—[`jsonl`], [`ParseError`], [`ValidationError`], and
+//! [`ApiError`]—and depends on nothing but `serde` and `serde_json`, which is
+//! what a crate that only reads and writes the tables wants.
 
-mod context;
 mod error;
 pub mod jsonl;
+
+#[cfg(feature = "server")]
+mod context;
+#[cfg(feature = "server")]
 mod launch;
+#[cfg(feature = "server")]
+mod probe;
+#[cfg(feature = "server")]
 mod routes;
+#[cfg(feature = "server")]
 mod schema;
+#[cfg(feature = "server")]
 mod server;
+#[cfg(feature = "server")]
 mod table;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod fixture;
 
-pub use context::Context;
 pub use error::{ApiError, ParseError, ValidationError};
+
+#[cfg(feature = "server")]
+pub use context::Context;
+#[cfg(feature = "server")]
+pub use probe::{probe, probe_status};
+#[cfg(feature = "server")]
 pub use schema::{
     Column, ColumnType, Datalist, FromRows, MapSpec, NewRow, OptionsBy, Schema, SelectOption, Speak,
 };
+#[cfg(feature = "server")]
 pub use server::{Server, ServerArgs, ServerCommand};
+#[cfg(feature = "server")]
 pub use table::{App, Table, TableLogic};
