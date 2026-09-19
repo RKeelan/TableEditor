@@ -47,9 +47,12 @@ pub trait TableLogic: Send + Sync + 'static {
     /// clap takes before the positional table name.
     fn name(&self) -> &'static str;
 
-    /// The file under `Data/`, such as `Books.jsonl`. It must exist before
-    /// the editor can open the table; the editor edits a table, it does not
-    /// create one.
+    /// The file under `Data/`, such as `Books.jsonl`.
+    ///
+    /// It is a bare file name: no directory separators, nothing absolute, and
+    /// not `.` or `..`. Building a [`crate::Server`] over a table that names
+    /// anything else panics. It must exist before the editor can open the
+    /// table; the editor edits a table, it does not create one.
     fn file(&self) -> &'static str;
 
     /// The heading the shell shows, such as `Books`.
@@ -71,7 +74,7 @@ pub trait TableLogic: Send + Sync + 'static {
     /// position in the set. A write is not refused because of them: the editor
     /// persists what it is given and shows the errors beside the cells.
     fn validate(&self, rows: &[Self::Row], ctx: &Context)
-        -> Result<Vec<ValidationError>, ApiError>;
+    -> Result<Vec<ValidationError>, ApiError>;
 
     /// Values the editor displays but does not store, parallelling `rows` index
     /// for index. A `computed` column reads one of the keys of each row's
@@ -100,6 +103,9 @@ pub trait Table: Send + Sync {
     /// The shell's heading, from [`TableLogic::title`].
     fn heading(&self) -> &'static str;
 
+    /// The file under `Data/`, from [`TableLogic::file`].
+    fn data_file(&self) -> &'static str;
+
     /// `GET /api/<table>`: the schema, the stored rows, their derivation, their
     /// validation errors, and any sibling data.
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError>;
@@ -120,6 +126,10 @@ impl<T: TableLogic> Table for T {
 
     fn heading(&self) -> &'static str {
         self.title()
+    }
+
+    fn data_file(&self) -> &'static str {
+        self.file()
     }
 
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError> {
@@ -210,7 +220,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::fixture::{self, Book, Books, Genres, BOOKS_FILE, GENRES_FILE};
+    use crate::fixture::{self, BOOKS_FILE, Book, Books, GENRES_FILE, Genres};
 
     #[test]
     fn get_shapes_schema_rows_derived_errors_and_siblings() {
@@ -297,6 +307,35 @@ mod tests {
         assert_eq!(v["rows"][0]["subgenre"], "Natural History");
         assert!(v["derived"].as_array().unwrap().is_empty());
         assert!(v["siblings"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_request_sees_one_version_of_a_sibling_table() {
+        let dir = fixture::temp_dir();
+        dir.write(GENRES_FILE, fixture::NATURAL_HISTORY);
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let ctx = dir.context();
+
+        let first: Value = serde_json::from_str(&Books.handle_get(&ctx).unwrap()).unwrap();
+        assert!(first["errors"].as_array().unwrap().is_empty());
+
+        // The sibling is rewritten under the request. The schema, the
+        // validation, and the sibling payload are built from one read of it,
+        // so they still agree with each other and with what was served.
+        dir.write(
+            GENRES_FILE,
+            r#"{"genre":"Travel","subgenre":"Field Guides"}"#,
+        );
+        let again: Value = serde_json::from_str(&Books.handle_get(&ctx).unwrap()).unwrap();
+        assert_eq!(again["schema"], first["schema"]);
+        assert_eq!(again["siblings"], first["siblings"]);
+        assert!(again["errors"].as_array().unwrap().is_empty());
+
+        // The request after it reads the sibling afresh.
+        let later: Value =
+            serde_json::from_str(&Books.handle_get(&dir.context()).unwrap()).unwrap();
+        assert_eq!(later["siblings"]["genres"][0]["genre"], "Travel");
+        assert!(!later["errors"].as_array().unwrap().is_empty());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 name = "table-editor"
 version = "0.1.0"
 authors = ["Richard Keelan"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/RKeelan/TableEditor"
 description = "A local HTTP server and browser bundle for editing a repository's JSONL tables"
@@ -11,9 +11,15 @@ description = "A local HTTP server and browser bundle for editing a repository's
 name = "table_editor"
 path = "src/lib.rs"
 
+[features]
+default = ["server"]
+# The HTTP server, the launcher, the schema, and the embedded browser bundle.
+# Without it the crate is the JSONL codec and the error types alone.
+server = ["dep:anyhow", "dep:clap", "dep:tiny_http"]
+
 [dependencies]
-anyhow = "=1.0.104"
-clap = { version = "=4.6.6", features = ["derive"] }
+anyhow = { version = "=1.0.104", optional = true }
+clap = { version = "=4.6.6", features = ["derive"], optional = true }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-tiny_http = "=0.12.0"
+tiny_http = { version = "=0.12.0", optional = true }

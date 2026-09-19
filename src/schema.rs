@@ -84,6 +84,11 @@ pub enum ColumnType {
     SpacedString,
     /// A numeric value, stored as a number rather than a string.
     Number,
+    /// A true-or-false value, stored as a JSON boolean. A bundle gives the
+    /// cell an unset state beside the two and writes it as an absent field
+    /// rather than as `false`, so a row nobody has answered is told apart from
+    /// one answered no.
+    Boolean,
     /// A value chosen from `options`, or from `options_by` when the list
     /// depends on another column.
     Select,
@@ -114,6 +119,8 @@ pub struct Column {
     cascades_to: Vec<String>,
     #[serde(skip_serializing_if = "is_false")]
     numeric_value: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    int_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     datalist: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,6 +144,7 @@ impl Column {
             options_by: None,
             cascades_to: Vec::new(),
             numeric_value: false,
+            int_only: false,
             datalist: None,
             from: None,
             speak: None,
@@ -158,6 +166,12 @@ impl Column {
 
     pub fn number(field: impl Into<String>, label: impl Into<String>) -> Self {
         Self::base(field, label, ColumnType::Number)
+    }
+
+    /// A true-or-false value, which a bundle also lets stand unset. See
+    /// [`ColumnType::Boolean`] for what unset is written as.
+    pub fn boolean(field: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::base(field, label, ColumnType::Boolean)
     }
 
     /// A select over a fixed list of options.
@@ -219,6 +233,13 @@ impl Column {
     /// Store the chosen option's value as a number rather than a string.
     pub fn numeric_value(mut self) -> Self {
         self.numeric_value = true;
+        self
+    }
+
+    /// Confine a number column to whole numbers: a bundle rounds what the cell
+    /// is given and steps it by one.
+    pub fn int_only(mut self) -> Self {
+        self.int_only = true;
         self
     }
 
@@ -328,9 +349,9 @@ impl OptionsBy {
     }
 }
 
-/// Where a cell's play button sends its value. The browser substitutes the
-/// URL-encoded cell value for `{value}`, and a `localStorage` entry under
-/// `storage_key` overrides the origin.
+/// Where a cell's play button sends its value. A bundle substitutes the
+/// URL-encoded cell value for `{value}`, and lets a `localStorage` entry under
+/// `storage_key` override the origin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Speak {
     pub url: String,
@@ -346,17 +367,30 @@ impl Speak {
     }
 }
 
-/// The extra description a `map` column carries. The cell renders one chip per
-/// entry as `key: value`; an entry whose value is cleared is removed, and a map
-/// that empties is written as an absent field.
+/// The extra description a `map` column carries. A bundle renders one chip per
+/// entry as `key: value`, drops an entry whose value is cleared, and writes a
+/// map that empties as an absent field.
+///
+/// A key option carries a label of its own where the stored key is not what a
+/// reader should see—a code beside the title it stands for, say—so
+/// `key_options` takes the same `{ value, label }` pairs a select's options do,
+/// and a bundle shows the label in place of the value it stores.
+///
+/// Both option lists are always written, empty or not, because together with
+/// the two `allow_new_` flags they are what the control is made of. This is
+/// unlike a select's `options`, which is omitted when empty because a select
+/// carries `options_by` instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MapSpec {
     pub key_label: String,
     pub value_label: String,
-    pub key_options: Vec<String>,
+    pub key_options: Vec<SelectOption>,
     pub value_options: Vec<SelectOption>,
-    /// Let the editor add a key that `key_options` does not list.
+    /// Let a key be typed that `key_options` does not list.
     pub allow_new_keys: bool,
+    /// Let a value be typed that `value_options` does not list, which makes
+    /// those options suggestions rather than the whole choice.
+    pub allow_new_values: bool,
 }
 
 impl MapSpec {
@@ -367,10 +401,14 @@ impl MapSpec {
             key_options: Vec::new(),
             value_options: Vec::new(),
             allow_new_keys: false,
+            allow_new_values: false,
         }
     }
 
-    pub fn key_options(mut self, keys: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    /// The keys a bundle offers. A plain string is a key that shows itself; a
+    /// [`SelectOption::labelled`] key is shown by its label and stored by its
+    /// value.
+    pub fn key_options(mut self, keys: impl IntoIterator<Item = impl Into<SelectOption>>) -> Self {
         self.key_options = keys.into_iter().map(Into::into).collect();
         self
     }
@@ -385,6 +423,11 @@ impl MapSpec {
 
     pub fn allow_new_keys(mut self) -> Self {
         self.allow_new_keys = true;
+        self
+    }
+
+    pub fn allow_new_values(mut self) -> Self {
+        self.allow_new_values = true;
         self
     }
 }
@@ -482,6 +525,8 @@ mod tests {
             .allow_empty()
             .width_ch(18),
             Column::select("format", "Format", ["Hardcover", "Paperback", "Folio"]),
+            Column::number("copies", "Copies").int_only(),
+            Column::boolean("lent", "Lent"),
             Column::text("comment", "Comment").wide(),
         ])
         .new_row(
@@ -490,6 +535,7 @@ mod tests {
                 .with("genre", "")
                 .with("subgenre", "")
                 .with("format", "Paperback")
+                .with("copies", 1)
                 .with("comment", ""),
         );
         schema.identify("books", "Books");
@@ -515,9 +561,12 @@ mod tests {
                                  "Travel": [{ "value": "Field Guides" }] } } },
                 { "field": "format", "label": "Format", "type": "select",
                   "options": [{ "value": "Hardcover" }, { "value": "Paperback" }, { "value": "Folio" }] },
+                { "field": "copies", "label": "Copies", "type": "number", "int_only": true },
+                { "field": "lent", "label": "Lent", "type": "boolean" },
                 { "field": "comment", "label": "Comment", "type": "text", "wide": true }
               ],
-              "new_row": { "defaults": { "title": "", "genre": "", "subgenre": "", "format": "Paperback", "comment": "" },
+              "new_row": { "defaults": { "title": "", "genre": "", "subgenre": "", "format": "Paperback",
+                                         "copies": 1, "comment": "" },
                            "carry_forward": [] },
               "datalists": {}
             })
@@ -537,8 +586,8 @@ mod tests {
     #[test]
     fn map_column_serializes_to_the_documented_shape() {
         let column = Column::map(
-            "copies",
-            "Copies",
+            "shelved",
+            "Shelved",
             MapSpec::new("Branch", "Count")
                 .key_options(["Central", "Eastside", "Harbour"])
                 .value_options(["None", "One", "Several"]),
@@ -546,13 +595,56 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(column).unwrap(),
-            json!({ "field": "copies", "label": "Copies", "type": "map",
+            json!({ "field": "shelved", "label": "Shelved", "type": "map",
                     "key_label": "Branch", "value_label": "Count",
-                    "key_options": ["Central", "Eastside", "Harbour"],
+                    "key_options": [{ "value": "Central" }, { "value": "Eastside" },
+                                    { "value": "Harbour" }],
                     "value_options": [{ "value": "None" }, { "value": "One" },
                                       { "value": "Several" }],
-                    "allow_new_keys": false })
+                    "allow_new_keys": false, "allow_new_values": false })
         );
+    }
+
+    #[test]
+    fn a_maps_option_lists_are_written_even_when_empty() {
+        assert_eq!(
+            serde_json::to_value(MapSpec::new("Branch", "Count")).unwrap(),
+            json!({ "key_label": "Branch", "value_label": "Count",
+                    "key_options": [], "value_options": [],
+                    "allow_new_keys": false, "allow_new_values": false })
+        );
+
+        // Unlike a select, whose options are omitted when it has none.
+        let select = serde_json::to_value(Column::select_by(
+            "subgenre",
+            "Subgenre",
+            OptionsBy::new("genre"),
+        ))
+        .unwrap();
+        assert!(select.get("options").is_none());
+    }
+
+    #[test]
+    fn a_map_key_can_show_a_label_beside_the_stored_value() {
+        let spec = MapSpec::new("Branch", "Count")
+            .key_options([SelectOption::labelled("hb", "Harbour"), "Central".into()]);
+
+        assert_eq!(
+            serde_json::to_value(spec).unwrap()["key_options"],
+            json!([{ "value": "hb", "label": "Harbour" }, { "value": "Central" }])
+        );
+    }
+
+    #[test]
+    fn a_map_can_take_values_its_options_do_not_list() {
+        let open = serde_json::to_value(
+            MapSpec::new("Branch", "Note")
+                .value_options(["None"])
+                .allow_new_values(),
+        )
+        .unwrap();
+        assert_eq!(open["allow_new_values"], true);
+        assert_eq!(open["value_options"], json!([{ "value": "None" }]));
     }
 
     #[test]
@@ -562,6 +654,7 @@ mod tests {
             (Column::text("f", "F"), "text"),
             (Column::spaced_string("f", "F"), "spaced-string"),
             (Column::number("f", "F"), "number"),
+            (Column::boolean("f", "F"), "boolean"),
             (Column::select("f", "F", ["a"]), "select"),
             (Column::select_by("f", "F", OptionsBy::new("g")), "select"),
             (Column::computed("f", "F", "k"), "computed"),
@@ -569,6 +662,15 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(column).unwrap()["type"], name);
         }
+    }
+
+    #[test]
+    fn int_only_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Column::number("copies", "Copies")).unwrap();
+        assert!(plain.get("int_only").is_none());
+
+        let whole = serde_json::to_value(Column::number("copies", "Copies").int_only()).unwrap();
+        assert_eq!(whole["int_only"], true);
     }
 
     #[test]
@@ -627,14 +729,14 @@ mod tests {
 
     #[test]
     fn speak_carries_the_url_template_and_storage_key() {
-        let column = Column::string("ipa", "IPA").speak(Speak::new(
-            "http://127.0.0.1:8765/tts?ipa={value}",
-            "editor-tts-url",
+        let column = Column::string("pronunciation", "Pronunciation").speak(Speak::new(
+            "http://127.0.0.1:8765/say?text={value}",
+            "speech-service-url",
         ));
         assert_eq!(
             serde_json::to_value(column).unwrap()["speak"],
-            json!({ "url": "http://127.0.0.1:8765/tts?ipa={value}",
-                    "storage_key": "editor-tts-url" })
+            json!({ "url": "http://127.0.0.1:8765/say?text={value}",
+                    "storage_key": "speech-service-url" })
         );
     }
 

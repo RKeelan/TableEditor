@@ -6,6 +6,8 @@
 //! resolves against, and the working directory is process-wide. A second test
 //! in the same binary could run concurrently and see the other's directory.
 
+#![cfg(feature = "server")]
+
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -13,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use table_editor::{
     ApiError, App, Column, Context, NewRow, Schema, Server, ServerArgs, Table, TableLogic,
     ValidationError,

@@ -13,8 +13,13 @@ Run from the repository root.
 - `cargo fmt --all -- --check` — format check (CI gate)
 - `cargo clippy --all-targets -- -D warnings` — lint (CI gate)
 - `cargo test --all-targets` — run tests
+- `cargo test --doc` — run the doctests, which `--all-targets` leaves out (CI gate)
+- `cargo clippy --no-default-features --all-targets -- -D warnings` — lint the file-format-only build (CI gate)
+- `cargo test --no-default-features` — test the file-format-only build (CI gate)
 
 CI runs the gates on Linux and the clippy and test gates on Windows, which is where the editor is used.
+
+The default `server` feature carries the editor; without it the crate is the JSONL codec and the error types. Anything added to a gated module, or to the public interface, has to hold up in both configurations, which is why both are gates.
 
 ## Dependency policy
 

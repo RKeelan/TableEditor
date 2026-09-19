@@ -36,6 +36,19 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      # --all-targets does not take in doctests, and the README's consumer
+      # example is only as good as the examples in the crate's own docs.
+      - name: Doctests
+        run: cargo test --doc
+
+      # The crate is also depended on with default-features = false, for the
+      # file format alone, so that configuration is a gate of its own.
+      - name: Clippy (no default features)
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+
+      - name: Test (no default features)
+        run: cargo test --no-default-features
+
   # Process spawning, browser discovery, and the detached worker are all
   # platform-specific, and Windows is where the editor is used.
   rust-windows:

@@ -9,7 +9,7 @@
 //! `Data/` directory is looked for, so a wrong method or a wrong path says so
 //! plainly rather than reporting a missing data directory.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response};
 
@@ -205,7 +205,7 @@ fn error_json(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::fixture::Library;

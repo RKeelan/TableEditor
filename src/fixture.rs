@@ -251,6 +251,57 @@ impl App for Clashing {
     }
 }
 
+/// A table whose file reaches outside the data directory.
+pub struct Wandering;
+
+impl TableLogic for Wandering {
+    type Row = Genre;
+
+    fn name(&self) -> &'static str {
+        "wandering"
+    }
+
+    fn file(&self) -> &'static str {
+        "../Genres.jsonl"
+    }
+
+    fn title(&self) -> &'static str {
+        "Wandering"
+    }
+
+    fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+        Ok(Schema::new([Column::string("genre", "Genre")]))
+    }
+
+    fn validate(&self, _rows: &[Genre], _ctx: &Context) -> Result<Vec<ValidationError>, ApiError> {
+        Ok(Vec::new())
+    }
+}
+
+/// An app that cannot be served, because its one table names a path rather
+/// than a file inside `Data/`.
+pub struct Straying {
+    wandering: Wandering,
+}
+
+impl Straying {
+    pub fn new() -> Self {
+        Self {
+            wandering: Wandering,
+        }
+    }
+}
+
+impl App for Straying {
+    fn name(&self) -> &str {
+        "Straying"
+    }
+
+    fn tables(&self) -> Vec<&dyn Table> {
+        vec![&self.wandering]
+    }
+}
+
 static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A directory of its own for one test, removed when the test's handle drops.

@@ -6,8 +6,8 @@
 //! follow the row type rather than the file. Every row ends in a newline,
 //! including the last.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::error::ParseError;
 
