@@ -11,6 +11,12 @@ description = "A local HTTP server and browser bundle for editing a repository's
 name = "table_editor"
 path = "src/lib.rs"
 
+# A worked consumer to develop the browser bundle against; see the README.
+[[example]]
+name = "library"
+path = "examples/library/main.rs"
+required-features = ["server"]
+
 [features]
 default = ["server"]
 # The HTTP server, the launcher, the schema, and the embedded browser bundle.

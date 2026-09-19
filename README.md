@@ -5,7 +5,7 @@
 
 `table-editor` is a loopback HTTP server and an embedded browser bundle for editing a repository's `Data/*.jsonl` tables. A repository describes its own tables in Rust—one `TableLogic` implementation per table and one `App` implementation for the collection—and gets the server, the routes, the file I/O, and the UI from the crate.
 
-The browser holds no per-repository knowledge. Every table sends a column schema with its rows, and the editor renders whatever that schema describes, so a new table needs Rust and no JavaScript. The crate is used by the author's private writing repositories, each of which serves its own tables under its own name and port.
+The browser holds no per-repository knowledge. Every table sends a column schema with its rows, and the editor renders whatever that schema describes, so a new table needs Rust and no JavaScript. The bundle's sources are in `Web/` and the page it builds is committed at `assets/index.html`. The crate is used by the author's private writing repositories, each of which serves its own tables under its own name and port.
 
 ## Depending on the crate
 
@@ -218,7 +218,31 @@ The sentences below say what a bundle does with each. They are the contract a bu
 
 All four of the map's option and flag fields are written every time, empty lists and `false` included, because together they are what the control is made of. A select's `options` is the exception that proves it: that one is omitted when empty, because a select with no fixed options carries `options_by` instead.
 
-`sortable` is a view setting only: writes always send rows in their stored order. Absent fields are omitted rather than sent as null, and `table` and `title` are stamped in by the server from the table's own `name` and `title`, so the two cannot disagree.
+A map's entries keep the order the row carried them in, with one exception no browser can help: JavaScript orders integer-like keys — `"1"`, `"12"` — numerically and ahead of every other key, whatever the file said. A table whose entry order matters must not use keys that look like array indices.
+
+`sortable` is a view setting only: a bundle sorts what is on screen, ascending then descending then not at all, leaves a blank cell last whichever way the column is pointed, turns row dragging off while a sort is on, and writes rows in their stored order regardless. Absent fields are omitted rather than sent as null, and `table` and `title` are stamped in by the server from the table's own `name` and `title`, so the two cannot disagree.
+
+`new_row` says what the editor adds: the fields in `defaults`, then each field named in `carry_forward` taken from the last row that has a value for it, so a run of rows sharing a genre is typed once. `datalists` are the completion lists columns draw on: `{ "options": [ … ] }` is a list the server computed, and `{ "from_rows": { "fields": [ … ], "separator": " " } }` is built from the rows on screen by trimming each named field, dropping the row when the first is blank, joining the rest, then deduping and sorting. A `speak` column gets a button that fetches its URL with the cell's URL-encoded value in place of `{value}` and plays what comes back, so the service it names has to answer with audio a browser can play. A `localStorage` entry under `storage_key` replaces that URL's origin — scheme, host and port together — so the same bundle can be pointed at a service somewhere else without being rebuilt.
+
+## What a write sends
+
+A PUT sends every field of every row the server sent, including fields no column names, so a table whose rows hold more than the editor shows round trips unchanged.
+
+A cleared cell is written as an absent field, not as an empty string, so clearing a cell leaves the stored JSONL as though the field had never been filled in. The exception is a field the schema's `new_row.defaults` gives an empty string: that is the server saying a row of this table always carries the field, and a row type with a plain `String` there could not read an absent one back. Such a field is cleared to `""` instead. The same rule clears the dependants of a `cascades_to` column when its value changes.
+
+A cell of a `string` or `text` column counts as cleared when nothing but whitespace is left in it. A `spaced-string` counts as cleared only when it is empty, and is stored exactly as typed, because spacing is what that type is for.
+
+A map entry the edit did not touch is written back exactly as it was read, so a value the editor shows as text but the file stores as a number stays a number. An entry that is edited follows the map it is in: where the entry's own previous value was a number, or every other value is, what is typed is stored as a number when it reads as one.
+
+## What the editor does with the table
+
+* Editing saves. There is no save button: a change is written a moment after it is made, and the page says when it last was.
+* A save that fails is a banner that stays, naming what the server said, with the edits still on screen. It is retried on a lengthening timer as well as on the next edit, so a server that was restarted underneath the page catches up on its own. Closing the page while anything is unwritten asks first, and switching tables waits for the write before it navigates.
+* Deleting a row offers an undo rather than asking first. The row comes back where it was, with everything it held, and because editing saves, the restoration saves too. The offer lasts about ten seconds or until the next edit.
+* A cell holding something that is not what its column describes — a number column holding `"1994"`, a boolean holding `"true"`, a null — shows that value, marked, rather than appearing empty. Editing another cell of the row leaves it exactly as it was.
+* Dragging a row onto another puts it where that row was, the same rule in both directions. Sorting or filtering turns dragging off, since a view that is not the stored order has no order to rearrange.
+* Adding a row while a filter is on clears the filter, so the new row cannot be added somewhere invisible.
+* The page is served from a repository's own machine and asks nothing of the network: no fonts, no analytics, nothing from a CDN. A build that introduced such a request fails the test that reads the committed page.
 
 ## Reserved table names
 
@@ -228,7 +252,7 @@ A table may not be named `app`, `health`, `shutdown`, or `stop`. The first three
 
 `ServerArgs` carries the arguments the editor's subcommand takes. A repository whose subcommand takes arguments of its own flattens `ServerArgs` into its own `Args` struct and adds them alongside.
 
-Launching reuses this app's server already running on the port, which is why running the command twice opens a second browser window rather than a second server; `--restart` shuts the old one down first. A port held by another app's editor, or by anything else, is an error naming both apps rather than a reuse, and `stop` leaves such a server running. The server itself runs as a detached worker process, so the command that starts it returns at once. The worker is marked by an environment variable, which is how it knows to bind rather than spawn another copy of itself. `--api-only` skips all of that and serves the API in the foreground, for running the UI from a development server.
+Launching reuses this app's server already running on the port, which is why running the command twice opens a second browser window rather than a second server; `--restart` shuts the old one down first. A port held by another app's editor, or by anything else, is an error naming both apps rather than a reuse, and `stop` leaves such a server running. The server itself runs as a detached worker process, so the command that starts it returns at once. The worker is marked by an environment variable, which is how it knows to bind rather than spawn another copy of itself. `--api-only` skips all of that and serves the API in the foreground, for running the UI from Vite.
 
 A server answering exactly `{"status":"ok"}` is read as a table editor built before health bodies named the app. It is never reused, because there is no telling whose tables it would serve, but `stop` takes it down and `--restart` replaces it, so upgrading a consumer never leaves a server on the port that the new binary can neither stop nor take the port from. Both say in so many words what they are doing.
 
@@ -261,9 +285,24 @@ This speaks plain HTTP to a local server: no TLS, no redirects, no chunked decod
 
 ## The browser bundle
 
-`assets/index.html` is the built bundle, and it is committed. A git dependency gives the consumer whatever is in the checkout, so a bundle that is built but not committed to that path would reach a Rust-only consumer as a stub. The crate reads it with `include_str!`; there is no `build.rs`.
+`Web/` holds the bundle's sources: React and Tailwind, built by Vite into one self-contained page with the script and the styles inlined. `assets/index.html` is what that build writes, and it is committed. A git dependency gives the consumer whatever is in the checkout, so a bundle that is built but not committed to that path would reach a Rust-only consumer as a stub. The crate reads it with `include_str!`; there is no `build.rs`.
 
-What is committed at present is a placeholder: a page that says what it stands in for and does nothing else. The API is unaffected by that, and a consumer that supplies a bundle of its own through `index_html` never sees the placeholder.
+`assets/index.html` is a build artefact and the build is the only thing that changes it. Run `./Deploy.ps1` from the repository root, which installs the dependencies and builds, and commit what it wrote alongside the sources it came from. Never hand-edit it.
+
+CI rebuilds the bundle and fails if the committed page is not what these sources build, so a change to `Web/` that was never rebuilt cannot reach a consumer as nothing at all. Both bun and every dependency are pinned, which is what makes that comparison meaningful.
+
+## Developing the bundle
+
+`examples/library` is a consumer to develop against: an app called Library with three tables between them carrying every column type and modifier, over invented data in `examples/library/Data`.
+
+```
+cargo run --example library -- web --api-only    # the API on 127.0.0.1:8788
+bun run --cwd Web dev                            # Vite on 5173, proxying /api to 8788
+```
+
+Vite serves the UI with hot reloading and proxies `/api` to the example, so the editor is exercised against a real server. `cargo run --example library -- web` instead serves the committed bundle and opens a browser on it, which is how to check what a consumer will actually get; `cargo run --example library -- web stop` shuts that one down. The crate embeds the bundle with `include_str!`, so a server started that way serves whatever the binary was built from: rebuild the bundle and then the example before looking at a change through it.
+
+The example writes to its own `Data/*.jsonl`, so edits made while developing show up as changes to those files. They are committed, and reverting them is how to get back to the data the example ships with.
 
 ## Commands
 
@@ -275,6 +314,11 @@ What is committed at present is a placeholder: a page that says what it stands i
 - `cargo test --doc` — run the doctests, which `--all-targets` leaves out (CI gate)
 - `cargo clippy --no-default-features --all-targets -- -D warnings` — lint the file-format-only build (CI gate)
 - `cargo test --no-default-features` — test the file-format-only build (CI gate)
+- `bun install --cwd Web` — install the bundle's dependencies
+- `bun test --cwd Web` — test the bundle's helpers (CI gate)
+- `bun run --cwd Web check` — type-check the bundle
+- `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
+- `./Deploy.ps1` — install and build in one step
 
 ## Licence
 

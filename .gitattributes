@@ -3,3 +3,7 @@
 # to LF so a checkout does not rewrite it and make every rebuild look like a
 # change.
 assets/index.html text eol=lf
+
+# The example's tables are written by the editor whenever it is developed
+# against, and the editor writes LF. Pin them for the same reason.
+examples/library/Data/*.jsonl text eol=lf
