@@ -676,8 +676,17 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_bundle_is_a_page() {
+    fn the_embedded_bundle_is_the_built_editor() {
         assert!(DEFAULT_INDEX_HTML.starts_with("<!doctype html>"));
+        // The bundle is one self-contained page: the element the editor mounts
+        // on, and its script inlined rather than fetched.
+        assert!(DEFAULT_INDEX_HTML.contains(r#"<div id="root">"#));
+        assert!(!DEFAULT_INDEX_HTML.contains(r#"src="/src/main.tsx""#));
+        assert!(
+            DEFAULT_INDEX_HTML.len() > 50_000,
+            "the bundle is {} bytes, which is too small to be the built editor",
+            DEFAULT_INDEX_HTML.len()
+        );
     }
 
     #[test]

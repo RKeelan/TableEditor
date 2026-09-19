@@ -1,0 +1,209 @@
+@import "tailwindcss";
+
+/* ── Editor console ─────────────────────────────────────────────────────────
+   A dark data tool: one warm accent against cold slate. A serif display face
+   for the chrome, a monospace face for the data, both from whatever the system
+   has: this page is served over loopback to private data and asks nothing of
+   the network, so there are no web fonts to fetch. */
+@theme {
+  --font-display: ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono:
+    ui-monospace, "SFMono-Regular", "Cascadia Mono", "JetBrains Mono",
+    "DejaVu Sans Mono", monospace;
+
+  --color-ink-950: #0c0e12;
+  --color-ink-900: #12151b;
+  --color-ink-850: #171b23;
+  --color-ink-800: #1d222c;
+  --color-ink-700: #2a313e;
+  --color-ink-600: #444f60;
+  --color-slate-500: #7d899c;
+  --color-slate-400: #9aa5b7;
+  --color-slate-300: #bcc4d1;
+  --color-paper: #ece4d2;
+
+  --color-gold-400: #e7c067;
+  --color-gold-500: #d4a843;
+  --color-gold-600: #b08a2e;
+
+  --color-rust-500: #d4694a;
+  --color-rust-400: #e8896d;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    /* The page itself never scrolls sideways; the table pane does. */
+    overflow-x: hidden;
+    background-color: var(--color-ink-950);
+    background-image:
+      radial-gradient(
+        ellipse 80% 50% at 50% -10%,
+        rgba(212, 168, 67, 0.08),
+        transparent 60%
+      ),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
+    color: var(--color-slate-300);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-ink-900);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-ink-700);
+    border: 2px solid var(--color-ink-900);
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-600);
+  }
+
+  input,
+  select,
+  button,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  /* A visible focus ring everywhere it is reached by keyboard, since the
+     fields are otherwise flat until they are focused. */
+  :focus-visible {
+    outline: 2px solid var(--color-gold-500);
+    outline-offset: 1px;
+  }
+
+  input:focus,
+  select:focus {
+    outline: none;
+  }
+  input:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--color-gold-500);
+    outline-offset: 1px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+
+@layer components {
+  /* Field inputs — flat until focused, then a thin gold underline lights up. */
+  .field {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 0.25rem 0.4rem;
+    color: var(--color-paper);
+    transition:
+      background-color 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .field:hover {
+    background: var(--color-ink-800);
+  }
+  .field:focus {
+    background: var(--color-ink-850);
+    border-color: var(--color-gold-600);
+    box-shadow: 0 0 0 1px rgba(212, 168, 67, 0.25);
+  }
+  .field::placeholder {
+    color: var(--color-slate-500);
+  }
+
+  select.field option {
+    background: var(--color-ink-850);
+    color: var(--color-paper);
+  }
+
+  .cell-error .field,
+  .field.cell-error {
+    border-color: var(--color-rust-500) !important;
+    background: rgba(212, 105, 74, 0.08);
+  }
+
+  /* A cell holding something that is not what its column describes. Marked
+     rather than hidden, so it can be seen and put right. */
+  .cell-mismatch .field {
+    border-color: var(--color-gold-600) !important;
+    border-style: dashed;
+    color: var(--color-gold-400);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.8rem;
+    border-radius: 5px;
+    border: 1px solid var(--color-ink-700);
+    background: var(--color-ink-850);
+    color: var(--color-slate-300);
+    cursor: pointer;
+    transition: all 0.12s ease;
+    white-space: nowrap;
+  }
+  .btn:hover {
+    border-color: var(--color-ink-600);
+    color: var(--color-paper);
+    background: var(--color-ink-800);
+  }
+  .btn-gold {
+    border-color: var(--color-gold-600);
+    color: var(--color-gold-400);
+    background: rgba(212, 168, 67, 0.07);
+  }
+  .btn-gold:hover {
+    background: rgba(212, 168, 67, 0.14);
+    color: var(--color-gold-400);
+  }
+
+  /* One entry of a map cell, and the panel that edits them. */
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    border-radius: 999px;
+    border: 1px solid var(--color-ink-700);
+    background: var(--color-ink-850);
+    padding: 0.05rem 0.5rem;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  /* Placed against its cell by the component, but rendered on the body so the
+     scrolling pane cannot clip it. */
+  .popover {
+    position: fixed;
+    z-index: 50;
+    min-width: 15rem;
+    width: max-content;
+    max-width: min(18rem, calc(100vw - 1rem));
+    max-height: calc(100dvh - 1rem);
+    overflow-y: auto;
+    border-radius: 8px;
+    border: 1px solid var(--color-ink-700);
+    background: var(--color-ink-900);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+    padding: 0.6rem;
+  }
+}

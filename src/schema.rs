@@ -432,8 +432,9 @@ impl MapSpec {
     }
 }
 
-/// How the editor starts a new row: take `defaults`, then overwrite each field
-/// named in `carry_forward` with the previous row's value where it has one.
+/// How a new row starts: take `defaults`, then overwrite each field named in
+/// `carry_forward` with the value the last row that has one carries, so a run
+/// of rows sharing a genre or a publisher is typed once.
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct NewRow {
     pub defaults: serde_json::Map<String, serde_json::Value>,

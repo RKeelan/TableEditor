@@ -49,6 +49,42 @@ jobs:
       - name: Test (no default features)
         run: cargo test --no-default-features
 
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      # Type-checks and then builds, writing ../assets/index.html. What that
+      # page must be is asserted by the tests above, which read the committed
+      # one, and by the crate's own test on what it embeds.
+      - name: Build
+        run: bun run build
+
+      # The committed page is what consumers get, so it has to be the page
+      # these sources build. Vite is pinned and so is bun, which is what makes
+      # this comparable at all.
+      - name: The committed bundle is what the sources build
+        run: |
+          if ! git diff --quiet -- ../assets/index.html; then
+            echo "::error::assets/index.html is not what Web/ builds. Run ./Deploy.ps1 and commit the result."
+            git diff --stat -- ../assets/index.html
+            exit 1
+          fi
+
   # Process spawning, browser discovery, and the detached worker are all
   # platform-specific, and Windows is where the editor is used.
   rust-windows:

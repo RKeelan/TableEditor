@@ -1,0 +1,3 @@
+{"code":"cen","name":"Central","librarian_first":"Ada","librarian_last":"Ferreira","staff":6,"open":true,"hours":{"Monday":"09:00-17:00","Thursday":"12:00-20:00"}}
+{"code":"est","name":"Eastside","librarian_first":"Bo","librarian_last":"Okonkwo","staff":2,"open":true,"hours":{"Saturday":"10:00-14:00"}}
+{"code":"hbr","name":"Harbour","librarian_first":"Cai","librarian_last":"Ng","staff":1,"open":false}

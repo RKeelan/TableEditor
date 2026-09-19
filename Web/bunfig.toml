@@ -1,0 +1,4 @@
+# Dependencies are pinned to exact versions, here as in Cargo.toml, so an
+# install adds what package.json names and nothing newer.
+[install]
+exact = true
