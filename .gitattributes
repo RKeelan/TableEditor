@@ -1,0 +1,5 @@
+# The browser bundle is a build artefact committed inside the crate that embeds
+# it, so that a consumer depending on the crate alone gets a working UI. Pin it
+# to LF so a checkout does not rewrite it and make every rebuild look like a
+# change.
+assets/index.html text eol=lf
