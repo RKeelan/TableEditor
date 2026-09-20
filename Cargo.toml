@@ -21,7 +21,7 @@ required-features = ["server"]
 default = ["server"]
 # The HTTP server, the launcher, the schema, and the embedded browser bundle.
 # Without it the crate is the JSONL codec and the error types alone.
-server = ["dep:anyhow", "dep:clap", "dep:tiny_http"]
+server = ["dep:anyhow", "dep:clap", "dep:tiny_http", "dep:windows-sys"]
 
 [dependencies]
 anyhow = { version = "=1.0.104", optional = true }
@@ -29,3 +29,12 @@ clap = { version = "=4.6.6", features = ["derive"], optional = true }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tiny_http = { version = "=0.12.0", optional = true }
+
+# Windows hands a child every inheritable handle its parent holds, whatever the
+# child's own standard handles are set to. Detaching a worker therefore takes
+# saying so; see launch::detach_standard_handles.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+], optional = true }

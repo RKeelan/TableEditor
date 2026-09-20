@@ -3,8 +3,16 @@ import type { Column, Row, Schema } from "../src/lib/schema";
 import {
   cellSearchText,
   cellText,
+  CHIP_KEY_SHRINK,
+  CHIP_MAX_WIDTH,
+  CHIP_VALUE_SHRINK,
   cellMismatch,
+  chipKeyStyle,
+  chipStyle,
+  chipValueStyle,
+  chipsFor,
   compareByColumn,
+  controlWidth,
   datalistOptions,
   mapEntries,
   newRow,
@@ -14,6 +22,7 @@ import {
   rowMatches,
   selectOptions,
   speakUrl,
+  widthChOf,
   writeCell,
   writeMapEntry,
 } from "../src/lib/rows";
@@ -549,5 +558,72 @@ describe("live datalists", () => {
     expect(
       datalistOptions({ from_rows: { fields: ["a", "b"], separator: "" } }, rows),
     ).toEqual(["12"]);
+  });
+});
+
+describe("chips", () => {
+  test("show the first few and how many more there are", () => {
+    expect(chipsFor([1, 2, 3])).toEqual({ shown: [1, 2, 3], more: 0 });
+    expect(chipsFor([1, 2, 3, 4, 5])).toEqual({ shown: [1, 2, 3], more: 2 });
+    expect(chipsFor([])).toEqual({ shown: [], more: 0 });
+  });
+});
+
+describe("a column's width", () => {
+  const of = (column: Column) => controlWidth(column);
+
+  test("adds what the control puts around the characters", () => {
+    expect(of({ ...title, width_ch: 10 })).toBe("calc(10ch + var(--field-chrome))");
+    expect(of({ ...year, width_ch: 4 })).toBe("calc(4ch + var(--field-chrome))");
+  });
+
+  test("adds an arrow's room to a select and to a completing input", () => {
+    expect(of({ ...genre, width_ch: 12 })).toBe(
+      "calc(12ch + var(--field-chrome) + var(--field-arrow))",
+    );
+    // A browser gives an input with a datalist a dropdown arrow of its own.
+    expect(of({ ...title, width_ch: 20, datalist: "names" })).toBe(
+      "calc(20ch + var(--field-chrome) + var(--field-arrow))",
+    );
+  });
+
+  test("sizes a computed column too, so a shelf mark is not cut off", () => {
+    expect(of({ ...shelf, width_ch: 18 })).toBe("calc(18ch + var(--field-chrome))");
+  });
+
+  test("gives a text column its default and leaves the others alone", () => {
+    expect(widthChOf(title)).toBe(16);
+    expect(widthChOf(notes)).toBe(40);
+    expect(widthChOf(year)).toBeUndefined();
+    expect(widthChOf(lent)).toBeUndefined();
+    expect(widthChOf(shelved)).toBeUndefined();
+    expect(of(year)).toBeUndefined();
+  });
+
+  test("takes the width a column names over any default", () => {
+    expect(widthChOf({ ...notes, width_ch: 24 })).toBe(24);
+  });
+});
+
+describe("a chip that will not fit", () => {
+  test("is held to a generous width, and to the line it sits on", () => {
+    expect(CHIP_MAX_WIDTH).toBe("16rem");
+    expect(chipStyle().maxWidth).toBe(CHIP_MAX_WIDTH);
+    // What brings a chip down to a cell narrower than that: a flex item that
+    // may not shrink below its own content would spill out of the cell.
+    expect(chipStyle().minWidth).toBe(0);
+  });
+
+  test("gives way in the value first, since the key names the entry", () => {
+    expect(CHIP_VALUE_SHRINK).toBeGreaterThan(CHIP_KEY_SHRINK);
+    expect(chipValueStyle().flexShrink).toBe(CHIP_VALUE_SHRINK);
+    expect(chipKeyStyle().flexShrink).toBe(CHIP_KEY_SHRINK);
+  });
+
+  test("lets the key give way too, rather than spill, when it alone is long", () => {
+    expect(CHIP_KEY_SHRINK).toBeGreaterThan(0);
+    expect(chipKeyStyle().minWidth).toBe(0);
+    expect(chipKeyStyle().textOverflow).toBe("ellipsis");
+    expect(chipValueStyle().textOverflow).toBe("ellipsis");
   });
 });

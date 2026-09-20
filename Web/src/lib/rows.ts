@@ -2,6 +2,7 @@
 // render them: what a new row starts as, what an edited cell writes, what a
 // cell reads as text, how a column sorts, and how the filter matches.
 
+import type { CSSProperties } from "react";
 import {
   type Column,
   type Datalist,
@@ -494,6 +495,113 @@ export function speakUrl(
   } catch {
     // An override that is not a URL is ignored rather than fatal.
     return url;
+  }
+}
+
+// ── Sizing ──────────────────────────────────────────────────────────────────
+
+/** How many chips a cell shows before it says how many more there are.
+ *
+ *  A fixed count rather than a measurement: the cell is one line of a dense
+ *  grid, the count is the same for every row of a column, and a rule that
+ *  cannot be predicted from the schema is a rule nobody can design a table
+ *  around. */
+export const CHIPS_SHOWN = 3;
+
+/** What a cell shows and how many entries it stands for. */
+export function chipsFor<T>(entries: readonly T[]): {
+  shown: readonly T[];
+  more: number;
+} {
+  if (entries.length <= CHIPS_SHOWN) return { shown: entries, more: 0 };
+  return {
+    shown: entries.slice(0, CHIPS_SHOWN),
+    more: entries.length - CHIPS_SHOWN,
+  };
+}
+
+/** How wide a chip may grow before it is cut short.
+ *
+ *  Cutting a chip is for the entry too long to show, not for the ordinary one:
+ *  a key of a few characters beside a word of a value fits easily in a cell
+ *  this wide, and cutting it there would hide text the cell had room for.
+ *
+ *  The cell is the other bound, and it is not written here: a chip is a flex
+ *  item that may shrink, so one too wide for the line it wrapped onto is
+ *  brought down to it. Writing that as a percentage would do nothing, since a
+ *  percentage against a container sized by its own contents is indefinite. */
+export const CHIP_MAX_WIDTH = "16rem";
+
+/** Which half of a chip gives way when the two together do not fit.
+ *
+ *  The value does, and by a wide margin, because the key is what says which
+ *  entry this is: a chip reading `Central …` still names its entry, where one
+ *  reading `Cent… Several` names nothing. The key gives way only when it
+ *  alone is too long for the cell, which is why its share is not zero. */
+export const CHIP_KEY_SHRINK = 1;
+export const CHIP_VALUE_SHRINK = 999;
+
+export function chipStyle(): CSSProperties {
+  // `minWidth: 0` is what lets a chip shrink to the line it is on; without it
+  // a flex item refuses to go below the width of its own content.
+  return { maxWidth: CHIP_MAX_WIDTH, minWidth: 0 };
+}
+
+export function chipKeyStyle(): CSSProperties {
+  return {
+    flexShrink: CHIP_KEY_SHRINK,
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  };
+}
+
+export function chipValueStyle(): CSSProperties {
+  return {
+    flexShrink: CHIP_VALUE_SHRINK,
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  };
+}
+
+/** The width that makes `width_ch: n` mean n characters of content.
+ *
+ *  A control is measured by its border box, and what it puts around the text —
+ *  padding, border, a select's arrow — comes out of that box. A width of
+ *  exactly `n` characters would therefore fit two or three fewer than it says,
+ *  which is how a ten-character date column clips every date in it. The
+ *  padding and border are one custom property so this and the stylesheet
+ *  cannot drift apart; a select adds the room its arrow takes.
+ *
+ *  `undefined` means the column named no width and the control keeps whatever
+ *  width its own class gives it. */
+export function controlWidth(column: Column): string | undefined {
+  const n = widthChOf(column);
+  if (n === undefined) return undefined;
+  return `calc(${n}ch + var(--field-chrome)${hasArrow(column) ? " + var(--field-arrow)" : ""})`;
+}
+
+/** Whether a control draws a dropdown arrow inside its own box: a select
+ *  always, and a text input that completes from a datalist, which browsers
+ *  give an arrow of its own. */
+function hasArrow(column: Column): boolean {
+  return column.type === "select" || column.datalist !== undefined;
+}
+
+/** The character count a column asks for, including the default a text column
+ *  takes when it names none. */
+export function widthChOf(column: Column): number | undefined {
+  if (column.width_ch !== undefined) return column.width_ch;
+  switch (column.type) {
+    case "string":
+    case "text":
+    case "spaced-string":
+      return column.wide ? 40 : 16;
+    default:
+      // A number, a select, a boolean and a map are as wide as their own
+      // class makes them until a table says otherwise.
+      return undefined;
   }
 }
 

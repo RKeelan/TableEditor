@@ -8,7 +8,7 @@ import { viteSingleFile } from "vite-plugin-singlefile";
 // The directory is not emptied first, because the crate's own files live there.
 //
 // In development Vite serves the UI and proxies /api to a running server; the
-// example consumer binds 8788 (see the README).
+// example consumer binds 8791 (see the README).
 export default defineConfig({
   base: "./",
   plugins: [react(), tailwindcss(), viteSingleFile()],
@@ -18,7 +18,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8788",
+      "/api": "http://127.0.0.1:8791",
     },
   },
 });

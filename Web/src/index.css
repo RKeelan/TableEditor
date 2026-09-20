@@ -28,6 +28,14 @@
 
   --color-rust-500: #d4694a;
   --color-rust-400: #e8896d;
+
+  /* What a control puts around its text: the padding on both sides and the
+     border on both sides. A width of `n` characters adds this, so that a
+     column declared n characters wide fits n characters. */
+  --field-pad-x: 0.4rem;
+  --field-chrome: calc(2 * var(--field-pad-x) + 2px);
+  /* The room a select's own arrow takes out of its box. */
+  --field-arrow: 1.1rem;
 }
 
 @layer base {
@@ -113,7 +121,7 @@
     background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
-    padding: 0.25rem 0.4rem;
+    padding: 0.25rem var(--field-pad-x);
     color: var(--color-paper);
     transition:
       background-color 0.12s ease,
@@ -134,6 +142,31 @@
   select.field option {
     background: var(--color-ink-850);
     color: var(--color-paper);
+  }
+
+  /* A number's spinner arrows eat two characters of the box, change the value
+     on a stray click, and are no use in a grid that is typed into. */
+  input[type="number"].field {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+  input[type="number"].field::-webkit-outer-spin-button,
+  input[type="number"].field::-webkit-inner-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+
+  /* A computed column is read, not edited, but it sits in a column with the
+     same width as any other and lines up with the fields above and below. */
+  .readout {
+    display: inline-block;
+    max-width: 100%;
+    padding: 0.25rem var(--field-pad-x);
+    border: 1px solid transparent;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: top;
   }
 
   .cell-error .field,
@@ -178,11 +211,14 @@
     color: var(--color-gold-400);
   }
 
-  /* One entry of a map cell, and the panel that edits them. */
+  /* One entry of a map cell. How wide it may grow and which half gives way
+     when it cannot are decided in code, beside the rule for how many chips a
+     cell shows; see chipStyle in lib/rows.ts. */
   .chip {
     display: inline-flex;
     align-items: baseline;
     gap: 0.3rem;
+    overflow: hidden;
     border-radius: 999px;
     border: 1px solid var(--color-ink-700);
     background: var(--color-ink-850);

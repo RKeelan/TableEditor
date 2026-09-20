@@ -2,7 +2,7 @@
 //! and for seeing every column type on a page at once.
 //!
 //! Run it with `cargo run --example library -- web --api-only`, which serves
-//! the API in the foreground on port 8788, where the Vite dev server proxies
+//! the API in the foreground on port 8791, where the Vite dev server proxies
 //! it. Without `--api-only` it launches a browser on the embedded bundle.
 //!
 //! The tables it serves live in `examples/library/Data`, and the example moves
@@ -22,7 +22,7 @@ const BOOKS_FILE: &str = "Books.jsonl";
 const GENRES_FILE: &str = "Genres.jsonl";
 const BRANCHES_FILE: &str = "Branches.jsonl";
 
-const DEFAULT_PORT: u16 = 8788;
+const DEFAULT_PORT: u16 = 8791;
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
@@ -134,9 +134,11 @@ impl TableLogic for Books {
         }
 
         // Wide enough for the longest subgenre there is, computed here so the
-        // browser does not have to measure anything.
+        // browser does not have to measure anything. It is the count of
+        // characters, nothing more: what the control puts around them is the
+        // bundle's business.
         let widest = genres.iter().map(|g| g.subgenre.len()).max().unwrap_or(0);
-        let width_ch = u16::try_from(widest.max(8) + 4).unwrap_or(u16::MAX);
+        let width_ch = u16::try_from(widest.max(8)).unwrap_or(u16::MAX);
 
         // A key that shows a branch's name and stores its code.
         let branch_keys: Vec<SelectOption> = branches
@@ -176,9 +178,9 @@ impl TableLogic for Books {
             .numeric_value(),
             // A year is a whole number; a rating is not, which is what the
             // absence of int_only means.
-            Column::number("year", "Year").int_only(),
-            Column::number("copies", "Copies").int_only(),
-            Column::number("rating", "Rating"),
+            Column::number("year", "Year").int_only().width_ch(4),
+            Column::number("copies", "Copies").int_only().width_ch(3),
+            Column::number("rating", "Rating").width_ch(3),
             Column::boolean("lent", "Lent"),
             Column::string("publisher", "Publisher")
                 .width_ch(20)
@@ -197,6 +199,7 @@ impl TableLogic for Books {
                 "shelved",
                 "Shelved",
                 MapSpec::new("Branch", "Copies")
+                    .chips_show_key()
                     .key_options(branch_keys)
                     .value_options([
                         SelectOption::labelled("one", "One"),
@@ -204,7 +207,7 @@ impl TableLogic for Books {
                         SelectOption::labelled("many", "Many"),
                     ]),
             ),
-            Column::computed("shelf", "Shelf mark", "shelf"),
+            Column::computed("shelf", "Shelf mark", "shelf").width_ch(18),
             Column::text("notes", "Notes").wide(),
         ])
         .sortable()
@@ -366,13 +369,13 @@ impl TableLogic for Branches {
         // choice the table makes, so this table is not sortable and rows are
         // dragged into place instead.
         Ok(Schema::new([
-            Column::string("code", "Code").width_ch(8),
-            Column::string("name", "Name").width_ch(18),
-            Column::string("librarian_first", "Librarian").width_ch(12),
+            Column::string("code", "Code").width_ch(3),
+            Column::string("name", "Name").width_ch(22),
+            Column::string("librarian_first", "Librarian").width_ch(8),
             Column::string("librarian_last", "Surname")
-                .width_ch(14)
+                .width_ch(8)
                 .datalist("librarian-names"),
-            Column::number("staff", "Staff").int_only(),
+            Column::number("staff", "Staff").int_only().width_ch(2),
             Column::boolean("open", "Open"),
             Column::map(
                 "hours",

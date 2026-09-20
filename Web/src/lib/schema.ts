@@ -54,6 +54,8 @@ export interface Column {
   value_options?: SelectOption[];
   allow_new_keys?: boolean;
   allow_new_values?: boolean;
+  /** What a chip shows before the value. Absent means the key's label. */
+  chip?: "label" | "key";
 }
 
 /** How a new row starts: take `defaults`, then carry each named field forward
