@@ -4,10 +4,10 @@
     Build the browser bundle into assets/index.html.
 
 .DESCRIPTION
-    assets/index.html is a build artefact that is committed, because a git
-    dependency gives a consumer whatever is in the checkout. This script is how
-    it changes: run it, then commit what it wrote alongside the sources it was
-    built from.
+    assets/index.html is what the crate embeds and what a release publishes. It
+    is not in git: run this after changing anything under Web/, and before
+    running the editor from a fresh checkout. Release.ps1 runs it too, so the
+    page a release ships is always built from the sources beside it.
 #>
 [CmdletBinding()]
 param()
@@ -29,4 +29,4 @@ if ($LASTEXITCODE -ne 0) { throw "bun run build failed with exit code $LASTEXITC
 
 $bundle = Join-Path $PSScriptRoot "assets/index.html"
 $size = [math]::Round((Get-Item $bundle).Length / 1KB)
-Write-Host "Wrote assets/index.html ($size KB). Commit it with the sources it came from." -ForegroundColor Green
+Write-Host "Wrote assets/index.html ($size KB)." -ForegroundColor Green

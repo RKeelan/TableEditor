@@ -3,9 +3,34 @@ name = "table-editor"
 version = "0.1.0"
 authors = ["Richard Keelan"]
 edition = "2024"
+# Established by building on it: 1.88 is where `if let` chains landed, which
+# `launch.rs` uses, and 1.87 fails to compile the crate.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/RKeelan/TableEditor"
+readme = "README.md"
 description = "A local HTTP server and browser bundle for editing a repository's JSONL tables"
+keywords = ["jsonl", "table", "editor", "spreadsheet", "local"]
+categories = ["web-programming::http-server", "development-tools", "encoding"]
+
+# What a consumer needs and nothing else. The browser bundle ships as the one
+# page the crate embeds, rather than as the React sources it was built from:
+# `Web/` is 200-odd megabytes of installed dependencies away from being useful
+# and a consumer never builds it. Everything about how the page is made stays
+# in the repository, which `repository` points at.
+#
+# The patterns are gitignore patterns, so each is anchored with a leading
+# slash: an unanchored `README.md` would match one in every directory it can
+# reach, `Web/node_modules` included.
+include = [
+    "/build.rs",
+    "/src/**/*.rs",
+    "/assets/index.html",
+    "/assets/placeholder.html",
+    "/examples/library/**",
+    "/README.md",
+    "/LICENSE",
+]
 
 [lib]
 name = "table_editor"

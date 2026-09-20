@@ -1,16 +1,16 @@
-# The browser bundle is a build artefact committed inside the crate that embeds
-# it, so that a consumer depending on the crate alone gets a working UI. Pin it
-# to LF so a checkout does not rewrite it and make every rebuild look like a
-# change.
-assets/index.html text eol=lf
-
 # The example's tables are written by the editor whenever it is developed
-# against, and the editor writes LF. Pin them for the same reason.
+# against, and the editor writes LF. Pin them so a checkout does not rewrite
+# them and make every session look like a change.
 examples/library/Data/*.jsonl text eol=lf
 
-# The bundle is built from these sources and the page it builds is committed,
-# so the build must not vary with the platform it ran on. A source checked out
-# with CRLF carries those line endings into the page—Vite copies the body of
-# index.html through verbatim—and the committed page then differs from the one
-# CI builds. Pin them to LF so every checkout builds the same bytes.
+# The bundle is built from these sources, and the page it builds is what a
+# release publishes, so the build must not vary with the platform it ran on. A
+# source checked out with CRLF carries those line endings into the page—Vite
+# copies the body of index.html through verbatim—and the page a release ships
+# then depends on whose machine built it. Pin them to LF so every checkout
+# builds the same bytes.
 Web/** text eol=lf
+
+# The placeholder is embedded byte for byte where the bundle is absent, so it
+# is pinned for the same reason.
+assets/placeholder.html text eol=lf
