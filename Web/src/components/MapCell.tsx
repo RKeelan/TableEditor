@@ -342,24 +342,24 @@ function ValueControl({
   live?: boolean;
 }) {
   const options = column.value_options ?? [];
-  const typed = column.allow_new_values === true || options.length === 0;
-  const [draft, setDraft] = useState(value);
+  const free = column.allow_new_values === true || options.length === 0;
+  const [entry, setEntry] = useState(value);
 
   useEffect(() => {
-    setDraft(value);
+    setEntry(value);
   }, [value]);
 
-  if (typed) {
+  if (free) {
     return (
       <input
         type="text"
-        value={draft}
+        value={entry}
         onChange={(e) => {
-          setDraft(e.target.value);
+          setEntry(e.target.value);
           if (live) onCommit(e.target.value);
         }}
         onBlur={() => {
-          if (!live && draft.trim() !== value) onCommit(draft.trim());
+          if (!live && entry.trim() !== value) onCommit(entry.trim());
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();

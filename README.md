@@ -159,10 +159,13 @@ A table's own file must exist before the editor can open the table. The editor e
 `GET /api/app` describes the shell:
 
 ```json
-{ "name": "Library", "tables": [{ "table": "books", "title": "Books" }] }
+{ "name": "Library",
+  "views": [{ "view": "on-loan", "title": "On loan" }],
+  "tables": [{ "table": "books", "title": "Books" }],
+  "front": { "view": "on-loan" } }
 ```
 
-A `subtitle` is included when the app supplies one, and omitted otherwise.
+A `subtitle` is included when the app supplies one, and omitted otherwise. So are `views`, for an app that serves none, and `front`, for one that leaves its front page alone—which means the first table. An app of tables alone therefore sends `name`, `subtitle` and `tables`, and a bundle that knows nothing of views has everything it needs.
 
 Three endpoints serve each table:
 
@@ -172,7 +175,24 @@ Three endpoints serve each table:
 
 A validation error is `{ "line": 3, "field": "title", "message": "title is required" }`, where `line` is the row's one-based position in the set being validated and `field` is null for a whole-row check.
 
-A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 405 for a method the endpoint does not take, and 500 for file and serialization trouble.
+A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 405 for a method the endpoint does not take, 404 for a path under `/api/` that is no endpoint, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
+
+`GET /api/views/<view>` answers a view, taking its parameters as the query string:
+
+```json
+{ "view": "on-loan", "title": "On loan",
+  "params": [ { "key": "branch", "label": "Branch", "type": "select",
+                "options": [{ "value": "cen", "label": "Central" }],
+                "default": "cen" } ],
+  "args": { "branch": "cen" },
+  "note": "2 of 3 book(s) at Central are out on loan.",
+  "sections": [ { "heading": "Out", "note": "Days left before they are due.",
+                  "columns": [ { "field": "title", "label": "Title", "type": "string",
+                                 "href": "link", "width_ch": 30 } ],
+                  "rows": [ { "title": "Nine Doors", "link": "https://…" } ] } ] }
+```
+
+There is no PUT and no derive: a view is read. A view nobody serves is a 404, and any method but GET on one is a 405. `note` is omitted where a view supplies none, as are a section's `heading` and `note`.
 
 `GET /api/health` returns `{"status":"ok","app":"<name>"}` and `POST /api/shutdown` returns `{"status":"stopping"}` and exits. Health names the app so that a launch can tell its own server from another one on the same port. A body of `{"status":"ok"}` with no `app` is read as a table editor built before health bodies carried the name, which `stop` and `--restart` act on but a launch never adopts.
 
@@ -216,6 +236,7 @@ The sentences below say what a bundle does with each. They are the contract a bu
 * A `boolean` column stores a JSON boolean. A bundle gives the cell an unset state beside true and false, and writes unset as an absent field rather than as `false`, so a row nobody has answered is told apart from one answered no.
 * A `select` carries either a fixed `options` list or an `options_by` map keyed on another column's value. An option is `{ "value": …, "label": … }`, and the label is omitted where it would repeat the value; a bundle shows the label and stores the value.
 * A `computed` column is read-only and takes its value from the row's derivation by `from`.
+* `href` names another field of the same row holding a URL, and a bundle shows the cell as a link to it. It is honoured where a cell is read rather than edited—a `computed` column of a table, and every column of a view—and ignored elsewhere, since a cell being typed into cannot also be a link. The link opens in a tab of its own, carries `rel="noopener noreferrer"`, and is followed only when it is an absolute `http:` or `https:` URL: a field holding `javascript:` or `data:`, or a relative path, is shown as text. Relative paths are not followed because the same one would mean different things at the root and behind a reverse proxy.
 * A `map` column stores a key-to-value object, and a bundle renders one chip per entry, drops an entry whose value is cleared, and writes a map that empties as an absent field. Beside the common fields it carries `key_label`, `value_label`, `key_options`, `value_options`, `allow_new_keys`, `allow_new_values`, and `chip`. Both option lists take the same `{ "value", "label"? }` shape a select's do, so a key can show a title beside the code that is stored. Under `allow_new_keys` a bundle lets a key be typed that the list does not offer, and under `allow_new_values` the value is free text with `value_options`, if any, as suggestions.
 * `"chip": "key"` puts the stored key on the chip rather than the key's label, for a table whose keys are short codes standing for long titles: six chips of `Code—Long Title` make a row several lines tall, and the label is in the panel either way. It is omitted when a chip shows the label, which is what it does unless a table says otherwise.
 
@@ -260,9 +281,64 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 * Adding a row while a filter is on clears the filter, so the new row cannot be added somewhere invisible.
 * The page is served from a repository's own machine and asks nothing of the network: no fonts, no analytics, nothing from a CDN. A build that introduced such a request fails the test that reads the committed page.
 
-## Reserved table names
+## Views
 
-A table may not be named `app`, `health`, `shutdown`, or `stop`. The first three are matched before the table routes, and the fourth is the `stop` subcommand, which clap reads before the positional table name, so such a table would be unreachable. Building a `Server` over one panics rather than serving it.
+A table is where the writing happens. A view is where the reading happens: a read-only page the server computes and the browser renders, answering a question the tables can only be read to answer. It reuses the column schema, so the browser renders a view with what it already knows and learns nothing about what a row means.
+
+A repository implements `ViewLogic` once per view:
+
+```rust
+impl ViewLogic for OnLoan {
+    fn name(&self) -> &'static str { "on-loan" }
+    fn title(&self) -> &'static str { "On loan" }
+
+    fn params(&self, ctx: &Context, asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+        Ok(vec![Param::select("branch", "Branch", options).default("cen")])
+    }
+
+    fn render(&self, args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        Ok(ViewData::new()
+            .note("2 of 3 book(s) at Central are out on loan.")
+            .section(Section::new(columns).heading("Out").rows(rows)?))
+    }
+}
+```
+
+`App::views` lists them, before the tables, and `App::front` says what a bare address opens: `Front::View(name)`, `Front::Table(name)`, or `Front::FirstTable`, which is what an app that says nothing gets. Both have defaults, so an app of tables alone implements neither. A view's name may not be one of the reserved names, may not be a table's, and may not be another view's; a name may hold only letters, digits, `-`, `_`, `.` and `~`, since it is a path segment and anything else would have to be escaped to be linked to; a parameter may not be keyed `view` or `table`, which are how an address says which page it is on; and a front page must name something the app serves. Building a `Server` over any of those panics, as it does for a table's name or file.
+
+`params` and `render` both run on every request, against one `Context`, so a view reading three tables reads each of them once however many of its parts consult them. Parameters are rebuilt each time for the same reason a schema is: a select of the branches is filled from the branches there are now.
+
+`params` is told what the address asked before anything is resolved, so one parameter's options can follow another's answer: a select of subgenres offers the ones belonging to the genre that was chosen. What it is told is the raw query string, since resolving it is what it is being consulted for.
+
+What a view was asked for is `ViewArgs`: the address's query string, with a declared parameter the address left out filled in from its default. Everything the address carried is kept, including keys no parameter names, so a view may read more than it declares.
+
+A select's answer has to be one of the options it offered. One that is not falls back to the default, and to nothing at all where the parameter has no default, so a stale link or a hand-edited address gets an answer the page can show rather than a question the controls cannot represent. A select with no fixed options—one whose options are computed and came back empty—takes whatever it is given. An empty answer is kept as an empty answer: a parameter the reader cleared means all of them, and is not the same as a parameter never asked about.
+
+`Section::rows` takes anything that serialises, so a view hands over its own row type rather than building `serde_json::Value` by hand. A row that cannot be serialised is an error naming the section it was going into.
+
+Sections carry their own columns, so two sections can differ: one listing what is overdue wants a column of how late, and one listing what is merely out does not. Sections that should line up are given the same columns.
+
+A view is read-only in every sense: no editing, no autosave, no undo, no dragging, no sorting, and no filtering. Nothing in the editor's write machinery is reached.
+
+## What the browser does with a view
+
+The page is the title, the note, the parameter controls, then the sections in order, each its heading, its note, and its rows. `?view=<name>&<param>=<value>` is the whole of the question, so a page can be linked to, bookmarked, and reloaded. A section with no rows still shows its heading, and says there are none.
+
+Changing a control rewrites the address and fetches the answer into the page that is already open. The control keeps the focus, the page does not scroll back to the top, and Back and Forward ask the previous question and the next one again. One change is one entry in the history; asking the question that is already on screen is no entry at all. A select asks as soon as it changes, and a typed parameter asks when it is left or when Enter is pressed, since each question is a fetch. While an answer is on its way, and for as long as one fails to arrive, what is on screen is dimmed: it answers the older question. A failed fetch says so above the results, with a retry, and leaves them there. A region marked `aria-live="polite"` reads out the row counts as each answer lands, since for a reader who cannot see the page the counts are what changed.
+
+The address carries a cleared parameter as a key with an empty value, because clearing one is an answer and dropping the key would let the default back in. The view's own name is written last, so no parameter can displace it.
+
+An empty address opens whatever `front` names, and the launcher leaves the address bare for that reason: `app web` opens the front page, `app web <name>` opens that table or view by name. An app that names no front page has no page to leave the address bare for, so `app web` opens `?table=<first table>`.
+
+A cell is its column's type as a table would show it. `width_ch` gives it room for that many characters of text and cuts longer text short, with the whole of it in the cell's tooltip; the number counts the text alone, since a view's cell has no input around it to make room for, where a table's adds its border, padding and dropdown arrow. A column naming no width takes what its content needs, rather than the 16 or 40 characters a table's would fall back to.
+
+At 380px the parameter controls are full width and stacked, and each section is a stack of cards, one per row: the first column is the card's title, a link where that column has an `href`, and the rest are label-and-value lines with the empty ones left out. A title too long for the card is broken across lines, including one long word with nowhere to break. Above 640px a section is a table under its heading. The page never scrolls sideways at any width; a section with more columns than fit scrolls inside its own box at the wider sizes, where there is a table to scroll.
+
+A cell's `href` is followed only when it is an absolute `http:` or `https:` URL carrying no username or password. Anything else—another scheme, a relative or scheme-relative address, or text that is no URL—is shown as text, since a row is data from a file and a link in one must not be a way to run something by clicking a cell. A link that is followed opens in a tab of its own and tells that tab nothing about this one.
+
+## Reserved names
+
+A table or a view may not be named `app`, `derive`, `health`, `shutdown`, `stop`, or `views`. All but `stop` are matched before the table and view routes—`derive` because `/api/<table>/derive` is one, and `views` because `/api/views/<view>` is—and `stop` is the `stop` subcommand, which clap reads before the positional name, so such a table would be unreachable. Building a `Server` over one panics rather than serving it.
 
 ## Launching
 
@@ -276,7 +352,7 @@ That rule is exact, and deliberately so. `{"status":"ok"}` means an object with 
 
 The `Server` builder holds what differs between repositories:
 
-* `index_html` serves a bundle of the repository's own in place of the embedded one.
+* `index_html` serves a bundle of the repository's own in place of the embedded one. Such a bundle takes on everything the server states but does not enforce: reading the address, and resolving a bare one through `front` to a view, a table, or the first table; the schema, meaning every column type and modifier and what `width_ch` counts; the write rules, meaning what a cleared cell writes and what a `cascades_to` change clears; and asking nothing of the network.
 * `child_env` names the worker marker. A repository whose server is registered as a system service keeps its own name here, so the service entry does not have to change.
 * `command` names the subcommand that reaches `run`, used when re-invoking the binary as a worker. It defaults to `web`.
 * `default_port` is the port bound when `--port` names none. Each app takes its own, so two editors on one machine do not land on the same port. It defaults to 8787.
@@ -309,7 +385,9 @@ CI rebuilds the bundle and fails if the committed page is not what these sources
 
 ## Developing the bundle
 
-`examples/library` is a consumer to develop against: an app called Library with three tables between them carrying every column type and modifier, over invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
+`examples/library` is a consumer to develop against: an app called Library with three tables carrying every column type and modifier between them, a view over those tables with two sections, notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one—and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
+
+Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width.
 
 ```
 cargo run --example library -- web --api-only    # the API on 127.0.0.1:8791

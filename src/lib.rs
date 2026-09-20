@@ -43,6 +43,8 @@ mod schema;
 mod server;
 #[cfg(feature = "server")]
 mod table;
+#[cfg(feature = "server")]
+mod view;
 
 #[cfg(all(test, feature = "server"))]
 mod fixture;
@@ -61,4 +63,6 @@ pub use schema::{
 #[cfg(feature = "server")]
 pub use server::{Server, ServerArgs, ServerCommand};
 #[cfg(feature = "server")]
-pub use table::{App, Table, TableLogic};
+pub use table::{App, Front, Table, TableLogic};
+#[cfg(feature = "server")]
+pub use view::{Param, Section, View, ViewArgs, ViewData, ViewLogic};

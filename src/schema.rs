@@ -127,6 +127,8 @@ pub struct Column {
     from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     speak: Option<Speak>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    href: Option<String>,
     #[serde(flatten)]
     map: Option<MapSpec>,
 }
@@ -148,6 +150,7 @@ impl Column {
             datalist: None,
             from: None,
             speak: None,
+            href: None,
             map: None,
         }
     }
@@ -267,6 +270,19 @@ impl Column {
     /// Where the cell's play button sends the value to be spoken.
     pub fn speak(mut self, speak: Speak) -> Self {
         self.speak = Some(speak);
+        self
+    }
+
+    /// Show this column's value as a link, to the URL held by another field of
+    /// the same row.
+    ///
+    /// It is honoured where a cell is read rather than edited—a `computed`
+    /// column of a table, every column of a view—and ignored elsewhere, since
+    /// a cell being typed into cannot also be a link. A bundle opens it in a
+    /// new tab, and follows only `http:` and `https:`, so a row carrying
+    /// something else in that field is text rather than a way to run it.
+    pub fn href(mut self, field: impl Into<String>) -> Self {
+        self.href = Some(field.into());
         self
     }
 }
