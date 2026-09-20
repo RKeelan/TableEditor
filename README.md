@@ -432,8 +432,9 @@ Run from the repository root, on `main`, with a clean tree:
 - Bump `version` in `Cargo.toml`, and update the version in this README's dependency examples. Commit that on its own.
 - `./Release.ps1` — builds the bundle, packages, checks that the packaged page is the built editor, and dry-runs the publish. It changes nothing outside `target/`.
 - Read what it packaged: `cargo package --list`, and the size it reports. Two warnings about `tests/api.rs` and `tests/stop.rs` not being included are expected; the integration tests are not published.
-- `./Release.ps1 -Publish` — the same, and then uploads. It refuses on a dirty tree and refuses if the packaged page is the placeholder. This step is irreversible.
-- `git tag v<version> && git push origin v<version>`.
+- `./Release.ps1 -Publish` — the same, and then uploads, tags the commit it published `v<version>`, and pushes the tag. It refuses on a dirty tree, on a packaged page that is the placeholder, and on a version whose tag already exists here or on origin, since that version has been released. This step is irreversible.
+
+The tag is written after the upload, not before, because the upload is the step that cannot be undone: a version that never reached crates.io leaves no tag to delete, and a tag that fails to push is already here, so the push is all that is left to redo.
 
 Publishing needs a crates.io token: create one at [crates.io/settings/tokens](https://crates.io/settings/tokens) with the publish scope, then `cargo login`. The token is stored by cargo, not by this repository.
 
@@ -453,7 +454,7 @@ Publishing needs a crates.io token: create one at [crates.io/settings/tokens](ht
 - `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
 - `./Deploy.ps1` — install and build in one step
 - `./Release.ps1` — build, package, check the packaged page, and dry-run the publish (CI gate)
-- `./Release.ps1 -Publish` — the same, and then publish to crates.io
+- `./Release.ps1 -Publish` — the same, and then publish to crates.io and push the release tag
 
 ## Licence
 

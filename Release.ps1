@@ -11,10 +11,12 @@
 
     Publishing to crates.io is permanent: a version can be yanked but never
     replaced or removed, and a version already published is refused. -Publish
-    is therefore explicit, and the tree must be clean.
+    is therefore explicit, the tree must be clean, and the commit that was
+    uploaded is tagged v<version> and the tag pushed to origin.
 
 .PARAMETER Publish
-    Actually upload to crates.io. Requires `cargo login` to have been run.
+    Actually upload to crates.io, then tag and push the commit that was
+    uploaded. Requires `cargo login` to have been run.
 
 .EXAMPLE
     ./Release.ps1
@@ -22,7 +24,7 @@
 
 .EXAMPLE
     ./Release.ps1 -Publish
-    The same, and then upload.
+    The same, and then upload and tag.
 #>
 [CmdletBinding()]
 param(
@@ -58,13 +60,38 @@ function Assert-CleanTree {
         throw "The working tree has uncommitted changes $When. Commit or stash them before publishing."
     }
 }
-if ($Publish) { Assert-CleanTree -When "before the build" }
+
+# The tag is how a published version is found again in the history, so a
+# version whose tag is taken is a version that has been released. crates.io
+# refuses a second upload of one; this says so before anything is built.
+function Assert-UntaggedVersion {
+    param([string]$Tag)
+    # --list and ls-remote print nothing and succeed where there is no such
+    # tag, so neither reports absence as a failure.
+    $here = git tag --list $Tag
+    if ($LASTEXITCODE -ne 0) { throw "git tag --list failed." }
+    if ($here) { throw "$Tag is already a tag here, so that version has been released. Bump the version in Cargo.toml." }
+    $there = git ls-remote --tags origin "refs/tags/$Tag"
+    if ($LASTEXITCODE -ne 0) { throw "git ls-remote failed, so whether $Tag is on origin is unknown." }
+    if ($there) { throw "$Tag is already a tag on origin, so that version has been released. Bump the version in Cargo.toml." }
+}
+
+$version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+$tag = "v$version"
+
+if ($Publish) {
+    Assert-CleanTree -When "before the build"
+    Assert-UntaggedVersion -Tag $tag
+    # Read here so that the tag names the commit whose tree was checked and
+    # packaged, whatever HEAD is by the time the upload is done.
+    $sha = git rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw "git rev-parse HEAD failed." }
+}
 
 Write-Host "› Building the browser bundle" -ForegroundColor Cyan
 ./Deploy.ps1
 if ($Publish) { Assert-CleanTree -When "after the build" }
 
-$version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
 Write-Host "Packaging table-editor $version" -ForegroundColor Cyan
 
 Invoke-Step "Packaging" { cargo package --allow-dirty }
@@ -116,4 +143,14 @@ if (-not $Publish) {
 
 Write-Host "Publishing table-editor $version to crates.io. This cannot be undone." -ForegroundColor Yellow
 Invoke-Step "Publishing" { cargo publish --allow-dirty }
-Write-Host "Published $version. Tag it: git tag v$version && git push origin v$version" -ForegroundColor Green
+
+# Tagged after the upload rather than before it: the upload is the step that
+# cannot be undone, so a tag on a version that never reached crates.io would
+# have to be deleted, where a tag whose push fails is already here and the
+# push is a retry.
+Write-Host "› Tagging $tag" -ForegroundColor Cyan
+git tag -a $tag -m "table-editor $version" $sha
+if ($LASTEXITCODE -ne 0) { throw "$version is published, but tagging $sha as $tag failed. Tag it and push the tag by hand." }
+git push origin $tag
+if ($LASTEXITCODE -ne 0) { throw "$version is published and tagged $tag here, but pushing the tag failed. Run: git push origin $tag" }
+Write-Host "Published $version and pushed $tag." -ForegroundColor Green

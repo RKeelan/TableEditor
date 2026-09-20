@@ -54,4 +54,4 @@ The bundle's dependencies are pinned exactly too, in `Web/package.json`, and `We
 
 ## Releasing
 
-`./Release.ps1` builds the bundle, packages, checks the packaged page, and dry-runs the publish; CI runs it on every change. `./Release.ps1 -Publish` also uploads, refusing on a dirty tree or a placeholder page. A published version is permanent: yankable, never replaceable. See the README's Releasing section for the full procedure, and its Versions section for what a bump means.
+`./Release.ps1` builds the bundle, packages, checks the packaged page, and dry-runs the publish; CI runs it on every change. `./Release.ps1 -Publish` also uploads, then tags the commit it published `v<version>` and pushes the tag; it refuses on a dirty tree, a placeholder page, or a version that is already tagged. A published version is permanent: yankable, never replaceable. See the README's Releasing section for the full procedure, and its Versions section for what a bump means.
