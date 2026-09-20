@@ -7,3 +7,10 @@ assets/index.html text eol=lf
 # The example's tables are written by the editor whenever it is developed
 # against, and the editor writes LF. Pin them for the same reason.
 examples/library/Data/*.jsonl text eol=lf
+
+# The bundle is built from these sources and the page it builds is committed,
+# so the build must not vary with the platform it ran on. A source checked out
+# with CRLF carries those line endings into the page—Vite copies the body of
+# index.html through verbatim—and the committed page then differs from the one
+# CI builds. Pin them to LF so every checkout builds the same bytes.
+Web/** text eol=lf

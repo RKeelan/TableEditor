@@ -237,23 +237,37 @@ fn a_worker_that_cannot_start_says_so_at_once() {
     // The worker is a fresh invocation of this binary, so a flag it does not
     // take makes it exit on its own usage error. The launch must report that
     // rather than sit out the whole window and say only that nothing came up.
-    let port = free_port();
-    let failure = Server::new(Named::new("Library"))
-        .worker_args(["--not-a-flag-this-binary-takes".to_string()])
-        .run(launching(port))
-        .expect_err("a worker that cannot parse its command line does not serve");
+    //
+    // This one does reach the network, so it needs a port nothing answers on.
+    // A port picked free can be taken by the time it is used, which says
+    // nothing about the launch, so such an answer is tried again elsewhere.
+    for attempt in 0..3 {
+        let failure = Server::new(Named::new("Library"))
+            .worker_args(["--not-a-flag-this-binary-takes".to_string()])
+            .run(launching(free_port()))
+            .expect_err("a worker that cannot parse its command line does not serve");
 
-    let message = failure.to_string();
-    assert!(message.contains("without serving port"), "{message}");
-    assert!(message.contains("It said:"), "{message}");
+        let message = failure.to_string();
+        if message.contains("is serving") {
+            assert!(attempt < 2, "every port tried was taken: {message}");
+            continue;
+        }
+        assert!(message.contains("without serving port"), "{message}");
+        assert!(message.contains("It said:"), "{message}");
+        return;
+    }
 }
 
 #[test]
 fn a_forwarded_positional_argument_is_refused_before_spawning() {
-    let port = free_port();
+    // Port 1 is privileged and nothing of ours is ever on it, which is the
+    // point: an argument that cannot be forwarded is refused before the launch
+    // asks anything of the network, so what is on the port cannot come into
+    // it. A port that happened to be taken used to turn this into a complaint
+    // about the port instead.
     let failure = Server::new(Named::new("Library"))
         .worker_args(["genres".to_string()])
-        .run(launching(port))
+        .run(launching(1))
         .expect_err("a positional cannot be forwarded");
 
     assert!(failure.to_string().contains("not a flag"), "{failure}");
@@ -270,6 +284,72 @@ fn launching(port: u16) -> ServerArgs {
         restart: false,
         api_only: false,
     }
+}
+
+/// The example consumer's binary, which `cargo test --all-targets` builds
+/// beside this one. A plain `cargo test` does not build examples, and the test
+/// that wants it skips rather than failing over its absence.
+fn example_binary() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // target/<profile>/deps/<test>.exe → target/<profile>/examples/library.exe
+    let path = exe
+        .parent()?
+        .parent()?
+        .join("examples")
+        .join(format!("library{}", std::env::consts::EXE_SUFFIX));
+    path.exists().then_some(path)
+}
+
+#[test]
+fn a_launch_lets_go_of_the_pipe_it_was_started_with() {
+    // The worker outlives the command that started it. If it holds that
+    // command's stdout, anything reading the command through a pipe — a shell
+    // pipeline, a script, a CI step — waits for the server to stop, which is
+    // to say forever.
+    let Some(binary) = example_binary() else {
+        return;
+    };
+
+    for attempt in 0..3 {
+        let port = free_port();
+        let mut launcher = Spawned(
+            Command::new(&binary)
+                .args(["web", "--no-open", "--port", &port.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("could not run the example"),
+        );
+
+        let mut out = launcher.0.stdout.take().expect("a pipe to read");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut said = String::new();
+            let _ = out.read_to_string(&mut said);
+            let _ = tx.send(said);
+        });
+
+        let said = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the launching command's output reached its end");
+
+        // The end of the output has to mean the launcher let go, not that the
+        // server stopped, so the server must still be answering.
+        let serving = came_up(port);
+        stop_whatever_is_on(port);
+        if serving {
+            assert!(said.contains("serving"), "{said}");
+            return;
+        }
+        assert!(attempt < 2, "the example did not come up on any port tried");
+    }
+}
+
+/// Take down a server this test started, through the crate's own probe, so a
+/// failed assertion cannot leave one holding a port.
+fn stop_whatever_is_on(port: u16) {
+    let _ = table_editor::probe(port, "POST", "/api/shutdown", Duration::from_millis(500));
 }
 
 /// A spawned child that is killed when the test drops it, so an assertion that

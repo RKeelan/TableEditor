@@ -245,6 +245,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny_http",
+ "windows-sys",
 ]
 
 [[package]]

@@ -23,6 +23,8 @@ table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
 
+`windows-sys` is a dependency on Windows alone, under the same feature, and only for the two calls that stop a detached worker inheriting the standard handles of the command that launched it. Windows hands a child every inheritable handle its parent holds whatever the child's own handles are set to, so without those calls a caller piping `app web` into anything would wait on a pipe the server holds open for as long as it runs. It is taken with the two feature flags those calls need and nothing else.
+
 ## A consumer
 
 One table, one app, and the subcommand that runs the editor:
@@ -188,7 +190,7 @@ The schema is data, not code: it carries everything the editor needs to render a
     { "field": "genre", "label": "Genre", "type": "select", "allow_empty": true,
       "options": [{ "value": "Reference" }, { "value": "Travel" }],
       "cascades_to": ["subgenre"] },
-    { "field": "subgenre", "label": "Subgenre", "type": "select", "width_ch": 18,
+    { "field": "subgenre", "label": "Subgenre", "type": "select", "width_ch": 15,
       "options_by": { "field": "genre",
                       "options": { "Reference": [{ "value": "Natural History" }] } } },
     { "field": "copies", "label": "Copies", "type": "number", "int_only": true },
@@ -214,11 +216,25 @@ The sentences below say what a bundle does with each. They are the contract a bu
 * A `boolean` column stores a JSON boolean. A bundle gives the cell an unset state beside true and false, and writes unset as an absent field rather than as `false`, so a row nobody has answered is told apart from one answered no.
 * A `select` carries either a fixed `options` list or an `options_by` map keyed on another column's value. An option is `{ "value": …, "label": … }`, and the label is omitted where it would repeat the value; a bundle shows the label and stores the value.
 * A `computed` column is read-only and takes its value from the row's derivation by `from`.
-* A `map` column stores a key-to-value object, and a bundle renders one chip per entry, drops an entry whose value is cleared, and writes a map that empties as an absent field. Beside the common fields it carries `key_label`, `value_label`, `key_options`, `value_options`, `allow_new_keys`, and `allow_new_values`. Both option lists take the same `{ "value", "label"? }` shape a select's do, so a key can show a title beside the code that is stored. Under `allow_new_keys` a bundle lets a key be typed that the list does not offer, and under `allow_new_values` the value is free text with `value_options`, if any, as suggestions.
+* A `map` column stores a key-to-value object, and a bundle renders one chip per entry, drops an entry whose value is cleared, and writes a map that empties as an absent field. Beside the common fields it carries `key_label`, `value_label`, `key_options`, `value_options`, `allow_new_keys`, `allow_new_values`, and `chip`. Both option lists take the same `{ "value", "label"? }` shape a select's do, so a key can show a title beside the code that is stored. Under `allow_new_keys` a bundle lets a key be typed that the list does not offer, and under `allow_new_values` the value is free text with `value_options`, if any, as suggestions.
+* `"chip": "key"` puts the stored key on the chip rather than the key's label, for a table whose keys are short codes standing for long titles: six chips of `Code—Long Title` make a row several lines tall, and the label is in the panel either way. It is omitted when a chip shows the label, which is what it does unless a table says otherwise.
 
 All four of the map's option and flag fields are written every time, empty lists and `false` included, because together they are what the control is made of. A select's `options` is the exception that proves it: that one is omitted when empty, because a select with no fixed options carries `options_by` instead.
 
 A map's entries keep the order the row carried them in, with one exception no browser can help: JavaScript orders integer-like keys — `"1"`, `"12"` — numerically and ahead of every other key, whatever the file said. A table whose entry order matters must not use keys that look like array indices.
+
+A cell shows the first three entries and then a chip reading `+N` for however many are left, and opening it lists them all. Three is the count whatever the entries are, so a column's height is the same in every row and a table can be designed around it rather than around how long its keys happen to be. A chip too long for its own width is cut short; the panel has the whole of it.
+
+## What `width_ch` means
+
+`width_ch: n` means that n characters of the value fit without being cut off. A bundle adds whatever the control puts around them, so a table counts characters and nothing else:
+
+* A text or number box adds its padding and border. Number boxes have no spinner arrows: they take two characters out of a narrow box, change the value on a stray click, and are no use in a grid that is typed into.
+* A box that completes from a `datalist` adds the room a browser gives its dropdown arrow, as does a `select`, where n is about the longest option label rather than the stored value.
+* A `computed` column is sized the same way and cuts longer text short with the full value in its tooltip, since a wrapped line in a dense grid pushes every other column's row apart.
+* A `boolean` and a `map` ignore `width_ch`: the first is three fixed choices, and the second is chips whose width is the bundle's business.
+
+A column that names no width gets 16 characters, or 40 where it is `wide`. Nothing about this is a browser measuring anything: the width is arithmetic on the schema, which is why a server can compute a column's width from its data and have it mean what it says.
 
 `sortable` is a view setting only: a bundle sorts what is on screen, ascending then descending then not at all, leaves a blank cell last whichever way the column is pointed, turns row dragging off while a sort is on, and writes rows in their stored order regardless. Absent fields are omitted rather than sent as null, and `table` and `title` are stamped in by the server from the table's own `name` and `title`, so the two cannot disagree.
 
@@ -252,7 +268,7 @@ A table may not be named `app`, `health`, `shutdown`, or `stop`. The first three
 
 `ServerArgs` carries the arguments the editor's subcommand takes. A repository whose subcommand takes arguments of its own flattens `ServerArgs` into its own `Args` struct and adds them alongside.
 
-Launching reuses this app's server already running on the port, which is why running the command twice opens a second browser window rather than a second server; `--restart` shuts the old one down first. A port held by another app's editor, or by anything else, is an error naming both apps rather than a reuse, and `stop` leaves such a server running. The server itself runs as a detached worker process, so the command that starts it returns at once. The worker is marked by an environment variable, which is how it knows to bind rather than spawn another copy of itself. `--api-only` skips all of that and serves the API in the foreground, for running the UI from Vite.
+Launching reuses this app's server already running on the port, which is why running the command twice opens a second browser window rather than a second server; `--restart` shuts the old one down first. A port held by another app's editor, or by anything else, is an error naming both apps rather than a reuse, and `stop` leaves such a server running. The server itself runs as a detached worker process, so the command that starts it returns at once, and it holds none of that command's standard handles: piping the launch into something — `app web | tail`, a script, a CI step — reaches the end of the output as soon as the launch is done rather than when the server eventually stops. The worker is marked by an environment variable, which is how it knows to bind rather than spawn another copy of itself. `--api-only` skips all of that and serves the API in the foreground, for running the UI from Vite.
 
 A server answering exactly `{"status":"ok"}` is read as a table editor built before health bodies named the app. It is never reused, because there is no telling whose tables it would serve, but `stop` takes it down and `--restart` replaces it, so upgrading a consumer never leaves a server on the port that the new binary can neither stop nor take the port from. Both say in so many words what they are doing.
 
@@ -293,11 +309,11 @@ CI rebuilds the bundle and fails if the committed page is not what these sources
 
 ## Developing the bundle
 
-`examples/library` is a consumer to develop against: an app called Library with three tables between them carrying every column type and modifier, over invented data in `examples/library/Data`.
+`examples/library` is a consumer to develop against: an app called Library with three tables between them carrying every column type and modifier, over invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
 
 ```
-cargo run --example library -- web --api-only    # the API on 127.0.0.1:8788
-bun run --cwd Web dev                            # Vite on 5173, proxying /api to 8788
+cargo run --example library -- web --api-only    # the API on 127.0.0.1:8791
+bun run --cwd Web dev                            # Vite on 5173, proxying /api to 8791
 ```
 
 Vite serves the UI with hot reloading and proxies `/api` to the example, so the editor is exercised against a real server. `cargo run --example library -- web` instead serves the committed bundle and opens a browser on it, which is how to check what a consumer will actually get; `cargo run --example library -- web stop` shuts that one down. The crate embeds the bundle with `include_str!`, so a server started that way serves whatever the binary was built from: rebuild the bundle and then the example before looking at a change through it.

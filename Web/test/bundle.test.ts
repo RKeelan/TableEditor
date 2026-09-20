@@ -30,6 +30,14 @@ describe("the committed bundle", () => {
     expect(bundle.length).toBeGreaterThan(50_000);
   });
 
+  test("carries no carriage return, so every platform builds the same page", () => {
+    // Vite copies the body of index.html through as it finds it, so a source
+    // checked out with CRLF puts a carriage return in the page and the
+    // committed page stops matching the one CI builds. The sources are pinned
+    // to LF in .gitattributes; this is what notices when they are not.
+    expect(bundle.includes("\r")).toBe(false);
+  });
+
   test("asks nothing of the network", () => {
     const urls = bundle.match(/https?:\/\/[^"'`\s)\\*]+/g) ?? [];
     const outside = urls.filter(

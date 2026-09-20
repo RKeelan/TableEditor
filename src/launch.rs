@@ -44,14 +44,7 @@ pub(crate) fn worker_argv(
     port: u16,
     extra: &[String],
 ) -> Result<Vec<String>> {
-    if let Some(first) = extra.first()
-        && !first.starts_with('-')
-    {
-        bail!(
-            "the worker argument \"{first}\" is not a flag; a repository forwards flags the \
-             editor's subcommand declares, not positional arguments"
-        );
-    }
+    check_worker_args(extra)?;
 
     let mut argv = vec![command.to_string()];
     if let Some(table) = table {
@@ -99,6 +92,63 @@ impl Drop for Worker {
     }
 }
 
+/// Whether what a repository forwards to the worker can be forwarded at all.
+///
+/// This asks nothing of the machine: it is a statement about the arguments
+/// alone, so a launch refuses them before it looks at a port, opens a socket,
+/// or starts anything. An argument that cannot work should be reported as
+/// itself, not as whatever the port happened to be doing.
+pub(crate) fn check_worker_args(extra: &[String]) -> Result<()> {
+    if let Some(first) = extra.first()
+        && !first.starts_with('-')
+    {
+        bail!(
+            "the worker argument \"{first}\" is not a flag; a repository forwards flags the \
+             editor's subcommand declares, not positional arguments"
+        );
+    }
+    Ok(())
+}
+
+/// Stop this process's standard handles from reaching any child.
+///
+/// A worker is given null for stdin and stdout and a log file for stderr, but
+/// on Windows that is only half of it: `CreateProcess` hands a child every
+/// inheritable handle the parent holds, whatever the child's own standard
+/// handles are set to. A caller that pipes the launching command's output —
+/// `app web | tail`, a script capturing it, a CI step — would then wait on a
+/// pipe the worker holds open for as long as it serves, which is to say until
+/// the machine is rebooted.
+///
+/// Clearing the flag on this process's own handles does not affect this
+/// process's use of them, and a child that is meant to inherit them still
+/// does: passing a handle as a child's standard handle marks the duplicate
+/// inheritable at the point of spawning.
+#[cfg(windows)]
+fn detach_standard_handles() {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: both calls take a handle this process owns and are sound for
+        // any value one returns, including the null and invalid handles a
+        // process without a console has.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn detach_standard_handles() {
+    // A Unix child is given exactly the descriptors it is told to have.
+}
+
 /// Re-spawn this binary as a detached server worker. `command` is the
 /// subcommand that reaches [`crate::Server::run`], and `child_env` is the
 /// marker the worker reads to know it should serve.
@@ -114,6 +164,11 @@ pub(crate) fn spawn_detached(
         "table-editor-worker-{}-{port}.log",
         std::process::id()
     ));
+
+    // The worker outlives the command that started it, so it must hold nothing
+    // of that command's: not its standard handles, and not a pipe a caller is
+    // waiting on.
+    detach_standard_handles();
 
     let mut cmd = Command::new(exe);
     cmd.args(worker_argv(command, table, port, extra)?);

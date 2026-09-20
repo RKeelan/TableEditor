@@ -300,6 +300,11 @@ impl Server {
             return self.serve(port, args.api_only);
         }
 
+        // What a repository forwards to the worker is settled here, before a
+        // single packet goes anywhere: an argument that could never work is
+        // that, whatever else happens to be on the port.
+        launch::check_worker_args(&self.worker_args)?;
+
         let url = self.url(&args, port);
         let occupant = launch::occupant(port);
 
@@ -636,6 +641,22 @@ mod tests {
         let command = ServerArgs::augment_help(clap::Command::new("bare"), "books", 8788);
         assert_eq!(command.get_name(), "bare");
         assert_eq!(command.get_arguments().count(), 0);
+    }
+
+    #[test]
+    fn a_worker_argument_that_cannot_work_is_refused_whatever_is_on_the_port() {
+        // Something else is listening, so a launch that probed the port first
+        // would complain about the port. The argument is the complaint,
+        // because it is settled before anything is asked of the network.
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+
+        let failure = Server::new(Library::new())
+            .worker_args(["books".to_string()])
+            .run(parse(&["library", "web", "--no-open", "--port", &port]))
+            .expect_err("a positional cannot be forwarded to the worker");
+
+        assert!(failure.to_string().contains("not a flag"), "{failure}");
     }
 
     #[test]

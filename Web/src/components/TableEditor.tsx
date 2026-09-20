@@ -18,6 +18,7 @@ import {
   type Sort,
   cellMismatch,
   cellText,
+  controlWidth,
   datalistOptions,
   newRow,
   nextSort,
@@ -661,10 +662,15 @@ function Cell({
   const oddTitle = `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
 
   if (column.type === "computed") {
+    const text = cellText(column, row, derived);
     return (
       <td className={tdCls}>
-        <span className="font-mono text-[11px] text-slate-400">
-          {cellText(column, row, derived)}
+        <span
+          className="readout font-mono text-[11px] text-slate-400"
+          style={{ width: controlWidth(column) }}
+          title={text || undefined}
+        >
+          {text}
         </span>
       </td>
     );
@@ -699,6 +705,7 @@ function Cell({
           }}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
+          style={{ width: controlWidth(column) }}
           className="field h-8"
         >
           {mismatched && <option value={KEEP}>{cellText(column, row, derived)}</option>}
@@ -720,7 +727,7 @@ function Cell({
           onChange={(e) => onCell(entry.id, column, e.target.value)}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={column.width_ch ? { width: `${column.width_ch}ch` } : undefined}
+          style={{ width: controlWidth(column) }}
           className="field h-8"
         >
           {(column.allow_empty || shown === "") && <option value="" />}
@@ -755,8 +762,11 @@ function Cell({
           onWheel={(e) => e.currentTarget.blur()}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={column.width_ch ? { width: `${column.width_ch}ch` } : undefined}
-          className="field h-8 w-20 text-right tabular-nums"
+          style={{ width: controlWidth(column) }}
+          className={
+            "field h-8 text-right tabular-nums" +
+            (column.width_ch === undefined ? " w-20" : "")
+          }
         />
       </td>
     );
@@ -764,7 +774,6 @@ function Cell({
 
   // string, text, and spaced-string all edit as one line of text.
   const shown = value == null ? "" : String(value);
-  const widthCh = column.width_ch ?? (column.wide ? 40 : 16);
   return (
     <td className={tdCls}>
       <span className="flex items-center gap-1">
@@ -776,7 +785,7 @@ function Cell({
           spellCheck={column.type === "text"}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={{ width: `${widthCh}ch` }}
+          style={{ width: controlWidth(column) }}
           className="field h-8"
         />
         {column.speak && (

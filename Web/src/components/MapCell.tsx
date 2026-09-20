@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { type Column, type Row, optionLabel } from "../lib/schema";
-import { type MapEntry, cellMismatch, mapEntries } from "../lib/rows";
+import {
+  type MapEntry,
+  cellMismatch,
+  chipKeyStyle,
+  chipStyle,
+  chipValueStyle,
+  chipsFor,
+  mapEntries,
+} from "../lib/rows";
 
 interface Props {
   column: Column;
@@ -45,6 +53,12 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
   const valueOptions = column.value_options ?? [];
   const taken = new Set(entries.map((e) => e.key));
   const free = keyOptions.filter((o) => !taken.has(o.value));
+  const { shown, more } = chipsFor(entries);
+
+  /** What a chip puts before the value: the key's label, or, where the labels
+   *  are long enough to make a cell of several entries unreadable, the key. */
+  const chipKey = (entry: MapEntry) =>
+    column.chip === "key" ? entry.key : optionLabel(keyOptions, entry.key);
   // With no free keys and no typing allowed, there is nothing to add.
   const canAdd = column.allow_new_keys === true || free.length > 0;
 
@@ -144,7 +158,7 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
             ? `${column.label} holds something that is not a set of entries`
             : `Edit ${column.label.toLowerCase()}`
         }
-        className="field flex min-h-8 max-w-[20rem] flex-wrap items-center gap-1 text-left"
+        className="field flex min-h-8 max-w-[16rem] flex-wrap items-center gap-1 text-left"
       >
         {mismatched ? (
           <span className="text-rust-400">
@@ -153,14 +167,26 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
         ) : entries.length === 0 ? (
           <span className="text-slate-500">—</span>
         ) : (
-          entries.map((entry) => (
-            <span key={entry.key} className="chip">
-              <span className="text-slate-400">{optionLabel(keyOptions, entry.key)}</span>
-              <span className="text-paper">
-                {optionLabel(valueOptions, entry.text)}
+          <>
+            {shown.map((entry) => (
+              <span key={entry.key} className="chip" style={chipStyle()}>
+                <span className="text-slate-400" style={chipKeyStyle()}>
+                  {chipKey(entry)}
+                </span>
+                <span className="text-paper" style={chipValueStyle()}>
+                  {optionLabel(valueOptions, entry.text)}
+                </span>
               </span>
-            </span>
-          ))
+            ))}
+            {more > 0 && (
+              <span
+                className="chip shrink-0 text-gold-400"
+                title="Open to see them all"
+              >
+                +{more}
+              </span>
+            )}
+          </>
         )}
       </button>
 

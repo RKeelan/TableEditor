@@ -367,6 +367,30 @@ impl Speak {
     }
 }
 
+/// What a map's chips put before the value: the key's label, or the key
+/// itself.
+///
+/// A key that stands for a long title makes for tall rows once a cell holds
+/// several entries, and the label is in the panel either way, so a table whose
+/// keys are short codes can show those instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChipContent {
+    /// The key's label, falling back to the key where it has none.
+    #[default]
+    Label,
+    /// The key as it is stored.
+    Key,
+}
+
+impl ChipContent {
+    /// Whether this is what a chip shows unless a table says otherwise, which
+    /// is the case the JSON leaves out.
+    fn is_label(&self) -> bool {
+        matches!(self, ChipContent::Label)
+    }
+}
+
 /// The extra description a `map` column carries. A bundle renders one chip per
 /// entry as `key: value`, drops an entry whose value is cleared, and writes a
 /// map that empties as an absent field.
@@ -391,6 +415,11 @@ pub struct MapSpec {
     /// Let a value be typed that `value_options` does not list, which makes
     /// those options suggestions rather than the whole choice.
     pub allow_new_values: bool,
+    /// What a chip shows before the value. Unlike the fields above, which
+    /// together are what the control is made of, this is a preference about
+    /// how a cell reads, so the usual case is left out of the JSON.
+    #[serde(skip_serializing_if = "ChipContent::is_label")]
+    pub chip: ChipContent,
 }
 
 impl MapSpec {
@@ -402,6 +431,7 @@ impl MapSpec {
             value_options: Vec::new(),
             allow_new_keys: false,
             allow_new_values: false,
+            chip: ChipContent::Label,
         }
     }
 
@@ -428,6 +458,14 @@ impl MapSpec {
 
     pub fn allow_new_values(mut self) -> Self {
         self.allow_new_values = true;
+        self
+    }
+
+    /// Show the stored key on a chip rather than its label, which keeps a cell
+    /// of several entries short where the labels are long. The panel that
+    /// edits the entries shows both either way.
+    pub fn chips_show_key(mut self) -> Self {
+        self.chip = ChipContent::Key;
         self
     }
 }
@@ -604,6 +642,16 @@ mod tests {
                                       { "value": "Several" }],
                     "allow_new_keys": false, "allow_new_values": false })
         );
+    }
+
+    #[test]
+    fn a_chip_shows_the_key_only_where_a_table_asks_for_it() {
+        let by_label = serde_json::to_value(MapSpec::new("Branch", "Count")).unwrap();
+        assert!(by_label.get("chip").is_none());
+
+        let by_key =
+            serde_json::to_value(MapSpec::new("Branch", "Count").chips_show_key()).unwrap();
+        assert_eq!(by_key["chip"], "key");
     }
 
     #[test]
