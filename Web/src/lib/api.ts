@@ -2,12 +2,16 @@
 // schema, the validation, and the derivation; the browser reads and writes over
 // the API and renders whatever the schema describes.
 import type { Row, Schema, ValidationError } from "./schema";
+import type { ViewPayload } from "./view";
 
-/** `GET api/app`: the shell's name and the tables it serves. */
+/** `GET api/app`: the shell's name, what it serves, and what a bare address
+ *  opens. `views` and `front` are absent from an app that has neither. */
 export interface AppPayload {
   name: string;
   subtitle?: string;
+  views?: { view: string; title: string }[];
   tables: { table: string; title: string }[];
+  front?: { view: string } | { table: string };
 }
 
 /** `GET api/<table>`. */
@@ -67,6 +71,19 @@ export function getApp(): Promise<AppPayload> {
 
 export function getTable(table: string): Promise<TableGet> {
   return fetch(`${api()}/${table}`).then((r) => asJson<TableGet>(r));
+}
+
+/** `GET api/views/<view>`: a read-only page, with its parameters as the query
+ *  string the address carried. */
+export function getView(
+  view: string,
+  args: Record<string, string>,
+): Promise<ViewPayload> {
+  const query = new URLSearchParams(args).toString();
+  const suffix = query === "" ? "" : `?${query}`;
+  return fetch(`${api()}/views/${encodeURIComponent(view)}${suffix}`).then((r) =>
+    asJson<ViewPayload>(r),
+  );
 }
 
 /** Write the rows, returning the derivation of what was written. */

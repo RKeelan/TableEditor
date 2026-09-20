@@ -48,6 +48,10 @@ export interface Column {
   datalist?: string;
   from?: string;
   speak?: Speak;
+  /** The field of the same row holding this cell's link target. Honoured where
+   *  a cell is read rather than edited: a computed column, and every column of
+   *  a view. */
+  href?: string;
   key_label?: string;
   value_label?: string;
   key_options?: SelectOption[];

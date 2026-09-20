@@ -14,8 +14,9 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
-    ApiError, App, Column, Context, Datalist, MapSpec, NewRow, OptionsBy, Schema, SelectOption,
-    Server, ServerArgs, Speak, Table, TableLogic, ValidationError,
+    ApiError, App, Column, Context, Datalist, Front, MapSpec, NewRow, OptionsBy, Param, Schema,
+    Section, SelectOption, Server, ServerArgs, Speak, Table, TableLogic, ValidationError, View,
+    ViewArgs, ViewData, ViewLogic,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -52,6 +53,12 @@ struct Book {
     lent: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     shelved: BTreeMap<String, String>,
+    /// When a lent book is due back, as `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    due: String,
+    /// The catalogue entry a view links to.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    link: String,
     notes: String,
 }
 
@@ -207,6 +214,8 @@ impl TableLogic for Books {
                         SelectOption::labelled("many", "Many"),
                     ]),
             ),
+            Column::string("due", "Due").width_ch(10),
+            Column::string("link", "Catalogue").width_ch(30),
             Column::computed("shelf", "Shelf mark", "shelf").width_ch(18),
             Column::text("notes", "Notes").wide(),
         ])
@@ -227,6 +236,8 @@ impl TableLogic for Books {
                 .with("donor", "")
                 .with("call_number", "")
                 .with("pronunciation", "")
+                .with("due", "")
+                .with("link", "")
                 .with("notes", "")
                 .with("copies", 1)
                 .carry_forward(["genre", "subgenre", "publisher"]),
@@ -418,12 +429,213 @@ impl TableLogic for Branches {
     }
 }
 
+// ── The On loan view ────────────────────────────────────────────────────────
+
+/// What is out on loan from one branch, in two sections: the books still
+/// within their time, and the ones past it.
+///
+/// A view computes its rows rather than storing them, so nothing here is in a
+/// file: the counts, the days, and which section a book falls into are worked
+/// out per request from the tables the example already ships. The due dates
+/// are fixed in the data, so as real time passes more of them fall overdue,
+/// which is what an example of an overdue list should do.
+struct OnLoan;
+
+/// Days since 1970-01-01 for a `YYYY-MM-DD` date, or nothing for text that is
+/// not one. Howard Hinnant's civil-days algorithm, which needs no calendar
+/// library and no dependency.
+fn days_from_civil(date: &str) -> Option<i64> {
+    let mut parts = date.split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+fn today() -> i64 {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    seconds / 86_400
+}
+
+impl OnLoan {
+    fn branches(ctx: &Context) -> Result<Vec<Branch>, ApiError> {
+        ctx.optional_rows(BRANCHES_FILE)
+    }
+
+    /// The columns both sections show. They are the same in each, so the two
+    /// line up; a section that wanted a column of its own would say so here.
+    fn columns() -> Vec<Column> {
+        vec![
+            Column::string("title", "Title").width_ch(30).href("link"),
+            Column::string("author", "Author").width_ch(18),
+            Column::string("due", "Due").width_ch(10),
+            Column::number("days", "Days").width_ch(4),
+        ]
+    }
+
+    fn row(book: &Book, days: i64) -> Loan {
+        Loan {
+            title: book.title.clone(),
+            author: format!("{} {}", book.author_first, book.author_last)
+                .trim()
+                .to_string(),
+            due: if book.due.is_empty() {
+                "—".to_string()
+            } else {
+                book.due.clone()
+            },
+            days: days.abs(),
+            link: book.link.clone(),
+        }
+    }
+
+    /// A list of options with "any of them" in front of it, whose value is
+    /// empty. Choosing it clears the parameter, which is an answer of its own.
+    fn any<'a>(label: &str, values: impl IntoIterator<Item = &'a str>) -> Vec<SelectOption> {
+        std::iter::once(SelectOption::labelled("", label))
+            .chain(values.into_iter().map(SelectOption::from))
+            .collect()
+    }
+}
+
+/// A row of either section. A view hands over its own type, so the shape of a
+/// row is written down once here rather than assembled field by field.
+#[derive(Serialize)]
+struct Loan {
+    title: String,
+    author: String,
+    due: String,
+    days: i64,
+    link: String,
+}
+
+impl ViewLogic for OnLoan {
+    fn name(&self) -> &'static str {
+        "on-loan"
+    }
+
+    fn title(&self) -> &'static str {
+        "On loan"
+    }
+
+    fn params(&self, ctx: &Context, asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+        let branches = Self::branches(ctx)?;
+        let options: Vec<SelectOption> = branches
+            .iter()
+            .map(|b| SelectOption::labelled(&b.code, &b.name))
+            .collect();
+        let first = branches.first().map(|b| b.code.clone()).unwrap_or_default();
+
+        // A genre and one of its subgenres. The second list follows the first
+        // one's answer, which is why `params` is told what was asked before
+        // anything is settled. A subgenre belonging to the genre chosen last
+        // time is no answer to the question being asked now, and falls back to
+        // every subgenre of the genre chosen this time.
+        let genres: Vec<Genre> = ctx.optional_rows(GENRES_FILE)?;
+        let mut named: Vec<&str> = genres.iter().map(|g| g.genre.as_str()).collect();
+        named.sort_unstable();
+        named.dedup();
+
+        let chosen = asked.get_or("genre", "");
+        let mut subgenres: Vec<&str> = genres
+            .iter()
+            .filter(|g| g.genre == chosen)
+            .map(|g| g.subgenre.as_str())
+            .collect();
+        subgenres.sort_unstable();
+
+        Ok(vec![
+            Param::select("branch", "Branch", options).default(first),
+            Param::select("genre", "Genre", Self::any("Every genre", named)).default(""),
+            Param::select(
+                "subgenre",
+                "Subgenre",
+                Self::any("Every subgenre", subgenres),
+            )
+            .default(""),
+            Param::string("author", "Author"),
+        ])
+    }
+
+    fn render(&self, args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        let books: Vec<Book> = ctx.optional_rows(BOOKS_FILE)?;
+        let branches = Self::branches(ctx)?;
+        let code = args.get_or("branch", "");
+        let branch = branches.iter().find(|b| b.code == code);
+        let named = branch.map(|b| b.name.as_str()).unwrap_or(code);
+
+        let genre = args.get_or("genre", "");
+        let subgenre = args.get_or("subgenre", "");
+        let author = args.get_or("author", "").trim().to_lowercase();
+
+        // The books this branch holds that answer the rest of the question,
+        // whether they are out or not. A parameter left empty asks nothing.
+        let held: Vec<&Book> = books
+            .iter()
+            .filter(|b| b.shelved.contains_key(code))
+            .filter(|b| genre.is_empty() || b.genre == genre)
+            .filter(|b| subgenre.is_empty() || b.subgenre == subgenre)
+            .filter(|b| {
+                author.is_empty()
+                    || format!("{} {}", b.author_first, b.author_last)
+                        .to_lowercase()
+                        .contains(&author)
+            })
+            .collect();
+
+        let now = today();
+        let mut out = Vec::new();
+        let mut overdue = Vec::new();
+        for book in held.iter().filter(|b| b.lent.unwrap_or(false)) {
+            let days = days_from_civil(&book.due).map(|due| now - due).unwrap_or(0);
+            if days > 0 {
+                overdue.push(OnLoan::row(book, days));
+            } else {
+                out.push(OnLoan::row(book, days));
+            }
+        }
+
+        let lent = out.len() + overdue.len();
+        Ok(ViewData::new()
+            .note(format!(
+                "{lent} of {} book(s) at {named} are out on loan. A title links to its catalogue entry.",
+                held.len()
+            ))
+            .section(
+                Section::new(OnLoan::columns())
+                    .heading("Out")
+                    .note("Days left before they are due.")
+                    .rows(out)?,
+            )
+            .section(
+                Section::new(OnLoan::columns())
+                    .heading("Overdue")
+                    .note("Days past due. Chase these.")
+                    .rows(overdue)?,
+            ))
+    }
+}
+
 // ── The app ─────────────────────────────────────────────────────────────────
 
 struct Library {
     books: Books,
     genres: Genres,
     branches: Branches,
+    on_loan: OnLoan,
 }
 
 impl App for Library {
@@ -437,6 +649,16 @@ impl App for Library {
 
     fn tables(&self) -> Vec<&dyn Table> {
         vec![&self.books, &self.genres, &self.branches]
+    }
+
+    fn views(&self) -> Vec<&dyn View> {
+        vec![&self.on_loan]
+    }
+
+    /// The reading happens on the view, so that is what a bare address opens;
+    /// the tables are where the writing happens.
+    fn front(&self) -> Front {
+        Front::View("on-loan")
     }
 }
 
@@ -457,7 +679,7 @@ fn main() -> anyhow::Result<()> {
     // The tables belong to the example, not to whoever ran it.
     std::env::set_current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/library"))?;
 
-    let command = ServerArgs::augment_help(Cli::command(), "books", DEFAULT_PORT);
+    let command = ServerArgs::augment_help(Cli::command(), "the front page", DEFAULT_PORT);
     let cli = Cli::from_arg_matches(&command.get_matches())?;
 
     match cli.command {
@@ -465,6 +687,7 @@ fn main() -> anyhow::Result<()> {
             books: Books,
             genres: Genres,
             branches: Branches,
+            on_loan: OnLoan,
         })
         .child_env("LIBRARY_EXAMPLE_CHILD")
         .default_port(DEFAULT_PORT)

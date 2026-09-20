@@ -1,7 +1,15 @@
-//! A two-table app the crate's own tests run against: Books, which has a
+//! The apps the crate's own tests run against.
+//!
+//! `Library` is the one most of them use: two tables, Books, which has a
 //! sibling table, a derivation, and a schema built from that sibling, and
-//! Genres, which has none of those. Clashing is a third app, for the check
-//! that a table cannot take a reserved name.
+//! Genres, which has none of those; two views, On loan, which takes
+//! parameters and offers one whose options follow another's answer, and
+//! Shelf, which takes none; and a front page naming a view.
+//!
+//! `Plain` is the same tables with no views and no front page, for the checks
+//! that an app which says nothing about either is described and opened as
+//! though neither existed. `Clashing` and `Straying` exist to be refused: one
+//! takes a reserved name, the other names a file outside the data directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +20,8 @@ use serde_json::json;
 use crate::context::Context;
 use crate::error::{ApiError, ValidationError};
 use crate::schema::{Column, NewRow, OptionsBy, Schema};
-use crate::table::{App, Table, TableLogic};
+use crate::table::{App, Front, Table, TableLogic};
+use crate::view::{Param, Section, View, ViewArgs, ViewData, ViewLogic};
 
 pub const BOOKS_FILE: &str = "Books.jsonl";
 pub const GENRES_FILE: &str = "Genres.jsonl";
@@ -26,6 +35,8 @@ pub struct Book {
     pub title: String,
     pub genre: String,
     pub subgenre: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lent: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -178,6 +189,8 @@ impl TableLogic for Genres {
 pub struct Library {
     books: Books,
     genres: Genres,
+    on_loan: OnLoan,
+    shelf: Shelf,
 }
 
 impl Library {
@@ -185,6 +198,8 @@ impl Library {
         Self {
             books: Books,
             genres: Genres,
+            on_loan: OnLoan,
+            shelf: Shelf,
         }
     }
 }
@@ -200,6 +215,36 @@ impl App for Library {
 
     fn tables(&self) -> Vec<&dyn Table> {
         vec![&self.books, &self.genres]
+    }
+
+    fn views(&self) -> Vec<&dyn View> {
+        vec![&self.on_loan, &self.shelf]
+    }
+
+    fn front(&self) -> Front {
+        Front::View("on-loan")
+    }
+}
+
+/// An app of tables alone: it implements neither `views` nor `front`, and is
+/// described and opened by what those two default to.
+pub struct Plain {
+    books: Books,
+}
+
+impl Plain {
+    pub fn new() -> Self {
+        Self { books: Books }
+    }
+}
+
+impl App for Plain {
+    fn name(&self) -> &str {
+        "Plain"
+    }
+
+    fn tables(&self) -> Vec<&dyn Table> {
+        vec![&self.books]
     }
 }
 
@@ -248,6 +293,102 @@ impl App for Clashing {
 
     fn tables(&self) -> Vec<&dyn Table> {
         vec![&self.health]
+    }
+}
+
+/// A view over the fixture's own tables: the books of one genre, split into
+/// those on the shelf and those out on loan, with a parameter choosing the
+/// genre and a link through to a catalogue entry.
+pub struct OnLoan;
+
+impl ViewLogic for OnLoan {
+    fn name(&self) -> &'static str {
+        "on-loan"
+    }
+
+    fn title(&self) -> &'static str {
+        "On loan"
+    }
+
+    fn params(&self, ctx: &Context, asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+        let genres: Vec<Genre> = ctx.optional_rows(GENRES_FILE)?;
+        let mut names: Vec<&str> = genres.iter().map(|g| g.genre.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+
+        let first = names.first().copied().unwrap_or_default();
+        let chosen = asked
+            .get("genre")
+            .filter(|genre| names.contains(genre))
+            .unwrap_or(first);
+
+        // The subgenres of whichever genre is being asked about: one
+        // parameter's options following another's value.
+        let subgenres: Vec<&str> = genres
+            .iter()
+            .filter(|g| g.genre == chosen)
+            .map(|g| g.subgenre.as_str())
+            .collect();
+        let first_subgenre = subgenres.first().copied().unwrap_or_default();
+
+        Ok(vec![
+            Param::select("genre", "Genre", names).default(first),
+            Param::select("subgenre", "Subgenre", subgenres).default(first_subgenre),
+        ])
+    }
+
+    fn render(&self, args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        let books: Vec<Book> = ctx.optional_rows(BOOKS_FILE)?;
+        let wanted = args.get_or("genre", "");
+        let of_genre: Vec<&Book> = books.iter().filter(|b| b.genre == wanted).collect();
+
+        let columns = || {
+            vec![
+                Column::string("title", "Title").width_ch(24).href("link"),
+                Column::string("subgenre", "Subgenre").width_ch(16),
+            ]
+        };
+        let rows = |on_loan: bool| {
+            of_genre
+                .iter()
+                .filter(|b| b.lent.unwrap_or(false) == on_loan)
+                .map(|b| {
+                    json!({
+                        "title": b.title,
+                        "subgenre": b.subgenre,
+                        "link": format!("https://example.invalid/{}", b.title),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        Ok(ViewData::new()
+            .note(format!("{} book(s) in {wanted}.", of_genre.len()))
+            .section(Section::new(columns()).heading("Out").rows(rows(true))?)
+            .section(
+                Section::new(columns())
+                    .heading("On the shelf")
+                    .note("Ready to lend.")
+                    .rows(rows(false))?,
+            ))
+    }
+}
+
+/// A view with no parameters at all, for the case of an address that carries
+/// nothing and a view that wants nothing.
+pub struct Shelf;
+
+impl ViewLogic for Shelf {
+    fn name(&self) -> &'static str {
+        "shelf"
+    }
+
+    fn title(&self) -> &'static str {
+        "Shelf"
+    }
+
+    fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+        Ok(ViewData::new().section(Section::new([Column::string("title", "Title")])))
     }
 }
 

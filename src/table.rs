@@ -14,8 +14,20 @@ use crate::context::Context;
 use crate::error::{ApiError, ParseError, ValidationError};
 use crate::jsonl;
 use crate::schema::Schema;
+use crate::view::View;
 
-/// One repository's editor: a name for the shell and the tables it serves.
+/// Where the editor opens when the address names nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Front {
+    /// The first table the app lists, which is what an app that says nothing
+    /// gets.
+    FirstTable,
+    Table(&'static str),
+    View(&'static str),
+}
+
+/// One repository's editor: a name for the shell, the tables it serves, and
+/// the views it computes.
 pub trait App: Send + Sync + 'static {
     fn name(&self) -> &str;
 
@@ -24,11 +36,26 @@ pub trait App: Send + Sync + 'static {
     }
 
     /// The tables in the order the shell lists them. The first is what the
-    /// editor opens when no table is named.
+    /// editor opens when nothing else is named.
     fn tables(&self) -> Vec<&dyn Table>;
+
+    /// The views in the order the shell lists them, before the tables. An app
+    /// of tables alone leaves this alone and serves none.
+    fn views(&self) -> Vec<&dyn View> {
+        Vec::new()
+    }
+
+    /// What a bare address opens.
+    fn front(&self) -> Front {
+        Front::FirstTable
+    }
 
     fn table(&self, route: &str) -> Option<&dyn Table> {
         self.tables().into_iter().find(|t| t.route() == route)
+    }
+
+    fn view(&self, route: &str) -> Option<&dyn View> {
+        self.views().into_iter().find(|v| v.route() == route)
     }
 }
 

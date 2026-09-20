@@ -8,9 +8,10 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Subcommand};
 use tiny_http::Server as HttpServer;
 
+use crate::context::Context;
 use crate::launch::{self, Occupant};
 use crate::routes;
-use crate::table::App;
+use crate::table::{App, Front};
 
 /// The bundle served when the repository does not supply its own.
 const DEFAULT_INDEX_HTML: &str = include_str!("../assets/index.html");
@@ -35,8 +36,7 @@ pub struct ServerArgs {
     #[command(subcommand)]
     pub command: Option<ServerCommand>,
 
-    /// Table to open in the editor (maps to `?table=`). Defaults to the app's
-    /// first table.
+    /// Table or view to open by name. Defaults to the app's front page.
     pub table: Option<String>,
 
     /// Port to bind on 127.0.0.1. Defaults to the app's own port, so two
@@ -65,7 +65,7 @@ impl ServerArgs {
     /// `--port`.
     ///
     /// The two arguments default to something only the [`Server`] knows: the
-    /// app's first table and the port it was built with. Help, though, is
+    /// app's front page and the port it was built with. Help, though, is
     /// rendered by clap before `run` is ever reached, so the text has to be
     /// rewritten on the way in. Build the command, hand it here, and parse
     /// from what comes back:
@@ -96,12 +96,10 @@ impl ServerArgs {
     /// changes.
     pub fn augment_help(
         command: clap::Command,
-        default_table: &str,
+        default_page: &str,
         default_port: u16,
     ) -> clap::Command {
-        let table = format!(
-            "Table to open in the editor (maps to `?table=`). Defaults to {default_table}."
-        );
+        let table = format!("Table or view to open by name. Defaults to {default_page}.");
         let port = format!("Port to bind on 127.0.0.1. Defaults to {default_port}.");
         rewrite_help(command, &table, &port)
     }
@@ -156,6 +154,22 @@ fn rewrite_help(command: clap::Command, table: &str, port: &str) -> clap::Comman
     command
 }
 
+/// The first character of `name` that may not appear in a path segment, or
+/// nothing where every character may.
+///
+/// A name is compared against a segment of the address, so it has to survive
+/// the journey there and back unchanged. The unreserved set from RFC 3986 is
+/// what does: anything else either means something to a URL or arrives
+/// escaped and no longer matches what the app called it.
+fn reserved_url_character(name: &str) -> Option<char> {
+    name.chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~')))
+}
+
+/// The parameter keys a view may not use, because the address already means
+/// something by them.
+const RESERVED_PARAM_KEYS: [&str; 2] = ["view", "table"];
+
 /// Whether a name is one file inside `Data/` rather than a path out of it.
 fn is_bare_file_name(file: &str) -> bool {
     !file.is_empty()
@@ -205,6 +219,70 @@ impl Server {
                 table.route(),
                 table.data_file()
             );
+        }
+
+        for table in app.tables() {
+            if let Some(bad) = reserved_url_character(table.route()) {
+                panic!(
+                    "table \"{}\" has {bad:?} in its name; a name is part of an address, so it \
+                     takes letters, digits, and - _ . ~ only",
+                    table.route()
+                );
+            }
+        }
+
+        let tables: Vec<&'static str> = app.tables().iter().map(|t| t.route()).collect();
+        let mut seen: Vec<&'static str> = Vec::new();
+        for view in app.views() {
+            let name = view.route();
+            assert!(
+                !routes::RESERVED_NAMES.contains(&name),
+                "view \"{name}\" uses a reserved name; the editor reserves {}",
+                routes::RESERVED_NAMES.join(", ")
+            );
+            if let Some(bad) = reserved_url_character(name) {
+                panic!(
+                    "view \"{name}\" has {bad:?} in its name; a name is part of an address, so \
+                     it takes letters, digits, and - _ . ~ only"
+                );
+            }
+            // A view and a table are told apart by the address that asks for
+            // them, so two of one name would make `?view=` and `?table=` name
+            // different things under one word.
+            assert!(
+                !tables.contains(&name),
+                "view \"{name}\" has the same name as a table; each name belongs to one of them"
+            );
+            assert!(
+                !seen.contains(&name),
+                "two views are named \"{name}\"; each view takes a name of its own"
+            );
+            seen.push(name);
+
+            // A parameter keyed `view` or `table` would be asking the address
+            // a question it already answers. The keys a view declares do not
+            // depend on the data behind them, so a context rooted anywhere
+            // serves to ask what they are; a view that cannot answer without
+            // its files goes unchecked rather than refusing to build.
+            let ctx = Context::new(".");
+            for key in view.param_keys(&ctx).unwrap_or_default() {
+                assert!(
+                    !RESERVED_PARAM_KEYS.contains(&key.as_str()),
+                    "view \"{name}\" has a parameter keyed \"{key}\"; the address uses that word                      to say which page it is on"
+                );
+            }
+        }
+
+        match app.front() {
+            Front::FirstTable => {}
+            Front::Table(name) => assert!(
+                tables.contains(&name),
+                "the front page names the table \"{name}\", which this app does not serve"
+            ),
+            Front::View(name) => assert!(
+                seen.contains(&name),
+                "the front page names the view \"{name}\", which this app does not serve"
+            ),
         }
 
         Self {
@@ -364,19 +442,25 @@ impl Server {
         Ok(())
     }
 
+    /// Where to point the browser.
+    ///
+    /// A name on the command line opens that page, whether the app serves it
+    /// as a table or as a view. With no name, an app that declares a front
+    /// page is opened bare, so that page decides; an app that declares none is
+    /// opened on its first table by name, because a repository serving a
+    /// bundle of its own may read `?table=` and know nothing of front pages.
     fn url(&self, args: &ServerArgs, port: u16) -> String {
-        match self.opening_table(args) {
-            Some(table) => format!("http://127.0.0.1:{port}/?table={table}"),
-            None => format!("http://127.0.0.1:{port}/"),
-        }
-    }
-
-    /// The table the browser opens on: the one named on the command line, or
-    /// the app's first.
-    fn opening_table<'a>(&'a self, args: &'a ServerArgs) -> Option<&'a str> {
+        let base = format!("http://127.0.0.1:{port}/");
         match args.table.as_deref() {
-            Some(table) => Some(table),
-            None => self.app.tables().first().map(|t| t.route()),
+            Some(name) if self.app.view(name).is_some() => format!("{base}?view={name}"),
+            Some(name) => format!("{base}?table={name}"),
+            None => match self.app.front() {
+                Front::FirstTable => match self.app.tables().first() {
+                    Some(table) => format!("{base}?table={}", table.route()),
+                    None => base,
+                },
+                _ => base,
+            },
         }
     }
 
@@ -418,7 +502,11 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::*;
+    use crate::context::Context;
+    use crate::error::ApiError;
     use crate::fixture::{Clashing, Library, Straying};
+    use crate::table::{App, Table};
+    use crate::view::{Param, View, ViewArgs, ViewData, ViewLogic};
 
     /// A binary that takes the editor's arguments unchanged.
     #[derive(Parser)]
@@ -468,6 +556,21 @@ mod tests {
     fn parse(argv: &[&str]) -> ServerArgs {
         match Cli::parse_from(argv).command {
             Command::Web(args) => args,
+        }
+    }
+
+    /// An app of one table and whatever views a test hands it.
+    struct WithViews(Vec<&'static dyn View>);
+
+    impl App for WithViews {
+        fn name(&self) -> &str {
+            "WithViews"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&crate::fixture::Books]
+        }
+        fn views(&self) -> Vec<&dyn View> {
+            self.0.clone()
         }
     }
 
@@ -541,6 +644,28 @@ mod tests {
     }
 
     #[test]
+    fn url_opens_the_first_table_when_the_app_declares_no_front_page() {
+        // Named rather than left bare, because a repository serving a bundle
+        // of its own may read `?table=` and know nothing of front pages.
+        struct Plainly(crate::fixture::Books);
+        impl App for Plainly {
+            fn name(&self) -> &str {
+                "Plainly"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&self.0]
+            }
+        }
+
+        let server = Server::new(Plainly(crate::fixture::Books));
+        let args = parse(&["library", "web"]);
+        assert_eq!(
+            server.url(&args, server.port(&args)),
+            "http://127.0.0.1:8787/?table=books"
+        );
+    }
+
+    #[test]
     fn url_names_the_table_and_port() {
         let server = Server::new(Library::new());
         let args = parse(&["library", "web", "genres", "--port", "8788"]);
@@ -551,12 +676,24 @@ mod tests {
     }
 
     #[test]
-    fn url_falls_back_to_the_first_table() {
+    fn url_names_nothing_when_nothing_was_named() {
+        // The app's front page decides what a bare address opens, and the
+        // browser resolves it, so the launcher does not have to know.
         let server = Server::new(Library::new());
         let args = parse(&["library", "web"]);
         assert_eq!(
             server.url(&args, server.port(&args)),
-            "http://127.0.0.1:8787/?table=books"
+            "http://127.0.0.1:8787/"
+        );
+    }
+
+    #[test]
+    fn url_names_a_view_the_app_serves_as_a_view() {
+        let server = Server::new(Library::new());
+        let args = parse(&["library", "web", "on-loan"]);
+        assert_eq!(
+            server.url(&args, server.port(&args)),
+            "http://127.0.0.1:8787/?view=on-loan"
         );
     }
 
@@ -663,6 +800,165 @@ mod tests {
     #[should_panic(expected = "reserved name")]
     fn a_table_may_not_take_a_reserved_name() {
         let _ = Server::new(Clashing::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "reserved name")]
+    fn a_view_may_not_take_a_reserved_name() {
+        struct Reserved;
+        impl ViewLogic for Reserved {
+            fn name(&self) -> &'static str {
+                "health"
+            }
+            fn title(&self) -> &'static str {
+                "Health"
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+        let _ = Server::new(WithViews(vec![&Reserved]));
+    }
+
+    #[test]
+    #[should_panic(expected = "same name as a table")]
+    fn a_view_may_not_take_a_tables_name() {
+        struct Books;
+        impl ViewLogic for Books {
+            fn name(&self) -> &'static str {
+                "books"
+            }
+            fn title(&self) -> &'static str {
+                "Books"
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+        let _ = Server::new(WithViews(vec![&Books]));
+    }
+
+    #[test]
+    #[should_panic(expected = "two views are named")]
+    fn two_views_may_not_share_a_name() {
+        let _ = Server::new(WithViews(vec![
+            &crate::fixture::Shelf,
+            &crate::fixture::Shelf,
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "front page names the view")]
+    fn the_front_page_may_not_name_a_view_the_app_does_not_serve() {
+        struct Missing;
+        impl App for Missing {
+            fn name(&self) -> &str {
+                "Missing"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&crate::fixture::Books]
+            }
+            fn front(&self) -> Front {
+                Front::View("nowhere")
+            }
+        }
+        let _ = Server::new(Missing);
+    }
+
+    #[test]
+    #[should_panic(expected = "front page names the table")]
+    fn the_front_page_may_not_name_a_table_the_app_does_not_serve() {
+        struct Missing;
+        impl App for Missing {
+            fn name(&self) -> &str {
+                "Missing"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&crate::fixture::Books]
+            }
+            fn front(&self) -> Front {
+                Front::Table("nowhere")
+            }
+        }
+        let _ = Server::new(Missing);
+    }
+
+    #[test]
+    #[should_panic(expected = "the address uses that word")]
+    fn a_parameter_may_not_be_keyed_for_the_address_itself() {
+        struct Hijack;
+        impl ViewLogic for Hijack {
+            fn name(&self) -> &'static str {
+                "hijack"
+            }
+            fn title(&self) -> &'static str {
+                "Hijack"
+            }
+            fn params(&self, _ctx: &Context, _asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+                Ok(vec![Param::string("view", "View")])
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+        let _ = Server::new(WithViews(vec![&Hijack]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the address uses that word")]
+    fn a_parameter_may_not_be_keyed_for_a_table_either() {
+        struct Hijack;
+        impl ViewLogic for Hijack {
+            fn name(&self) -> &'static str {
+                "hijack"
+            }
+            fn title(&self) -> &'static str {
+                "Hijack"
+            }
+            fn params(&self, _ctx: &Context, _asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+                Ok(vec![Param::select("table", "Table", ["books"])])
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+        let _ = Server::new(WithViews(vec![&Hijack]));
+    }
+
+    #[test]
+    #[should_panic(expected = "takes letters, digits")]
+    fn a_view_name_may_not_carry_a_character_an_address_reserves() {
+        struct Spaced;
+        impl ViewLogic for Spaced {
+            fn name(&self) -> &'static str {
+                "on loan"
+            }
+            fn title(&self) -> &'static str {
+                "On loan"
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+        let _ = Server::new(WithViews(vec![&Spaced]));
+    }
+
+    #[test]
+    fn a_name_is_made_of_what_an_address_carries_unchanged() {
+        assert_eq!(reserved_url_character("on-loan"), None);
+        assert_eq!(reserved_url_character("books_2.0~a"), None);
+        assert_eq!(reserved_url_character("on loan"), Some(' '));
+        assert_eq!(reserved_url_character("on/loan"), Some('/'));
+        assert_eq!(reserved_url_character("what?"), Some('?'));
+        assert_eq!(reserved_url_character("a&b"), Some('&'));
+        assert_eq!(reserved_url_character("café"), Some('é'));
+    }
+
+    #[test]
+    fn an_app_that_serves_views_is_built_like_any_other() {
+        let server = Server::new(Library::new());
+        assert_eq!(server.app.views().len(), 2);
+        assert_eq!(server.app.front(), Front::View("on-loan"));
     }
 
     #[test]

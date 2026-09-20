@@ -195,6 +195,11 @@ export function TableEditor({ table, pending }: Props) {
           lastSaved.current !== null && rowsKeyRef.current !== lastSaved.current,
         ),
     };
+    // A page that is not this editor has nothing pending, and leaving this
+    // one's flush behind would have the shell wait on an editor that is gone.
+    return () => {
+      pending.current = { flush: async () => {}, unsaved: () => false };
+    };
   }, [flush, pending]);
 
   // Closing the page mid-edit throws the edit away, so say so first.

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`table-editor` is a loopback HTTP server and an embedded browser bundle for editing a repository's `Data/*.jsonl` tables. A consuming repository implements `TableLogic` once per table and `App` once for the collection.
+`table-editor` is a loopback HTTP server and an embedded browser bundle for a repository's `Data/*.jsonl` tables: editors for writing them, and read-only views for reading across them. A consuming repository implements `TableLogic` once per table, `ViewLogic` once per view, and `App` once for the collection.
 
 @README.md is the reference for the traits, the API, the schema, and the launch behaviour. Do not restate any of it here; correct it there.
 
@@ -21,7 +21,7 @@ Run from the repository root.
 - `bun run --cwd Web check` — type-check the bundle
 - `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
 - `./Deploy.ps1` — install and build the bundle in one step
-- `cargo run --example library -- web --api-only` — the example consumer's API on 8788, for Vite to proxy
+- `cargo run --example library -- web --api-only` — the example consumer's API on 8791, for Vite to proxy
 
 CI runs the Rust gates on Linux and the clippy and test gates on Windows, which is where the editor is used, and the web gates on Linux.
 
