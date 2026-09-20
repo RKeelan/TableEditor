@@ -12,6 +12,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # No bun here, deliberately: a checkout has no assets/index.html, the build
+  # script embeds the placeholder, and everything Rust still has to pass. That
+  # is what keeps a Rust contributor from needing a JavaScript toolchain.
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -65,25 +68,35 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      - name: Test
-        run: bun test
-
-      # Type-checks and then builds, writing ../assets/index.html. What that
-      # page must be is asserted by the tests above, which read the committed
-      # one, and by the crate's own test on what it embeds.
+      # Before the tests, because one of them reads the built page: the page is
+      # not in the repository, so there is nothing to read until it is built.
       - name: Build
         run: bun run build
 
-      # The committed page is what consumers get, so it has to be the page
-      # these sources build. Vite is pinned and so is bun, which is what makes
-      # this comparable at all.
-      - name: The committed bundle is what the sources build
-        run: |
-          if ! git diff --quiet -- ../assets/index.html; then
-            echo "::error::assets/index.html is not what Web/ builds. Run ./Deploy.ps1 and commit the result."
-            git diff --stat -- ../assets/index.html
-            exit 1
-          fi
+      - name: Test
+        run: bun test
+
+  # A release is this job with the publish switch thrown, so the path that
+  # uploads is the path that runs on every change. It builds the bundle,
+  # packages the crate, checks that the page inside the package is the built
+  # editor rather than the placeholder, and dry-runs the publish.
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Release dry run
+        shell: pwsh
+        run: ./Release.ps1
 
   # Process spawning, browser discovery, and the detached worker are all
   # platform-specific, and Windows is where the editor is used.

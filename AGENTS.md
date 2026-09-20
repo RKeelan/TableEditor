@@ -21,9 +21,10 @@ Run from the repository root.
 - `bun run --cwd Web check` — type-check the bundle
 - `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
 - `./Deploy.ps1` — install and build the bundle in one step
+- `./Release.ps1` — build, package, check the packaged page, and dry-run the publish (CI gate)
 - `cargo run --example library -- web --api-only` — the example consumer's API on 8791, for Vite to proxy
 
-CI runs the Rust gates on Linux and the clippy and test gates on Windows, which is where the editor is used, and the web gates on Linux.
+CI runs the Rust gates on Linux and the clippy and test gates on Windows, which is where the editor is used, the web gates on Linux, and the release dry run on Linux. The Rust jobs install no bun and build no bundle, so they prove the crate builds on a checkout that has never run it.
 
 The default `server` feature carries the editor; without it the crate is the JSONL codec and the error types. Anything added to a gated module, or to the public interface, has to hold up in both configurations, which is why both are gates.
 
@@ -35,18 +36,22 @@ The page must ask nothing of the network. A font, a script, or an image from any
 
 All dependencies are pinned to exact versions (for example, `anyhow = "=1.0.104"`). Do not use version ranges (`^`, `~`, `>=`, bare `"1"`). `Cargo.lock` is committed. Dependabot opens PRs for upgrades.
 
-Consumers depend on the crate by git revision, matching that policy:
+Consumers depend on the published crate by exact version, matching that policy:
 
 ```toml
-table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha>" }
+table-editor = "=0.1.0"
 ```
 
-For local work spanning this repository and a consumer, put a `[patch]` stanza pointing the git URL at a sibling checkout in the consumer's `.cargo/config.toml`, which is gitignored because CI has no sibling checkout to point at.
+For local work spanning this repository and a consumer, put a `[patch.crates-io]` stanza pointing at a sibling checkout in the consumer's `.cargo/config.toml`, which is gitignored because CI has no sibling checkout to point at.
 
 The bundle's dependencies are pinned exactly too, in `Web/package.json`, and `Web/bun.lock` is committed.
 
-## The committed bundle
+## The bundle
 
-`assets/index.html` is a build artefact, and it is committed. A git dependency gives the consumer whatever is in the checkout, so a bundle that is built but not committed reaches a consumer as a stub. It is built from `Web/` by `./Deploy.ps1`, which is the only thing that changes it: never hand-edit it, and commit what the build wrote in the same change as the sources it came from.
+`assets/index.html` is a build artefact. It is not in the repository, it is gitignored, and `./Deploy.ps1` is the only thing that writes it: never hand-edit it. What ships it to a consumer is the published crate, which carries the page built at release.
 
-A change to `Web/` that is not rebuilt reaches consumers as nothing at all, since they read the committed page and never the sources. CI rebuilds and compares, so a forgotten rebuild fails there rather than quietly.
+`build.rs` embeds whichever page is there: the built bundle, or `assets/placeholder.html` with a `cargo:warning` where the bundle is absent. So a checkout with no bun passes every Rust gate, and a Rust change needs no JavaScript toolchain. Nothing that is published may carry the placeholder, which `./Release.ps1` enforces by reading the page out of the package.
+
+## Releasing
+
+`./Release.ps1` builds the bundle, packages, checks the packaged page, and dry-runs the publish; CI runs it on every change. `./Release.ps1 -Publish` also uploads, refusing on a dirty tree or a placeholder page. A published version is permanent: yankable, never replaceable. See the README's Releasing section for the full procedure, and its Versions section for what a bump means.

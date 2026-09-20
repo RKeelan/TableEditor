@@ -2,12 +2,18 @@ import { describe, expect, test } from "bun:test";
 
 // The page is served over loopback to a repository's private tables. It must
 // therefore ask nothing of the network: no fonts, no analytics, no CDN, and
-// nothing that would tell a third party a table was opened. This reads what is
-// committed, so a bundle built with such a reference in it fails here rather
-// than in someone's browser.
-const bundle = await Bun.file(
-  new URL("../../assets/index.html", import.meta.url),
-).text();
+// nothing that would tell a third party a table was opened. This reads what
+// `bun run build` wrote, so a bundle built with such a reference in it fails
+// here rather than in someone's browser.
+//
+// The page is not in the repository. It is a build artefact: the crate embeds
+// whatever is there, a release publishes it inside the crate, and a checkout
+// that has never run the build has no page at all. So the build runs first,
+// and a missing page is one clear failure rather than a file that will not
+// load.
+const file = Bun.file(new URL("../../assets/index.html", import.meta.url));
+const built = await file.exists();
+const bundle = built ? await file.text() : "";
 
 /** URLs a self-contained page may name, none of which it fetches: XML
  *  namespaces, which are identifiers; the address React prints in a crash; and
@@ -22,7 +28,17 @@ const ALLOWED = [
   "https://tailwindcss.com",
 ];
 
-describe("the committed bundle", () => {
+describe("the built bundle", () => {
+  test("has been built", () => {
+    if (!built) {
+      throw new Error(
+        "assets/index.html is missing. Run `bun run build` in Web/, or ./Deploy.ps1 from the repository root, and try again.",
+      );
+    }
+  });
+});
+
+describe.skipIf(!built)("the built bundle", () => {
   test("is the built editor and not the page the dev server serves", () => {
     expect(bundle.startsWith("<!doctype html>")).toBe(true);
     expect(bundle).toContain('<div id="root">');
@@ -32,9 +48,10 @@ describe("the committed bundle", () => {
 
   test("carries no carriage return, so every platform builds the same page", () => {
     // Vite copies the body of index.html through as it finds it, so a source
-    // checked out with CRLF puts a carriage return in the page and the
-    // committed page stops matching the one CI builds. The sources are pinned
-    // to LF in .gitattributes; this is what notices when they are not.
+    // checked out with CRLF puts a carriage return in the page, and the page a
+    // release publishes then depends on whose machine built it. The sources
+    // are pinned to LF in .gitattributes; this is what notices when they are
+    // not.
     expect(bundle.includes("\r")).toBe(false);
   });
 

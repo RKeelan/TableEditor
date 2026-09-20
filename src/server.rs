@@ -14,7 +14,17 @@ use crate::routes;
 use crate::table::{App, Front};
 
 /// The bundle served when the repository does not supply its own.
-const DEFAULT_INDEX_HTML: &str = include_str!("../assets/index.html");
+///
+/// The build script puts it here, from `assets/index.html` where that has been
+/// built and from `assets/placeholder.html` where it has not, so that the crate
+/// compiles in a checkout that has never run bun.
+const DEFAULT_INDEX_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.html"));
+
+/// Which of the two the build script found: `built` or `placeholder`. Only the
+/// crate's own test reads it; what a consumer is served is the page itself, and
+/// the placeholder says what it is.
+#[cfg(test)]
+const BUNDLE_KIND: &str = env!("TABLE_EDITOR_BUNDLE");
 
 /// The marker set on the detached worker process so it serves rather than
 /// re-spawning itself.
@@ -992,18 +1002,33 @@ mod tests {
         assert_send(&server);
     }
 
+    /// Whatever the build script found, the page is held to the standard for
+    /// what it claims to be: a checkout that has never run bun is a legitimate
+    /// state and passes here, and a checkout that has built the bundle is held
+    /// to everything a released page must be.
     #[test]
-    fn the_embedded_bundle_is_the_built_editor() {
+    fn the_embedded_page_is_what_it_says_it_is() {
         assert!(DEFAULT_INDEX_HTML.starts_with("<!doctype html>"));
-        // The bundle is one self-contained page: the element the editor mounts
-        // on, and its script inlined rather than fetched.
-        assert!(DEFAULT_INDEX_HTML.contains(r#"<div id="root">"#));
-        assert!(!DEFAULT_INDEX_HTML.contains(r#"src="/src/main.tsx""#));
-        assert!(
-            DEFAULT_INDEX_HTML.len() > 50_000,
-            "the bundle is {} bytes, which is too small to be the built editor",
-            DEFAULT_INDEX_HTML.len()
-        );
+        match BUNDLE_KIND {
+            "built" => {
+                // One self-contained page: the element the editor mounts on,
+                // and its script inlined rather than fetched.
+                assert!(DEFAULT_INDEX_HTML.contains(r#"<div id="root">"#));
+                assert!(!DEFAULT_INDEX_HTML.contains(r#"src="/src/main.tsx""#));
+                assert!(
+                    DEFAULT_INDEX_HTML.len() > 50_000,
+                    "the bundle is {} bytes, which is too small to be the built editor",
+                    DEFAULT_INDEX_HTML.len()
+                );
+            }
+            "placeholder" => {
+                // It says which file is missing, since that is the whole of
+                // what it is for.
+                assert!(DEFAULT_INDEX_HTML.contains("assets/index.html"));
+                assert!(!DEFAULT_INDEX_HTML.contains(r#"<div id="root">"#));
+            }
+            other => panic!("the build script embedded a page of unknown kind {other:?}"),
+        }
     }
 
     #[test]

@@ -5,25 +5,40 @@
 
 `table-editor` is a loopback HTTP server and an embedded browser bundle for editing a repository's `Data/*.jsonl` tables. A repository describes its own tables in Rust—one `TableLogic` implementation per table and one `App` implementation for the collection—and gets the server, the routes, the file I/O, and the UI from the crate.
 
-The browser holds no per-repository knowledge. Every table sends a column schema with its rows, and the editor renders whatever that schema describes, so a new table needs Rust and no JavaScript. The bundle's sources are in `Web/` and the page it builds is committed at `assets/index.html`. The crate is used by the author's private writing repositories, each of which serves its own tables under its own name and port.
+The browser holds no per-repository knowledge. Every table sends a column schema with its rows, and the editor renders whatever that schema describes, so a new table needs Rust and no JavaScript. The bundle's sources are in `Web/`, and the page they build ships inside the published crate, so a consumer needs Rust and nothing else. The crate is used by the author's private writing repositories, each of which serves its own tables under its own name and port.
 
 ## Depending on the crate
 
 ```toml
-table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha>" }
+table-editor = "=0.1.0"
 ```
 
-A revision rather than a branch, matching the exact-version policy the crate's own dependencies follow.
+An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
 
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha>", default-features = false }
+table-editor = { version = "=0.1.0", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
 
 `windows-sys` is a dependency on Windows alone, under the same feature, and only for the two calls that stop a detached worker inheriting the standard handles of the command that launched it. Windows hands a child every inheritable handle its parent holds whatever the child's own handles are set to, so without those calls a caller piping `app web` into anything would wait on a pipe the server holds open for as long as it runs. It is taken with the two feature flags those calls need and nothing else.
+
+The minimum supported Rust version is 1.88, which is where `if let` chains landed. It is established by building on it rather than by guessing, and a release that needs a later compiler says so in `rust-version`.
+
+### Work spanning this repository and a consumer
+
+To try a change that is not released yet, point the registry name at a commit or a checkout from the consumer's own manifest:
+
+```toml
+[patch.crates-io]
+table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha>" }
+# or, for a sibling checkout
+table-editor = { path = "../TableEditor" }
+```
+
+The consumer's `table-editor = "=0.1.0"` stays as it is; the patch decides what that resolves to. A patched checkout serves whatever bundle that checkout has built, so run `./Deploy.ps1` there first or the editor's page is the placeholder. Keep the stanza in a gitignored `.cargo/config.toml` where it should not reach the consumer's history.
 
 ## A consumer
 
@@ -377,11 +392,13 @@ This speaks plain HTTP to a local server: no TLS, no redirects, no chunked decod
 
 ## The browser bundle
 
-`Web/` holds the bundle's sources: React and Tailwind, built by Vite into one self-contained page with the script and the styles inlined. `assets/index.html` is what that build writes, and it is committed. A git dependency gives the consumer whatever is in the checkout, so a bundle that is built but not committed to that path would reach a Rust-only consumer as a stub. The crate reads it with `include_str!`; there is no `build.rs`.
+`Web/` holds the bundle's sources: React and Tailwind, built by Vite into one self-contained page with the script and the styles inlined. `assets/index.html` is what that build writes. It is a build artefact, it is not in the repository, and the build is the only thing that writes it: run `./Deploy.ps1` from the repository root, which installs the dependencies and builds. Never hand-edit it.
 
-`assets/index.html` is a build artefact and the build is the only thing that changes it. Run `./Deploy.ps1` from the repository root, which installs the dependencies and builds, and commit what it wrote alongside the sources it came from. Never hand-edit it.
+The published crate carries that page, built at release. A consumer therefore needs no bun, no Node, and no network: `cargo build` gives them the editor.
 
-CI rebuilds the bundle and fails if the committed page is not what these sources build, so a change to `Web/` that was never rebuilt cannot reach a consumer as nothing at all. Both bun and every dependency are pinned, which is what makes that comparison meaningful.
+A checkout, though, may not have the page at all, and Rust work must not wait on a JavaScript toolchain. So `build.rs` copies whichever page is there into `OUT_DIR` and the crate includes it from there: the built bundle where there is one, and `assets/placeholder.html`—a page that says the bundle has not been built and how to build it—where there is not. The placeholder path prints a `cargo:warning`, so it is never silent. `cargo check`, clippy and the whole test suite pass either way, and the crate's own test holds the embedded page to the standard for whichever of the two it is.
+
+A release never ships the placeholder. `./Release.ps1` builds the bundle, packages the crate, and reads the page out of the package that is about to be uploaded, refusing to go on unless it is the built editor: a doctype, the element the editor mounts on, no dev-server script tag, over 50 KB, no carriage return, and nothing fetched from the network. CI runs that same script on every change, without the switch that uploads, so the release path is exercised continuously rather than once a year.
 
 ## Developing the bundle
 
@@ -394,9 +411,31 @@ cargo run --example library -- web --api-only    # the API on 127.0.0.1:8791
 bun run --cwd Web dev                            # Vite on 5173, proxying /api to 8791
 ```
 
-Vite serves the UI with hot reloading and proxies `/api` to the example, so the editor is exercised against a real server. `cargo run --example library -- web` instead serves the committed bundle and opens a browser on it, which is how to check what a consumer will actually get; `cargo run --example library -- web stop` shuts that one down. The crate embeds the bundle with `include_str!`, so a server started that way serves whatever the binary was built from: rebuild the bundle and then the example before looking at a change through it.
+Vite serves the UI with hot reloading and proxies `/api` to the example, so the editor is exercised against a real server. `cargo run --example library -- web` instead serves the embedded page and opens a browser on it, which is how to check what a consumer will actually get; `cargo run --example library -- web stop` shuts that one down. The page is embedded at build time, so a server started that way serves whatever the binary was built from: build the bundle, then the example, before looking at a change through it. In a checkout that has never built the bundle, what it serves is the placeholder, which says so.
 
 The example writes to its own `Data/*.jsonl`, so edits made while developing show up as changes to those files. They are committed, and reverting them is how to get back to the data the example ships with.
+
+## Versions
+
+The crate is published to [crates.io](https://crates.io/crates/table-editor). Versions are semver, with one thing worth saying plainly: the JSON the server sends—the column schema, the view payload, the write format—is a contract between the crate and the page it ships, and the two always ship together. A consumer cannot mix a schema from one version with a page from another, so a change to that JSON is not a breaking change for a consumer the way a change to the Rust API is. What breaks a consumer is the Rust they compile against: the traits, their method signatures, the builder, the types re-exported from `lib.rs`.
+
+So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release that changes a trait, removes a method, or changes what an existing method means bumps the minor version. A release that adds a defaulted trait method, a builder, a column type, or a schema field bumps the patch version, as does one that only changes the page. After 1.0 the ordinary rules apply, with the wire format still understood as internal to the pair.
+
+`0.1.0` is the first published version.
+
+A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
+
+## Releasing
+
+Run from the repository root, on `main`, with a clean tree:
+
+- Bump `version` in `Cargo.toml`, and update the version in this README's dependency examples. Commit that on its own.
+- `./Release.ps1` — builds the bundle, packages, checks that the packaged page is the built editor, and dry-runs the publish. It changes nothing outside `target/`.
+- Read what it packaged: `cargo package --list`, and the size it reports. Two warnings about `tests/api.rs` and `tests/stop.rs` not being included are expected; the integration tests are not published.
+- `./Release.ps1 -Publish` — the same, and then uploads. It refuses on a dirty tree and refuses if the packaged page is the placeholder. This step is irreversible.
+- `git tag v<version> && git push origin v<version>`.
+
+Publishing needs a crates.io token: create one at [crates.io/settings/tokens](https://crates.io/settings/tokens) with the publish scope, then `cargo login`. The token is stored by cargo, not by this repository.
 
 ## Commands
 
@@ -413,7 +452,9 @@ The example writes to its own `Data/*.jsonl`, so edits made while developing sho
 - `bun run --cwd Web check` — type-check the bundle
 - `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
 - `./Deploy.ps1` — install and build in one step
+- `./Release.ps1` — build, package, check the packaged page, and dry-run the publish (CI gate)
+- `./Release.ps1 -Publish` — the same, and then publish to crates.io
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/RKeelan/TableEditor/blob/main/LICENSE).
