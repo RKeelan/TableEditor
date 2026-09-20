@@ -42,37 +42,44 @@ function Invoke-Step {
 }
 
 # A publish is permanent, so it happens only from a tree that is exactly what
-# the tag will say it is. Said here as well as left to cargo, so that it is
-# said before anything is built, and in words about this repository.
-#
-# A dry run has no such constraint, and passes --allow-dirty so that it can be
-# run over work in progress; that is also what makes it a useful CI job.
-#
-# Typed, because PowerShell unrolls a one-element array out of an `if` into the
-# string inside it, and splatting a string is not splatting a list.
-[string[]]$allowDirty = if ($Publish) { @() } else { @("--allow-dirty") }
-if ($Publish) {
+# the tag will say it is. This script checks that itself, before anything is
+# built and again after the build, because cargo's own check cannot serve: the
+# built page is ignored by git and included in the package, which cargo counts
+# as an uncommitted change, so cargo is always told --allow-dirty. `git status`
+# does not list ignored files, so the built page does not make the tree dirty
+# here. A dry run skips the check, so that it can run over work in progress;
+# that is also what makes it a useful CI job.
+function Assert-CleanTree {
+    param([string]$When)
     $dirty = git status --porcelain
     if ($LASTEXITCODE -ne 0) { throw "git status failed." }
     if ($dirty) {
         Write-Host $dirty
-        throw "The working tree has uncommitted changes. Commit or stash them before publishing."
+        throw "The working tree has uncommitted changes $When. Commit or stash them before publishing."
     }
 }
+if ($Publish) { Assert-CleanTree -When "before the build" }
 
 Write-Host "› Building the browser bundle" -ForegroundColor Cyan
 ./Deploy.ps1
+if ($Publish) { Assert-CleanTree -When "after the build" }
 
 $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
 Write-Host "Packaging table-editor $version" -ForegroundColor Cyan
 
-Invoke-Step "Packaging" { cargo package @allowDirty }
+Invoke-Step "Packaging" { cargo package --allow-dirty }
 
 $crate = Join-Path $PSScriptRoot "target/package/table-editor-$version.crate"
 if (-not (Test-Path -LiteralPath $crate)) { throw "cargo package wrote no $crate." }
 
 $entry = "table-editor-$version/assets/index.html"
-if ((tar -tzf $crate) -notcontains $entry) { throw "The package carries no $entry." }
+# The archive is named by a path relative to this directory, with forward
+# slashes: GNU tar, which Git for Windows puts ahead of the system tar on many
+# machines, reads a drive letter and colon as a remote host.
+Push-Location $PSScriptRoot
+try { $listing = tar -tzf "target/package/table-editor-$version.crate" } finally { Pop-Location }
+if ($LASTEXITCODE -ne 0) { throw "tar could not read $crate." }
+if ($listing -notcontains $entry) { throw "The package carries no $entry." }
 
 # What every consumer of this version is served, for as long as the version
 # exists. It is read from the directory cargo unpacked the tarball into and
@@ -100,7 +107,7 @@ if ($failures) {
 }
 Write-Host "  the packaged page is the built editor ($([math]::Round($bytes.Length / 1KB)) KB)" -ForegroundColor Green
 
-Invoke-Step "Dry run" { cargo publish --dry-run @allowDirty }
+Invoke-Step "Dry run" { cargo publish --dry-run --allow-dirty }
 
 if (-not $Publish) {
     Write-Host "Dry run only. Re-run with -Publish to upload $version to crates.io." -ForegroundColor Green
@@ -108,5 +115,5 @@ if (-not $Publish) {
 }
 
 Write-Host "Publishing table-editor $version to crates.io. This cannot be undone." -ForegroundColor Yellow
-Invoke-Step "Publishing" { cargo publish }
+Invoke-Step "Publishing" { cargo publish --allow-dirty }
 Write-Host "Published $version. Tag it: git tag v$version && git push origin v$version" -ForegroundColor Green
