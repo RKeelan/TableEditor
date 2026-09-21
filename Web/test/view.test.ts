@@ -2,16 +2,25 @@ import { describe, expect, test } from "bun:test";
 import type { AppPayload } from "../src/lib/api";
 import type { Column, Row } from "../src/lib/schema";
 import {
+  type CardGroup,
+  type Detail,
+  type FormField,
   type ViewPayload,
   type ViewSection,
+  actionArgs,
   announce,
-  cardFor,
+  bodyOf,
   controlWidthOfColumn,
   correctedHref,
+  formValues,
   hrefFor,
   isEmptySection,
+  isQuiet,
+  linkHref,
   parseTarget,
+  rowCardFor,
   safeHref,
+  switcherViews,
   tableHref,
   viewCellText,
   viewHref,
@@ -195,7 +204,7 @@ describe("a view's cells", () => {
   });
 });
 
-describe("a row as a card", () => {
+describe("a row as a card at a narrow width", () => {
   test("is a title from the first column and a line for each of the rest", () => {
     const row: Row = {
       title: "A Field Guide to Moss",
@@ -203,7 +212,7 @@ describe("a row as a card", () => {
       due: "2026-09-30",
       days: 12,
     };
-    expect(cardFor([title, due, days], row)).toEqual({
+    expect(rowCardFor([title, due, days], row)).toEqual({
       title: "A Field Guide to Moss",
       href: "https://example.invalid/moss",
       lines: [
@@ -214,13 +223,13 @@ describe("a row as a card", () => {
   });
 
   test("leaves out a line with nothing in it", () => {
-    const card = cardFor([title, due, days], { title: "Moss", days: 3 });
+    const card = rowCardFor([title, due, days], { title: "Moss", days: 3 });
     expect(card.lines).toEqual([{ label: "Days", text: "3" }]);
     expect(card.href).toBeNull();
   });
 
   test("copes with a section that names no columns", () => {
-    expect(cardFor([], { title: "Moss" })).toEqual({
+    expect(rowCardFor([], { title: "Moss" })).toEqual({
       title: "",
       href: null,
       lines: [],
@@ -272,12 +281,99 @@ describe("correcting the address", () => {
   });
 });
 
+const bare: ViewPayload = {
+  view: "on-loan",
+  title: "On loan",
+  params: [],
+  args: {},
+  sections: [],
+};
+
+const group = (heading: string, n: number): CardGroup => ({
+  heading,
+  cards: Array.from({ length: n }, (_, i) => ({ title: `Book ${i}` })),
+});
+
+describe("which body a page arrived with", () => {
+  test("is the detail, the cards, or the rows, in that order", () => {
+    const detail: Detail = { title: "Central", sections: [] };
+    expect(bodyOf(bare)).toBe("rows");
+    expect(bodyOf({ ...bare, groups: [group("Open", 2)] })).toBe("cards");
+    expect(bodyOf({ ...bare, detail })).toBe("detail");
+    // The server refuses a page that is two, so the order only decides what a
+    // page built by something else would show.
+    expect(bodyOf({ ...bare, detail, groups: [group("Open", 2)] })).toBe(
+      "detail",
+    );
+  });
+});
+
+describe("a link to another view", () => {
+  test("is that view's address, asked the question it carries", () => {
+    expect(linkHref({ view: "branch", args: { branch: "cen" } })).toBe(
+      "?branch=cen&view=branch",
+    );
+    expect(linkHref({ view: "branches" })).toBe("?view=branches");
+  });
+});
+
+describe("a card that reads quieter", () => {
+  test("is one whose every status is neutral", () => {
+    expect(isQuiet([{ word: "Shut", tone: "neutral" }])).toBe(true);
+    expect(
+      isQuiet([
+        { word: "Shut", tone: "neutral" },
+        { word: "Open", tone: "good" },
+      ]),
+    ).toBe(false);
+    // Saying nothing about how a thing stands is not saying it stands quietly.
+    expect(isQuiet([])).toBe(false);
+    expect(isQuiet(undefined)).toBe(false);
+  });
+});
+
+describe("a form before anything is typed", () => {
+  const fields: FormField[] = [
+    { key: "borrower", label: "Borrower", type: "text" },
+    { key: "days", label: "Days", type: "number", default: "21" },
+    { key: "from", label: "From", type: "date" },
+    {
+      key: "condition",
+      label: "Condition",
+      type: "one-of",
+      options: [{ value: "As new" }, { value: "Worn" }],
+    },
+  ];
+
+  test("carries every field, with its default or an empty answer", () => {
+    // A one-of with no default starts on its first option: a segmented control
+    // has no way to show none chosen.
+    expect(formValues(fields)).toEqual({
+      borrower: "",
+      days: "21",
+      from: "",
+      condition: "As new",
+    });
+    expect(formValues([])).toEqual({});
+  });
+
+  test("is asked with the page's question and the row's own answer", () => {
+    expect(actionArgs({ branch: "cen" }, { title: "Moss" })).toEqual({
+      branch: "cen",
+      title: "Moss",
+    });
+    expect(actionArgs({ branch: "cen" }, undefined)).toEqual({ branch: "cen" });
+    // The form was built for one row, so where both name a key it is the more
+    // particular answer.
+    expect(actionArgs({ title: "Nine Doors" }, { title: "Moss" })).toEqual({
+      title: "Moss",
+    });
+  });
+});
+
 describe("what the page says when it cannot be seen", () => {
   const page = (sections: ViewSection[]): ViewPayload => ({
-    view: "on-loan",
-    title: "On loan",
-    params: [],
-    args: {},
+    ...bare,
     sections,
   });
   const section = (heading: string, n: number): ViewSection => ({
@@ -297,6 +393,18 @@ describe("what the page says when it cannot be seen", () => {
       "On loan: 0 rows.",
     );
     expect(announce(page([]))).toBe("On loan: nothing to show.");
+  });
+
+  test("counts the cards of each group by name", () => {
+    expect(
+      announce({ ...bare, groups: [group("Open", 2), group("Shut", 1)] }),
+    ).toBe("On loan: Open, 2 cards; Shut, 1 card.");
+  });
+
+  test("names the thing a page about one thing is about", () => {
+    expect(
+      announce({ ...bare, detail: { title: "Central", sections: [] } }),
+    ).toBe("On loan: Central.");
   });
 });
 
@@ -341,6 +449,33 @@ describe("what a bare address opens", () => {
   test("is nothing at all for an app that serves nothing", () => {
     const bare: AppPayload = { name: "Bare", tables: [] };
     expect(resolveTarget(bare, { kind: "none" })).toEqual({ kind: "none" });
+  });
+});
+
+describe("what the top bar offers", () => {
+  test("is every view but those that asked to be left out", () => {
+    const views = [
+      { view: "all-branches", title: "All branches" },
+      { view: "branch", title: "Branch", in_switcher: false },
+      { view: "on-loan", title: "On loan", in_switcher: true },
+    ];
+    expect(switcherViews(views).map((v) => v.view)).toEqual([
+      "all-branches",
+      "on-loan",
+    ]);
+    expect(switcherViews([])).toEqual([]);
+  });
+
+  test("leaves a view that is not offered served all the same", () => {
+    // The app payload still names it, so the address reaches it, the shell
+    // titles it, and a breadcrumb back to it reads as its heading.
+    const app: AppPayload = {
+      name: "Library",
+      views: [{ view: "branch", title: "Branch", in_switcher: false }],
+      tables: [],
+    };
+    expect(isServed(app, { kind: "view", name: "branch", args: {} })).toBe(true);
+    expect(switcherViews(app.views ?? [])).toEqual([]);
   });
 });
 

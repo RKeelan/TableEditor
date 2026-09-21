@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.1.0"
+table-editor = "=0.2.0"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.1.0", default-features = false }
+table-editor = { version = "=0.2.0", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -38,7 +38,7 @@ table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha
 table-editor = { path = "../TableEditor" }
 ```
 
-The consumer's `table-editor = "=0.1.0"` stays as it is; the patch decides what that resolves to. A patched checkout serves whatever bundle that checkout has built, so run `./Deploy.ps1` there first or the editor's page is the placeholder. Keep the stanza in a gitignored `.cargo/config.toml` where it should not reach the consumer's history.
+The consumer's `table-editor = "=0.2.0"` stays as it is; the patch decides what that resolves to. A patched checkout serves whatever bundle that checkout has built, so run `./Deploy.ps1` there first or the editor's page is the placeholder. Keep the stanza in a gitignored `.cargo/config.toml` where it should not reach the consumer's history.
 
 ## A consumer
 
@@ -175,12 +175,13 @@ A table's own file must exist before the editor can open the table. The editor e
 
 ```json
 { "name": "Library",
-  "views": [{ "view": "on-loan", "title": "On loan" }],
+  "views": [{ "view": "on-loan", "title": "On loan" },
+            { "view": "branch", "title": "Branch", "in_switcher": false }],
   "tables": [{ "table": "books", "title": "Books" }],
   "front": { "view": "on-loan" } }
 ```
 
-A `subtitle` is included when the app supplies one, and omitted otherwise. So are `views`, for an app that serves none, and `front`, for one that leaves its front page alone—which means the first table. An app of tables alone therefore sends `name`, `subtitle` and `tables`, and a bundle that knows nothing of views has everything it needs.
+A `subtitle` is included when the app supplies one, and omitted otherwise. So are `views`, for an app that serves none, and `front`, for one that leaves its front page alone—which means the first table. An app of tables alone therefore sends `name`, `subtitle` and `tables`, and a bundle that knows nothing of views has everything it needs. A view carries `in_switcher` only when it is false, since being in the switcher is what a view that says nothing gets.
 
 Three endpoints serve each table:
 
@@ -190,7 +191,7 @@ Three endpoints serve each table:
 
 A validation error is `{ "line": 3, "field": "title", "message": "title is required" }`, where `line` is the row's one-based position in the set being validated and `field` is null for a whole-row check.
 
-A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 405 for a method the endpoint does not take, 404 for a path under `/api/` that is no endpoint, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
+A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 403 and 415 for a write that does not come from a page this server served (below), 404 for a path under `/api/` that is no endpoint, 405 for a method the endpoint does not take, 413 for a body over 16 MiB, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
 
 `GET /api/views/<view>` answers a view, taking its parameters as the query string:
 
@@ -207,7 +208,67 @@ A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializabl
                   "rows": [ { "title": "Nine Doors", "link": "https://…" } ] } ] }
 ```
 
-There is no PUT and no derive: a view is read. A view nobody serves is a 404, and any method but GET on one is a 405. `note` is omitted where a view supplies none, as are a section's `heading` and `note`.
+There is no PUT and no derive on the page itself: a view is read. A view nobody serves is a 404, and any method but GET on one is a 405. `note` is omitted where a view supplies none, as are a section's `heading` and `note`, and a parameter carries `"hidden": true` only when it has no control.
+
+A view answers with one of three bodies. `sections` is the one above and is always present, empty where the page is one of the other two; `groups` and `detail` are present only when the view built them. A view that built two of them is a 500 naming both, since the page draws one.
+
+```json
+{ "groups": [ { "heading": "Open",
+                "cards": [ { "statuses": [{ "word": "Open", "tone": "good" }],
+                             "identifier": "cen",
+                             "title": "Central Lending Library",
+                             "subtitle": "Ada Ferreira, 6 staff",
+                             "rows": [{ "label": "Books here", "value": "4" }],
+                             "sentence": "No opening hours are recorded.",
+                             "link": { "view": "branch",
+                                       "args": { "branch": "cen" } } } ] } ] }
+```
+
+A card carries only what it was given; `title` is the one field always there. `tone` is one of `good`, `warning`, `bad`, `neutral`, and `info`. A `link` names another of this app's views and the arguments to ask it with, rather than an address, because where the app is served from is the page's business.
+
+```json
+{ "detail": {
+    "title": "Central Lending Library",
+    "statuses": [{ "word": "Open", "tone": "good" }],
+    "subtitle": "Ada Ferreira, 6 staff",
+    "back": { "view": "branches" },
+    "sections": [
+      { "heading": "On the shelf", "column": "main", "numbered": true,
+        "note": "Best rated first.",
+        "rows": [ { "title": "Nine Doors", "link": "https://…",
+                    "facts": ["rated 5", "2019"], "notes": ["Two copies."],
+                    "buttons": [
+                      { "label": "Catalogue", "type": "link", "url": "https://…" },
+                      { "label": "Withdraw", "type": "disabled",
+                        "reason": "Not built yet" },
+                      { "label": "Lend it out", "type": "form",
+                        "action": "lend-a-book",
+                        "args": { "title": "Nine Doors" },
+                        "fields": [ { "key": "days", "label": "Days out",
+                                      "type": "number", "default": "21" } ] } ] } ] },
+      { "heading": "When it is open", "column": "side",
+        "collapsed_on_phone": true, "rows": [ … ] } ] } }
+```
+
+`column` is `main` or `side`; `numbered` and `collapsed_on_phone` are written only when true. A button's `type` is `link`, `form`, or `disabled`, and the rest of its keys follow from that. A field's `type` is `text`, `number`, `date`, or `one-of`, and a `one-of` carries `options` in the shape a select's take.
+
+`POST /api/views/<view>/actions/<name>` writes what one of those forms asks for:
+
+```
+POST /api/views/branch/actions/lend-a-book?branch=cen&title=Nine+Doors
+{ "fields": { "borrower": "Ada", "days": "21", "from": "2026-09-21",
+              "condition": "Good" } }
+
+{ "confirmation": "\"Nine Doors\" is out to Ada until 2026-10-12." }
+```
+
+The arguments travel in the address, exactly as a render's do, so the server settles them against the view's parameters the same way and the action is about the same thing the page was; a form's own `args` are added to the page's, since the form was built for one row. The answers travel in the body and are all text, which is what a control on a page produces.
+
+What is posted is checked against the page rather than taken on trust: the server renders the view with those arguments and looks for a button offering that action with exactly the arguments its own form carried. A disabled button offers nothing, and neither does a button built for another row, so neither can be posted to. That refusal is a 404, an unreadable body or a field that is not what it asked to be is a 400 naming the field, and any method but POST is a 405.
+
+Two further rules hold for every endpoint that writes—`PUT /api/<table>`, `POST /api/<table>/derive`, and an action. The body has to be sent as `application/json`, which is a 415 otherwise; and the request has to say it came from a page this server served, which is a 403 otherwise. Together they mean a write comes from the editor's own page: a cross-origin `fetch` carrying that content type is preflighted and never arrives, and the shapes a browser sends without asking first—a form post—can neither claim that type nor hide where they came from.
+
+Where the request came from is read from `Sec-Fetch-Site`, which has to be `same-origin`. That is the browser's own answer, worked out from the address the page was loaded at before anything in between sees the request, so it survives a proxy: Vite serves the bundle at one address and forwards `/api` to the editor, and a request the page makes to itself is `same-origin` all the same. A browser old enough to send no `Sec-Fetch-Site` falls back to `Origin`, compared against the host the request was addressed to. A request with neither is no browser's—`curl`, the launcher's own probes, a repository's scripts—and is held to the content type alone. Neither rule is asked of a read. A body larger than 16 MiB is refused with a 413 rather than read into memory.
 
 `GET /api/health` returns `{"status":"ok","app":"<name>"}` and `POST /api/shutdown` returns `{"status":"stopping"}` and exits. Health names the app so that a launch can tell its own server from another one on the same port. A body of `{"status":"ok"}` with no `app` is read as a table editor built before health bodies carried the name, which `stop` and `--restart` act on but a launch never adopts.
 
@@ -298,7 +359,7 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 
 ## Views
 
-A table is where the writing happens. A view is where the reading happens: a read-only page the server computes and the browser renders, answering a question the tables can only be read to answer. It reuses the column schema, so the browser renders a view with what it already knows and learns nothing about what a row means.
+A table is where the typing happens. A view is where the reading happens: a page the server computes and the browser renders, answering a question the tables can only be read to answer. A view of rows reuses the column schema, so the browser renders it with what it already knows and learns nothing about what a row means.
 
 A repository implements `ViewLogic` once per view:
 
@@ -319,7 +380,7 @@ impl ViewLogic for OnLoan {
 }
 ```
 
-`App::views` lists them, before the tables, and `App::front` says what a bare address opens: `Front::View(name)`, `Front::Table(name)`, or `Front::FirstTable`, which is what an app that says nothing gets. Both have defaults, so an app of tables alone implements neither. A view's name may not be one of the reserved names, may not be a table's, and may not be another view's; a name may hold only letters, digits, `-`, `_`, `.` and `~`, since it is a path segment and anything else would have to be escaped to be linked to; a parameter may not be keyed `view` or `table`, which are how an address says which page it is on; and a front page must name something the app serves. Building a `Server` over any of those panics, as it does for a table's name or file.
+`App::views` lists them, before the tables, and `App::front` says what a bare address opens: `Front::View(name)`, `Front::Table(name)`, or `Front::FirstTable`, which is what an app that says nothing gets. A view whose `in_switcher` is false is served, linked to, opened by name from the command line and titled by the shell exactly as any other, and the top bar simply does not offer it—which is what a page about one thing, reached from the card that says which one, wants: an entry for it would open whichever one its parameters happen to default to. Both have defaults, so an app of tables alone implements neither. A view's name may not be one of the reserved names, may not be a table's, and may not be another view's; a name may hold only letters, digits, `-`, `_`, `.` and `~`, since it is a path segment and anything else would have to be escaped to be linked to; a parameter may not be keyed `view` or `table`, which are how an address says which page it is on; and a front page must name something the app serves. Building a `Server` over any of those panics, as it does for a table's name or file.
 
 `params` and `render` both run on every request, against one `Context`, so a view reading three tables reads each of them once however many of its parts consult them. Parameters are rebuilt each time for the same reason a schema is: a select of the branches is filled from the branches there are now.
 
@@ -333,11 +394,108 @@ A select's answer has to be one of the options it offered. One that is not falls
 
 Sections carry their own columns, so two sections can differ: one listing what is overdue wants a column of how late, and one listing what is merely out does not. Sections that should line up are given the same columns.
 
-A view is read-only in every sense: no editing, no autosave, no undo, no dragging, no sorting, and no filtering. Nothing in the editor's write machinery is reached.
+A view does not edit, autosave, undo, drag, sort, or filter. Nothing in the editor's write machinery is reached; the one thing a view writes is an action, below.
+
+### Cards and detail pages
+
+A view answers with one of three bodies, and `ViewData` is what says which: `section` for a table of rows, `group` for a grid of cards, `detail` for one thing in full. Building two of them is a 500 naming both, because the page draws one.
+
+A card says how one thing stands rather than what the values of its fields are, which is what a grid of columns cannot do:
+
+```rust
+ViewData::new().group(CardGroup::new("Open").cards(branches.iter().map(|branch| {
+    Card::new(branch.name.as_str())
+        .status(Status::new("Open", Tone::Good))
+        .identifier(branch.code.as_str())
+        .subtitle("Ada Ferreira, 6 staff")
+        .row("Books here", 4)
+        .sentence("No opening hours are recorded.")
+        .link(ViewLink::new("branch").arg("branch", &branch.code))
+})))
+```
+
+A card carries a title and whatever else it is given: any number of statuses, since a thing can stand two ways at once; an identifier, the short name it is filed under; a subtitle; label-and-value rows, whose values are anything that prints; a sentence for what a label and a value cannot say; and a link to another of this app's views, asked a particular question. A group of no cards is dropped rather than drawn, so a view can name every group it knows about and let the data decide which of them the page has.
+
+`Status` is a word and a `Tone`, and the tones are `Good`, `Warning`, `Bad`, `Neutral`, and `Info` and nothing else. A repository never names a colour: the two themes use different ones, and they are chosen for contrast against the page and against a card, which is a decision to make once rather than per consumer.
+
+A detail page is a header and sections in two columns:
+
+```rust
+ViewData::new().detail(
+    Detail::new("Central Lending Library")
+        .status(Status::new("Open", Tone::Good))
+        .subtitle("Ada Ferreira, 6 staff")
+        .back(ViewLink::new("branches"))
+        .section(DetailSection::main("On the shelf").numbered().row(
+            DetailRow::new("Nine Doors")
+                .link("https://example.invalid/catalogue/ps3623")
+                .fact("rated 5")
+                .note("Two copies are in the reading room.")
+                .button(Button::disabled("Withdraw", "Not built yet")),
+        ))
+        .section(DetailSection::side("When it is open").collapsed_on_phone()),
+)
+```
+
+`DetailSection::main` and `DetailSection::side` decide which column a section sits in; `numbered` is for a section whose order is a ranking, and `collapsed_on_phone` for one that folds where there is no room beside the main column. A section with no rows shows its heading and its `note`, which is how a section says why it is empty. A row is a title, an optional link out of the app, facts drawn as one line, notes drawn as another, and buttons.
+
+`back` is the view the header offers as the way back. Its heading is not carried: the page already knows what the app calls each of its views.
+
+### Actions
+
+A `Button` is a link out of the app, a form, or a button that cannot be pressed and the reason why. A form names the action that writes it, the fields it asks for, and any arguments it carries of its own:
+
+```rust
+Button::form(
+    "Lend it out",
+    Form::new("lend-a-book")
+        .arg("title", &book.title)
+        .field(Field::text("borrower", "Borrower"))
+        .field(Field::number("days", "Days out").default(21))
+        .field(Field::date("from", "Date lent").default("2026-09-21"))
+        .field(Field::one_of("condition", "Condition", ["As new", "Good", "Worn"])),
+)
+```
+
+Saving it posts to `/api/views/<view>/actions/<name>`, and the crate calls `ViewLogic::act(name, fields, args, ctx)`:
+
+```rust
+fn act(&self, _name: &str, fields: &Fields, args: &ViewArgs, ctx: &Context)
+    -> Result<String, ApiError>
+{
+    let days = fields.integer("days")?;
+    let mut books: Vec<Book> = ctx.rows(BOOKS_FILE)?;
+    …
+    ctx.write(BOOKS_FILE, &Books.serialize(&books)?)?;
+    Ok(format!("\"{title}\" is out until {due}."))
+}
+```
+
+`args` is what the page was asked plus what the form carried, settled against the view's parameters exactly as a render's are, so an action reads which thing it is writing the way `render` reads which thing it is drawing. `Fields` is what the form was filled in with: every answer arrives as text, and `text`, `integer`, `number`, and `date` read one as the kind of answer its field asked for. A field that is not that is a 400 naming it, rather than a panic or a silent zero. `number` refuses `inf` and `NaN`, which parse as floats but serialise to `null`. `date` checks the `YYYY-MM-DD` shape and the ranges; which days a month actually has is a calendar question, and the repository writing the date is what holds a calendar.
+
+`Form::arg` is what makes an action about one row rather than about the page: the server refuses a post unless some button on the rendered page offers that action with exactly those arguments. A form with no arguments is offered by its name alone, which is all it claims to be about. A form argument keyed after one of the view's own parameters is refused where the page is built, because a form that answered one of the page's own questions would send the action to a page other than the one the button is on—and that other page is what the offer would then be checked against.
+
+The write goes through the same `Context` a table's save goes through, and a consumer that reads its rows with `ctx.rows`, changes them, and writes them back with its own `TableLogic::serialize` has written exactly what the editor would have: the same ordering, the same bytes, the same atomic replace. Validating before writing is the consumer's to do and worth doing, since an action has no cell to show an error beside.
+
+What that guarantees is one request at a time: the server serves them in turn, so `ctx.rows` and the `ctx.write` after it see one snapshot of the file and no other request lands between them. What it does not guarantee is that nothing else holds an older copy. The editor reads a whole table into the browser and writes the whole of it back, so a tab left open on that table from before the action will, when it next saves, write its own rows over what the action wrote. Reload such a tab after acting on the table it is showing.
+
+The sentence `act` returns is shown to the reader, and the page is then fetched again, so an action says what it did and never what the page should now show. A view with no buttons that write implements none of this: the server renders the page before it writes and refuses anything no button on that page offers, so `act` is never reached on a view that has none.
+
+`Param::hidden` is for a parameter that arrives through a link rather than through the page—which branch a detail page is about. The page draws no control for it; it is declared all the same, so it still takes a default and is still handed to the view. A select that is hidden still checks what it is given, which is what makes a stale link fall back to the default rather than open a page about nothing.
 
 ## What the browser does with a view
 
-The page is the title, the note, the parameter controls, then the sections in order, each its heading, its note, and its rows. `?view=<name>&<param>=<value>` is the whole of the question, so a page can be linked to, bookmarked, and reloaded. A section with no rows still shows its heading, and says there are none.
+The page is the title, the note, the parameter controls, then whichever body arrived. `?view=<name>&<param>=<value>` is the whole of the question, so a page can be linked to, bookmarked, and reloaded. A parameter marked hidden gets no control, and a view all of whose parameters are hidden gets no control row at all.
+
+A body of sections is each section's heading, its note, and its rows. A section with no rows still shows its heading, and says there are none.
+
+A body of cards is each group's heading with the count of what is in it, then the cards, three across on a desktop, two from 620px, and one below that. A card whose every status is neutral reads quieter than the rest, since it is on the page as a fact rather than as something waiting to be done about. A card with a link is a link: a plain click answers it in the page already open, and a middle click or a held modifier opens it in a tab, because it is a real address.
+
+A body of one thing is a header—the way back, the title, the statuses, the subtitle—then the sections, in two columns above 900px and one below it. The sections are given in one order and drawn in two columns, so each keeps its place in that order: on a phone, where the columns collapse into one, the page reads the way it was written. A section marked as folding is open wherever there is room for it beside the main column and folded where there is not; opening or shutting it by hand holds until the window crosses that width again.
+
+A row's buttons are drawn in the order they were given. A form button shows its form under the row and shuts whichever other form in that row was open. It is a real form, so Enter in any of its fields saves it, as does its one Save button; saving posts the action, shows the sentence the server answered with under the page's heading, moves the cursor there—the panel the button was in has gone, and so may the row—and fetches the page again. The panel shuts on a write whether or not the row survives it, so a row that is still there is usable again and a second write starts from what the page now says. A save that fails leaves the form open exactly as it was with what the server said under it, so what was typed can be put right and saved again. A link button that names an address the page will not follow is drawn as a button that cannot be pressed, for the same reason a refused link is shown as text. A button that cannot be pressed keeps its place in the tab order and carries its reason beside its label, since a button nobody can reach cannot say why.
+
+A form's fields are a text box, a number box, a date box, and a row of segments for a one-of. A one-of starts on its default or on its first option, since a row of segments has no way to show none chosen; every other kind starts on its default or empty. Every field is posted whether or not it was touched.
 
 Changing a control rewrites the address and fetches the answer into the page that is already open. The control keeps the focus, the page does not scroll back to the top, and Back and Forward ask the previous question and the next one again. One change is one entry in the history; asking the question that is already on screen is no entry at all. A select asks as soon as it changes, and a typed parameter asks when it is left or when Enter is pressed, since each question is a fetch. While an answer is on its way, and for as long as one fails to arrive, what is on screen is dimmed: it answers the older question. A failed fetch says so above the results, with a retry, and leaves them there. A region marked `aria-live="polite"` reads out the row counts as each answer lands, since for a reader who cannot see the page the counts are what changed.
 
@@ -349,7 +507,17 @@ A cell is its column's type as a table would show it. `width_ch` gives it room f
 
 At 380px the parameter controls are full width and stacked, and each section is a stack of cards, one per row: the first column is the card's title, a link where that column has an `href`, and the rest are label-and-value lines with the empty ones left out. A title too long for the card is broken across lines, including one long word with nowhere to break. Above 640px a section is a table under its heading. The page never scrolls sideways at any width; a section with more columns than fit scrolls inside its own box at the wider sizes, where there is a table to scroll.
 
-A cell's `href` is followed only when it is an absolute `http:` or `https:` URL carrying no username or password. Anything else—another scheme, a relative or scheme-relative address, or text that is no URL—is shown as text, since a row is data from a file and a link in one must not be a way to run something by clicking a cell. A link that is followed opens in a tab of its own and tells that tab nothing about this one.
+A cell's `href` is followed only when it is an absolute `http:` or `https:` URL carrying no username or password. Anything else—another scheme, a relative or scheme-relative address, or text that is no URL—is shown as text, since a row is data from a file and a link in one must not be a way to run something by clicking a cell. A link that is followed opens in a tab of its own and tells that tab nothing about this one. A detail row's link and a link button are held to the same rule.
+
+## The theme
+
+Two palettes over one set of tokens: a warm paper light theme and a warm ink-blue dark one. A component says what a thing is—a surface, a border, something muted, a tone—and the theme says what that looks like, which is why nothing outside the bundle names a colour.
+
+The light palette is the default, so a browser that says nothing about what it prefers gets it. `prefers-color-scheme` switches, and the System/Light/Dark switch in the top bar overrides that, per device: the choice is an attribute on the root element and an entry in `localStorage`, read back by a script in the head before the first paint, so a page asked to be dark does not flash light on the way in. Storage is unavailable in some browsers' private modes; every use of it is guarded, and the page works without it, with the choice holding for as long as it is open.
+
+Each of the five tones is at least 4.5:1 against both the page and a card, in both themes, which is what decides how dark the light theme's are: a brighter green or red than these does not survive a cream background.
+
+The faces are named rather than fetched. The page asks nothing of the network, so there are no web fonts: Geist and Geist Mono where the machine has them, and the system's own faces otherwise. Prose is set in the sans face; a table, a view's rows and their narrow-width cards are set in the monospaced one at 13px, which is the size the grid and `width_ch` were designed around.
 
 ## Reserved names
 
@@ -402,9 +570,11 @@ A release never ships the placeholder. `./Release.ps1` builds the bundle, packag
 
 ## Developing the bundle
 
-`examples/library` is a consumer to develop against: an app called Library with three tables carrying every column type and modifier between them, a view over those tables with two sections, notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one—and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
+`examples/library` is a consumer to develop against: an app called Library with three tables carrying every column type and modifier between them, three views over those tables, and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
 
-Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width.
+The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and the example's one action, Lend it out, whose form carries all four kinds of field and writes to `Books.jsonl`; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it.
+
+Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width. The second is lent from the Central branch, so its refused link is on that branch's page as well as in a table.
 
 ```
 cargo run --example library -- web --api-only    # the API on 127.0.0.1:8791
@@ -421,7 +591,7 @@ The crate is published to [crates.io](https://crates.io/crates/table-editor). Ve
 
 So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release that changes a trait, removes a method, or changes what an existing method means bumps the minor version. A release that adds a defaulted trait method, a builder, a column type, or a schema field bumps the patch version, as does one that only changes the page. After 1.0 the ordinary rules apply, with the wire format still understood as internal to the pair.
 
-`0.1.0` is the first published version.
+`0.1.0` is the first published version. `0.2.0` adds the card, detail, and action vocabulary and the two-palette theme. Everything it adds to `ViewLogic` has a default, nothing it moved is named from anywhere but the crate root, and every wire shape `0.1.0` sent is still sent, so a consumer of `0.1.0` compiles against it unchanged apart from the pin. The rule above would have made that a patch release; it takes a minor one because the page a consumer gets is a different page, and a version that reads like a bug fix is a poor way to say so.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 

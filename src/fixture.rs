@@ -19,9 +19,10 @@ use serde_json::json;
 
 use crate::context::Context;
 use crate::error::{ApiError, ValidationError};
+use crate::page::Section;
 use crate::schema::{Column, NewRow, OptionsBy, Schema};
 use crate::table::{App, Front, Table, TableLogic};
-use crate::view::{Param, Section, View, ViewArgs, ViewData, ViewLogic};
+use crate::view::{Param, View, ViewArgs, ViewData, ViewLogic};
 
 pub const BOOKS_FILE: &str = "Books.jsonl";
 pub const GENRES_FILE: &str = "Genres.jsonl";

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`table-editor` is a loopback HTTP server and an embedded browser bundle for a repository's `Data/*.jsonl` tables: editors for writing them, and read-only views for reading across them. A consuming repository implements `TableLogic` once per table, `ViewLogic` once per view, and `App` once for the collection.
+`table-editor` is a loopback HTTP server and an embedded browser bundle for a repository's `Data/*.jsonl` tables: editors for typing them, and views for reading across them as rows, as cards, or as one thing in detail, with an action on a detail page as the one thing a view writes. A consuming repository implements `TableLogic` once per table, `ViewLogic` once per view, and `App` once for the collection.
 
 @README.md is the reference for the traits, the API, the schema, and the launch behaviour. Do not restate any of it here; correct it there.
 
@@ -39,7 +39,7 @@ All dependencies are pinned to exact versions (for example, `anyhow = "=1.0.104"
 Consumers depend on the published crate by exact version, matching that policy:
 
 ```toml
-table-editor = "=0.1.0"
+table-editor = "=0.2.0"
 ```
 
 For local work spanning this repository and a consumer, put a `[patch.crates-io]` stanza pointing at a sibling checkout in the consumer's `.cargo/config.toml`, which is gitignored because CI has no sibling checkout to point at.

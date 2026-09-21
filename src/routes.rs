@@ -1,15 +1,21 @@
 //! Turning one HTTP request into one response.
 //!
-//! The control endpoints come first, then the table API, then the static
-//! bundle. `GET /api/health` and `POST /api/shutdown` manage the process,
-//! `GET /api/app` describes the shell, and `/api/<table>` reaches a table's
-//! read, write, and derive endpoints.
+//! The control endpoints come first, then the views, then the table API, then
+//! the static bundle. `GET /api/health` and `POST /api/shutdown` manage the
+//! process, `GET /api/app` describes the shell, `/api/views/<view>` reaches a
+//! view and `/api/views/<view>/actions/<name>` reaches what one of its buttons
+//! writes, and `/api/<table>` reaches a table's read, write, and derive
+//! endpoints.
 //!
 //! A request that names no endpoint this server has is answered before the
 //! `Data/` directory is looked for, so a wrong method or a wrong path says so
 //! plainly rather than reporting a missing data directory.
+//!
+//! Every endpoint that writes is held to two further rules; see
+//! [`refuse_write`].
 
 use std::collections::BTreeMap;
+use std::io::Read;
 
 use anyhow::{Result, anyhow};
 use serde::Serialize;
@@ -51,6 +57,24 @@ pub(crate) fn handle(
     }
     if method == Method::Get && path == "/api/app" {
         return respond_json(request, app_payload(app));
+    }
+    if let Some((view, action)) = parse_action_route(app, &path) {
+        if method != Method::Post {
+            return respond_json(
+                request,
+                Err(ApiError::new(405, "method not allowed for this endpoint")),
+            );
+        }
+        let args = parse_query(request.url());
+        let result = match refuse_write(&request) {
+            Some(refusal) => Err(refusal),
+            None => read_body(&mut request).and_then(|body| {
+                Context::find()
+                    .map_err(|e| ApiError::server(e.to_string()))
+                    .and_then(|ctx| view.handle_action(&action, &args, &body, &ctx))
+            }),
+        };
+        return respond_json(request, result);
     }
     if let Some(view) = parse_view_route(app, &path) {
         if method != Method::Get {
@@ -113,6 +137,28 @@ fn parse_view_route<'a>(app: &'a dyn App, path: &str) -> Option<&'a dyn crate::v
     // The segment is decoded, so a name written out with an escape or two
     // reaches the view it names.
     app.view(&decode(path.strip_prefix("/api/views/")?))
+}
+
+/// Parse an `/api/views/<view>/actions/<name>` path into the view and the
+/// action it names.
+///
+/// Both segments are decoded, so an action whose name holds a space or a slash
+/// reaches the button that named it. The name is one segment: a path with
+/// anything further on the end names no action.
+///
+/// Decoding is the one the query string uses, so a `+` in the path reads as a
+/// space here as well. An action named with a plus in it is therefore reached
+/// only by percent-encoding it, which is what the bundle writes; a hand-typed
+/// address would have to do the same.
+fn parse_action_route<'a>(
+    app: &'a dyn App,
+    path: &str,
+) -> Option<(&'a dyn crate::view::View, String)> {
+    let (view, action) = path
+        .strip_prefix("/api/views/")?
+        .split_once("/actions/")
+        .filter(|(_, action)| !action.is_empty() && !action.contains('/'))?;
+    Some((app.view(&decode(view))?, decode(action)))
 }
 
 /// The parameters an address carries, decoded.
@@ -219,7 +265,12 @@ fn dispatch(request: &mut Request, method: &Method, route: &ApiRoute) -> Result<
 
     let body = match action {
         Action::Get => String::new(),
-        Action::Put | Action::Derive => read_body(request)?,
+        Action::Put | Action::Derive => {
+            if let Some(refusal) = refuse_write(request) {
+                return Err(refusal);
+            }
+            read_body(request)?
+        }
     };
     let ctx = Context::find().map_err(|e| ApiError::server(e.to_string()))?;
 
@@ -230,13 +281,120 @@ fn dispatch(request: &mut Request, method: &Method, route: &ApiRoute) -> Result<
     }
 }
 
+/// The most a request body may be: generous for a table of rows, and far short
+/// of what it would take to exhaust a machine.
+const BODY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Read the request body, up to [`BODY_LIMIT`].
+///
+/// The reader is capped rather than trusted, because a body is read into
+/// memory whole and `Content-Length` is the client's claim about it: an
+/// unbounded read hands a stray or hostile request the process's memory. One
+/// byte past the limit is read so that a body exactly at it is not mistaken
+/// for one over.
 fn read_body(request: &mut Request) -> Result<String, ApiError> {
     let mut body = String::new();
-    request
+    let read = request
         .as_reader()
+        .take(BODY_LIMIT as u64 + 1)
         .read_to_string(&mut body)
         .map_err(|e| ApiError::bad_request(format!("could not read request body: {e}")))?;
+    if read > BODY_LIMIT {
+        return Err(ApiError::new(
+            413,
+            format!("the request body is larger than {} MiB", BODY_LIMIT >> 20),
+        ));
+    }
     Ok(body)
+}
+
+/// Why this request may not write, or nothing where it may.
+///
+/// A write is only ever made by this server's own page, and two things tell
+/// that page's requests from another site's. The first is the content type: a
+/// cross-origin `fetch` carrying `application/json` is preflighted and never
+/// arrives, and the shapes that are not preflighted—a form post—cannot claim
+/// that type. The second is where the request says it came from; see
+/// [`from_our_page`].
+///
+/// Neither is asked of a read. The editor serves a repository's private tables
+/// over loopback, and what is being kept out is a page the reader happens to
+/// have open elsewhere driving a write into those tables; it cannot read the
+/// answer to one, and it does not need to.
+fn refuse_write(request: &Request) -> Option<ApiError> {
+    let from_page = from_our_page(
+        header(request, "Sec-Fetch-Site"),
+        header(request, "Origin"),
+        header(request, "Host"),
+    );
+    if !from_page {
+        return Some(ApiError::new(
+            403,
+            "a write has to come from a page this server served",
+        ));
+    }
+    match header(request, "Content-Type") {
+        Some(value) if is_json(value) => None,
+        _ => Some(ApiError::new(
+            415,
+            format!("a write has to be sent as {JSON}"),
+        )),
+    }
+}
+
+/// The value of one header, or nothing where the request carried none. The
+/// name is matched without regard to case, as a header field is, and is one of
+/// this module's own literals.
+fn header<'a>(request: &'a Request, name: &'static str) -> Option<&'a str> {
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv(name))
+        .map(|header| header.value.as_str())
+}
+
+/// Whether a media type is JSON. The parameters after it—a charset, say—are
+/// not part of what is being asked.
+fn is_json(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case(JSON))
+}
+
+/// Whether the page that made this request is one this server served.
+///
+/// `Sec-Fetch-Site` is the browser's own answer, and the one to prefer. The
+/// browser works it out from the address the page was loaded at against the
+/// address it is asking, before anything in between sees the request, so it
+/// survives a proxy: the Vite dev server serves the bundle at one address and
+/// forwards `/api` here, and a request the page makes to itself is still
+/// `same-origin`. `same-site` is not enough—that is another host under one
+/// registrable domain—and `cross-site` and `none` are not this page at all.
+///
+/// `Origin` is the older answer, for a browser that sends no `Sec-Fetch-Site`,
+/// and is compared against the host the request was addressed to. It is
+/// consulted only when the newer header is absent, because a proxy rewrites
+/// one of the two and the comparison then fails on a request that was fine.
+/// The scheme is not part of it: a repository serving the editor behind a
+/// reverse proxy is reached over https while the server itself speaks http.
+/// An `Origin` of `null`—a sandboxed frame, a `data:` URL—matches no host and
+/// is refused.
+///
+/// A request with neither header is no browser's: `curl`, the launcher's own
+/// probes, a repository's scripts, the crate's tests. The content type is what
+/// such a request is held to.
+fn from_our_page(fetch_site: Option<&str>, origin: Option<&str>, host: Option<&str>) -> bool {
+    if let Some(site) = fetch_site {
+        return site.trim().eq_ignore_ascii_case("same-origin");
+    }
+    let Some(origin) = origin else {
+        return true;
+    };
+    match (origin.split_once("://"), host) {
+        (Some((_, claimed)), Some(host)) => claimed.eq_ignore_ascii_case(host),
+        _ => false,
+    }
 }
 
 /// `GET /api/health`: that the server is up, and which app it serves, so a
@@ -280,6 +438,14 @@ struct TableEntry<'a> {
 struct ViewEntry<'a> {
     view: &'a str,
     title: &'a str,
+    /// Written only for a view the switcher does not list, since listing one
+    /// is what a view that says nothing gets.
+    #[serde(skip_serializing_if = "is_true")]
+    in_switcher: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// What a bare address opens, as one key naming one thing.
@@ -300,6 +466,7 @@ fn app_payload(app: &dyn App) -> Result<String, ApiError> {
             .map(|v| ViewEntry {
                 view: v.route(),
                 title: v.heading(),
+                in_switcher: v.listed(),
             })
             .collect(),
         tables: app
@@ -335,6 +502,7 @@ mod tests {
     use super::*;
     use crate::fixture::{Books, Library, Plain};
     use crate::table::Front;
+    use crate::view::{View, ViewArgs, ViewData, ViewLogic};
 
     #[test]
     fn route_maps_every_table() {
@@ -390,6 +558,79 @@ mod tests {
         // A view is reached under /api/views/, so a table of the same path
         // shape is not mistaken for one.
         assert!(parse_view_route(&app, "/api/books").is_none());
+    }
+
+    #[test]
+    fn an_action_route_names_the_view_and_the_action_it_reaches() {
+        let app = Library::new();
+        let route = |path| parse_action_route(&app, path).map(|(v, a)| (v.route(), a));
+
+        assert_eq!(
+            route("/api/views/shelf/actions/lend"),
+            Some(("shelf", "lend".to_string()))
+        );
+        // An escaped name reaches the button that named it.
+        assert_eq!(
+            route("/api/views/shelf/actions/lend%20it%20out"),
+            Some(("shelf", "lend it out".to_string()))
+        );
+        assert_eq!(route("/api/views/nothing/actions/lend"), None);
+        assert_eq!(route("/api/views/shelf/actions/"), None);
+        assert_eq!(route("/api/views/shelf/actions/lend/again"), None);
+        // A view is reached by the path without the suffix, so neither path is
+        // mistaken for the other.
+        assert_eq!(route("/api/views/shelf"), None);
+        assert!(parse_view_route(&app, "/api/views/shelf/actions/lend").is_none());
+    }
+
+    #[test]
+    fn a_write_has_to_be_sent_as_json() {
+        assert!(is_json("application/json"));
+        assert!(is_json("application/json; charset=utf-8"));
+        assert!(is_json("Application/JSON"));
+        // The shapes a cross-origin form post can take, none of which a
+        // browser lets a page claim to be JSON.
+        assert!(!is_json("text/plain"));
+        assert!(!is_json("text/plain;charset=UTF-8"));
+        assert!(!is_json("multipart/form-data; boundary=x"));
+        assert!(!is_json("application/x-www-form-urlencoded"));
+        assert!(!is_json(""));
+    }
+
+    #[test]
+    fn a_write_has_to_come_from_a_page_this_server_served() {
+        let host = Some("127.0.0.1:8788");
+
+        // What a browser says of the editor's own page asking its own server.
+        assert!(from_our_page(Some("same-origin"), None, host));
+        // And of the bundle asking through Vite, where the address the browser
+        // was given and the address this server answers at are not the same:
+        // the browser settles it before the proxy rewrites anything.
+        assert!(from_our_page(
+            Some("same-origin"),
+            Some("http://localhost:5173"),
+            host
+        ));
+
+        assert!(!from_our_page(Some("cross-site"), None, host));
+        assert!(!from_our_page(Some("same-site"), None, host));
+        // A navigation the reader typed is not a page asking for a write.
+        assert!(!from_our_page(Some("none"), None, host));
+
+        // A browser that sends no Sec-Fetch-Site falls back to the origin,
+        // which is compared with the address the request was addressed to.
+        assert!(from_our_page(None, Some("http://127.0.0.1:8788"), host));
+        assert!(!from_our_page(None, Some("https://evil.invalid"), host));
+        // The port is part of it, so another server on this machine is not
+        // this one.
+        assert!(!from_our_page(None, Some("http://127.0.0.1:9999"), host));
+        // A sandboxed frame or a data: URL claims no host at all.
+        assert!(!from_our_page(None, Some("null"), host));
+        assert!(!from_our_page(None, Some("http://127.0.0.1:8788"), None));
+
+        // A request that claims neither is not a browser write: the launcher's
+        // own probes, curl, the crate's own tests.
+        assert!(from_our_page(None, None, host));
     }
 
     #[test]
@@ -453,6 +694,50 @@ mod tests {
                 ],
                 "front": { "view": "on-loan" }
             })
+        );
+    }
+
+    #[test]
+    fn a_view_the_switcher_does_not_list_says_so() {
+        struct Story;
+        impl ViewLogic for Story {
+            fn name(&self) -> &'static str {
+                "story"
+            }
+            fn title(&self) -> &'static str {
+                "Story"
+            }
+            fn in_switcher(&self) -> bool {
+                false
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+
+        struct Shelved(Story, Books);
+        impl App for Shelved {
+            fn name(&self) -> &str {
+                "Shelved"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&self.1]
+            }
+            fn views(&self) -> Vec<&dyn View> {
+                vec![&self.0]
+            }
+        }
+
+        let v: Value = serde_json::from_str(&app_payload(&Shelved(Story, Books)).unwrap()).unwrap();
+        assert_eq!(
+            v["views"],
+            json!([{ "view": "story", "title": "Story", "in_switcher": false }])
+        );
+        // A view that says nothing is listed, and says nothing about it.
+        let library: Value = serde_json::from_str(&app_payload(&Library::new()).unwrap()).unwrap();
+        assert_eq!(
+            library["views"][0],
+            json!({ "view": "on-loan", "title": "On loan" })
         );
     }
 

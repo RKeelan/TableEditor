@@ -359,8 +359,8 @@ export function TableEditor({ table, pending }: Props) {
   // ── Render ────────────────────────────────────────────────────────────────
   if (loadError) {
     return (
-      <div className="rounded-lg border border-rust-500/40 bg-rust-500/10 p-4 sm:p-6">
-        <p className="font-mono text-sm text-rust-400">{loadError}</p>
+      <div className="rounded-lg border border-bad/40 bg-bad/10 p-4 sm:p-6">
+        <p className="font-mono text-sm text-bad">{loadError}</p>
         <button className="btn mt-4" onClick={() => void load()}>
           Retry
         </button>
@@ -369,16 +369,18 @@ export function TableEditor({ table, pending }: Props) {
   }
 
   if (!schema) {
-    return <p className="font-mono text-[11px] text-slate-500">Loading…</p>;
+    return <p className="font-mono text-[11px] text-muted">Loading…</p>;
   }
 
   const banner = saveBanner(save);
   const reorderable = sort === null && !filtering;
   const headCls =
-    "sticky top-0 z-20 border-b border-ink-700 bg-ink-850 py-2 font-medium";
+    "sticky top-0 z-20 border-b border-border bg-raised py-2 font-medium";
 
+  // A table is data, and its widths are counted in characters, so the whole of
+  // it is set in the monospaced face at the size the grid was designed around.
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col font-mono text-[13px]">
       <div className="flex flex-none flex-wrap items-center gap-2 sm:gap-3">
         <input
           type="search"
@@ -391,11 +393,11 @@ export function TableEditor({ table, pending }: Props) {
           aria-label="Filter rows"
           autoComplete="off"
           spellCheck={false}
-          className="field h-9 min-w-0 flex-1 border border-ink-700 bg-ink-900 sm:w-80 sm:flex-none"
+          className="field h-9 min-w-0 flex-1 border border-border bg-page sm:w-80 sm:flex-none"
         />
         <div className="flex items-center gap-2 sm:ml-auto sm:gap-3">
           {errors.length > 0 && (
-            <span className="font-mono text-[11px] text-rust-400">
+            <span className="font-mono text-[11px] text-bad">
               {errors.length} validation error(s)
             </span>
           )}
@@ -413,10 +415,10 @@ export function TableEditor({ table, pending }: Props) {
       {banner && (
         <div
           role="alert"
-          className="mt-2 flex-none rounded-lg border border-rust-500/50 bg-rust-500/10 px-3 py-2"
+          className="mt-2 flex-none rounded-lg border border-bad/50 bg-bad/10 px-3 py-2"
         >
-          <p className="font-mono text-[12px] text-rust-400">{banner.message}</p>
-          <p className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+          <p className="font-mono text-[12px] text-bad">{banner.message}</p>
+          <p className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
             {banner.detail}
             <button className="btn h-8" onClick={() => void flush()}>
               Save now
@@ -426,13 +428,13 @@ export function TableEditor({ table, pending }: Props) {
       )}
 
       {undoable.length > 0 && (
-        <div className="mt-2 flex flex-none flex-wrap items-center gap-2 rounded-lg border border-ink-700 bg-ink-850 px-3 py-2">
-          <span className="text-[11px] text-slate-400">
+        <div className="mt-2 flex flex-none flex-wrap items-center gap-2 rounded-lg border border-border bg-raised px-3 py-2">
+          <span className="text-[11px] text-muted">
             {undoable.length === 1
               ? "Row deleted."
               : `${undoable.length} rows deleted.`}
           </span>
-          <button className="btn btn-gold h-8" onClick={undo}>
+          <button className="btn btn-primary h-8" onClick={undo}>
             Undo
           </button>
         </div>
@@ -440,13 +442,13 @@ export function TableEditor({ table, pending }: Props) {
 
       {/* The pane is the only thing that scrolls sideways, and it takes
           whatever height the header and the bars leave it. */}
-      <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-ink-800 bg-ink-900/40">
+      <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40">
         <table className="border-collapse text-left">
           <thead>
-            <tr className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-400">
+            <tr className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
               <th
                 scope="col"
-                className={headCls + " sticky left-0 z-30 w-[84px] bg-ink-850 pl-3"}
+                className={headCls + " sticky left-0 z-30 w-[84px] bg-raised pl-3"}
               >
                 <span className="sr-only">Row controls</span>
               </th>
@@ -457,7 +459,7 @@ export function TableEditor({ table, pending }: Props) {
                   className={
                     headCls +
                     " whitespace-nowrap pr-3" +
-                    (i === 0 ? " sticky left-[84px] z-30 bg-ink-850" : "")
+                    (i === 0 ? " sticky left-[84px] z-30 bg-raised" : "")
                   }
                 >
                   {schema.sortable ? (
@@ -467,10 +469,10 @@ export function TableEditor({ table, pending }: Props) {
                         setSort((current) => nextSort(current, column.field))
                       }
                       title={`Sort by ${column.label}`}
-                      className="flex h-8 items-center uppercase tracking-[0.18em] hover:text-paper"
+                      className="flex h-8 items-center uppercase tracking-[0.18em] hover:text-ink"
                     >
                       {column.label}
-                      <span className="ml-1 text-gold-500">
+                      <span className="ml-1 text-accent">
                         {sort?.field === column.field
                           ? sort.direction === "asc"
                             ? "▲"
@@ -515,7 +517,7 @@ export function TableEditor({ table, pending }: Props) {
               <td colSpan={columns.length + 1}>
                 <button
                   onClick={addRow}
-                  className="w-full select-none py-3 text-center text-xs text-slate-500 transition hover:bg-ink-800/50 hover:text-gold-400"
+                  className="w-full select-none py-3 text-center text-xs text-muted transition hover:bg-raised/60 hover:text-accent"
                 >
                   + Add row
                 </button>
@@ -525,7 +527,7 @@ export function TableEditor({ table, pending }: Props) {
         </table>
       </div>
 
-      <p className="mt-2 flex-none font-mono text-[11px] text-slate-500">
+      <p className="mt-2 flex-none font-mono text-[11px] text-muted">
         {filtering
           ? `${visible.length} of ${entries.length} record(s).`
           : `${entries.length} record(s).`}
@@ -565,7 +567,7 @@ function TableRow(p: RowProps) {
   const rowErr = p.errTitle.length > 0;
   // A sticky cell needs a background of its own, since the rest of the row
   // slides underneath it.
-  const stuck = rowErr ? "bg-[#1a1216]" : "bg-ink-950";
+  const stuck = rowErr ? "stuck-error" : "stuck";
   return (
     <tr
       data-row={p.position}
@@ -573,8 +575,8 @@ function TableRow(p: RowProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={p.reorderable ? p.onDrop : undefined}
       className={
-        "group border-b border-ink-800/70 align-top " +
-        (rowErr ? "bg-rust-500/[0.06] " : "hover:bg-ink-900/40 ")
+        "group border-b border-border align-top " +
+        (rowErr ? "bg-bad/[0.06] " : "hover:bg-surface/40 ")
       }
     >
       <td
@@ -593,8 +595,8 @@ function TableRow(p: RowProps) {
             className={
               "flex h-8 w-6 select-none items-center justify-center " +
               (p.reorderable
-                ? "cursor-grab text-slate-500 hover:text-slate-300"
-                : "cursor-default text-ink-700")
+                ? "cursor-grab text-muted hover:text-ink"
+                : "cursor-default text-border")
             }
           >
             ⋮⋮
@@ -604,7 +606,7 @@ function TableRow(p: RowProps) {
             onClick={() => p.onDelete(p.entry.id)}
             aria-label={`Delete row ${p.position + 1}`}
             title="Delete row"
-            className="flex h-8 w-8 select-none items-center justify-center rounded text-slate-500 hover:bg-rust-500/10 hover:text-rust-400"
+            className="flex h-8 w-8 select-none items-center justify-center rounded text-muted hover:bg-bad/10 hover:text-bad"
           >
             ×
           </button>
@@ -671,7 +673,7 @@ function Cell({
     return (
       <td className={tdCls}>
         <span
-          className="readout font-mono text-[11px] text-slate-400"
+          className="readout font-mono text-[11px] text-muted"
           style={{ width: controlWidth(column) }}
           title={text || undefined}
         >
@@ -804,10 +806,10 @@ function Cell({
 // ── Save badge ──────────────────────────────────────────────────────────────
 function SaveBadge({ save }: { save: SaveState }) {
   if (save.kind === "saving")
-    return <span className="font-mono text-[11px] text-gold-500">saving…</span>;
+    return <span className="font-mono text-[11px] text-accent">saving…</span>;
   if (save.kind === "saved")
     return (
-      <span className="font-mono text-[11px] text-slate-400">
+      <span className="font-mono text-[11px] text-muted">
         saved {new Date(save.at).toLocaleTimeString()}
       </span>
     );

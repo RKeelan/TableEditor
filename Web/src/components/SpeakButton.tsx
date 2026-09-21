@@ -47,7 +47,7 @@ export function SpeakButton({
       title={failed ? "The service did not answer" : "Play this value"}
       className={
         "flex h-8 w-8 shrink-0 select-none items-center justify-center rounded text-xs leading-none disabled:cursor-default disabled:opacity-30 " +
-        (failed ? "text-rust-400" : "text-slate-500 hover:text-gold-400")
+        (failed ? "text-bad" : "text-muted hover:text-accent")
       }
     >
       ▶

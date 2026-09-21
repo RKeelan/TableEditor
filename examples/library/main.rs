@@ -14,9 +14,10 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
-    ApiError, App, Column, Context, Datalist, Front, MapSpec, NewRow, OptionsBy, Param, Schema,
-    Section, SelectOption, Server, ServerArgs, Speak, Table, TableLogic, ValidationError, View,
-    ViewArgs, ViewData, ViewLogic,
+    ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
+    DetailSection, Field, Fields, Form, Front, MapSpec, NewRow, OptionsBy, Param, Schema, Section,
+    SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone, ValidationError,
+    View, ViewArgs, ViewData, ViewLink, ViewLogic,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -462,6 +463,21 @@ fn days_from_civil(date: &str) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
+/// The `YYYY-MM-DD` date `days` days after 1970-01-01, which is the inverse of
+/// `days_from_civil` and the other half of the same algorithm.
+fn civil_from_days(days: i64) -> String {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 fn today() -> i64 {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -629,6 +645,348 @@ impl ViewLogic for OnLoan {
     }
 }
 
+// ── The Branches view, which is a card per branch ────────────────────────────
+
+/// Every branch as a card, grouped by whether it is open.
+///
+/// A card is what a view answers with when the question is "how do these things
+/// stand" rather than "what are the values of these fields": there are no
+/// columns here, and each card says how one branch stands, what it is called,
+/// and two counts, with the whole card a link to the branch's own page.
+struct BranchCards;
+
+/// How many of the books a branch holds, and how many of those are out.
+fn shelf_counts(books: &[Book], code: &str) -> (usize, usize) {
+    let here: Vec<&Book> = books
+        .iter()
+        .filter(|b| b.shelved.contains_key(code))
+        .collect();
+    let out = here.iter().filter(|b| b.lent.unwrap_or(false)).count();
+    (here.len(), out)
+}
+
+fn librarian(branch: &Branch) -> String {
+    format!("{} {}", branch.librarian_first, branch.librarian_last)
+        .trim()
+        .to_string()
+}
+
+impl ViewLogic for BranchCards {
+    fn name(&self) -> &'static str {
+        "all-branches"
+    }
+
+    fn title(&self) -> &'static str {
+        "All branches"
+    }
+
+    fn render(&self, _args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let books: Vec<Book> = ctx.optional_rows(BOOKS_FILE)?;
+
+        let card = |branch: &Branch| {
+            let (here, out) = shelf_counts(&books, &branch.code);
+            let open = branch.open.unwrap_or(false);
+            let mut card = Card::new(branch.name.as_str())
+                .status(if open {
+                    Status::new("Open", Tone::Good)
+                } else {
+                    // A shut branch is a fact about it rather than a fault, so
+                    // it is neutral—which is also what reads quieter.
+                    Status::new("Shut", Tone::Neutral)
+                })
+                .identifier(branch.code.as_str())
+                .subtitle(format!(
+                    "{}, {} staff",
+                    librarian(branch),
+                    branch.staff.unwrap_or(0)
+                ))
+                .row("Books here", here)
+                .row("Out on loan", out)
+                .link(ViewLink::new("branch").arg("branch", &branch.code));
+            if branch.hours.is_empty() {
+                card = card.sentence(
+                    "No opening hours are recorded, so nothing here says when it can be visited.",
+                );
+            }
+            card
+        };
+
+        let group = |heading: &str, open: bool| {
+            CardGroup::new(heading).cards(
+                branches
+                    .iter()
+                    .filter(|b| b.open.unwrap_or(false) == open)
+                    .map(&card),
+            )
+        };
+
+        Ok(ViewData::new()
+            .note("A card is a branch. Open one for what it holds and what is out.")
+            .group(group("Open", true))
+            .group(group("Shut", false)))
+    }
+}
+
+// ── The Branch view, which is one branch in detail ───────────────────────────
+
+/// One branch: what it has out, what is on its shelves, and when it is open.
+///
+/// It is reached from a card rather than from the switcher, so its one
+/// parameter is hidden: the page draws no control for it, and the card's link
+/// is what answers it. The parameter is a select all the same, so a link to a
+/// branch that has since gone falls back to the first one rather than to a page
+/// about nothing.
+struct BranchDetail;
+
+impl BranchDetail {
+    /// The books a branch holds, best rated first, which is the order the
+    /// numbered section is a ranking in.
+    fn by_rating<'a>(books: &'a [Book], code: &str, lent: bool) -> Vec<&'a Book> {
+        let mut held: Vec<&Book> = books
+            .iter()
+            .filter(|b| b.shelved.contains_key(code) && b.lent.unwrap_or(false) == lent)
+            .collect();
+        held.sort_by(|a, b| {
+            b.rating
+                .unwrap_or(0.0)
+                .total_cmp(&a.rating.unwrap_or(0.0))
+                .then_with(|| a.title.cmp(&b.title))
+        });
+        held
+    }
+
+    /// What a form asks before a book goes out. The four kinds of field are all
+    /// here, since this is the page the bundle's form controls are developed
+    /// against.
+    fn loan_form(title: &str) -> Form {
+        Form::new("lend-a-book")
+            .arg("title", title)
+            .field(Field::text("borrower", "Borrower"))
+            .field(Field::number("days", "Days out").default(21))
+            .field(Field::date("from", "Date lent").default(civil_from_days(today())))
+            .field(
+                Field::one_of(
+                    "condition",
+                    "Condition it left in",
+                    ["As new", "Good", "Worn"],
+                )
+                .default("Good"),
+            )
+    }
+}
+
+impl ViewLogic for BranchDetail {
+    fn name(&self) -> &'static str {
+        "branch"
+    }
+
+    fn title(&self) -> &'static str {
+        "Branch"
+    }
+
+    /// This page is about one branch, and which one arrives through a card's
+    /// link. A switcher entry for it would open whichever branch the parameter
+    /// happens to default to, which is nobody's question.
+    fn in_switcher(&self) -> bool {
+        false
+    }
+
+    fn params(&self, ctx: &Context, _asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let codes: Vec<SelectOption> = branches
+            .iter()
+            .map(|b| SelectOption::labelled(&b.code, &b.name))
+            .collect();
+        let first = branches.first().map(|b| b.code.clone()).unwrap_or_default();
+        Ok(vec![
+            Param::select("branch", "Branch", codes)
+                .default(first)
+                .hidden(),
+        ])
+    }
+
+    fn render(&self, args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let books: Vec<Book> = ctx.optional_rows(BOOKS_FILE)?;
+        let code = args.get_or("branch", "");
+        let branch = branches
+            .iter()
+            .find(|b| b.code == code)
+            .ok_or_else(|| ApiError::new(404, format!("no branch has the code \"{code}\"")))?;
+
+        let (here, out) = shelf_counts(&books, code);
+        let now = today();
+
+        // What is out, with how it stands against its due date. A row's own
+        // link is the catalogue entry, and one book's link is a `javascript:`
+        // URL, which the page shows as text rather than following.
+        let mut lent = DetailSection::main("Out on loan");
+        for book in BranchDetail::by_rating(&books, code, true) {
+            let late = days_from_civil(&book.due).map(|due| now - due);
+            let mut row = DetailRow::new(book.title.as_str()).link(book.link.as_str());
+            if !book.due.is_empty() {
+                row = row.fact(format!("due {}", book.due));
+            }
+            row = match late {
+                Some(days) if days > 0 => row.fact(format!("{days} day(s) late")),
+                Some(days) => row.fact(format!("{} day(s) to go", -days)),
+                None => row.note("No due date is recorded."),
+            };
+            lent = lent.row(row.button(Button::disabled("Chase the borrower", "Not built yet")));
+        }
+        if out == 0 {
+            lent = lent.note("Everything this branch holds is on the shelf.");
+        }
+
+        // What can go out, ranked, with the one action this example offers.
+        let mut shelf = DetailSection::main("On the shelf")
+            .numbered()
+            .note("Best rated first.");
+        for book in BranchDetail::by_rating(&books, code, false) {
+            let mut row = DetailRow::new(book.title.as_str());
+            if let Some(rating) = book.rating {
+                row = row.fact(format!("rated {rating}"));
+            }
+            if let Some(year) = book.year {
+                row = row.fact(year);
+            }
+            if !book.notes.trim().is_empty() {
+                row = row.note(book.notes.as_str());
+            }
+            shelf = shelf.row(
+                row.button(Button::link("Catalogue", book.link.as_str()))
+                    .button(Button::form(
+                        "Lend it out",
+                        BranchDetail::loan_form(&book.title),
+                    )),
+            );
+        }
+        if here == out {
+            shelf = shelf.note("Nothing this branch holds is on the shelf today.");
+        }
+
+        let mut hours = DetailSection::side("When it is open").collapsed_on_phone();
+        for (day, open) in &branch.hours {
+            hours = hours.row(DetailRow::new(day.as_str()).fact(open.as_str()));
+        }
+        if branch.hours.is_empty() {
+            hours = hours.note("No hours are recorded for this branch.");
+        }
+
+        // A count per genre, which is a section of facts rather than of things
+        // to do, so it sits beside the page rather than in it.
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for book in books.iter().filter(|b| b.shelved.contains_key(code)) {
+            *counts.entry(book.genre.as_str()).or_default() += 1;
+        }
+        let mut genres = DetailSection::side("Genres here");
+        for (genre, count) in counts {
+            genres = genres.row(DetailRow::new(genre).fact(count));
+        }
+
+        Ok(ViewData::new().detail(
+            Detail::new(branch.name.as_str())
+                .status(if branch.open.unwrap_or(false) {
+                    Status::new("Open", Tone::Good)
+                } else {
+                    Status::new("Shut", Tone::Neutral)
+                })
+                .subtitle(format!(
+                    "{}, {} staff, {here} book(s) here, {out} out",
+                    librarian(branch),
+                    branch.staff.unwrap_or(0)
+                ))
+                .back(ViewLink::new("all-branches"))
+                .section(lent)
+                .section(shelf)
+                .section(hours)
+                .section(genres),
+        ))
+    }
+
+    /// Which action was asked for. The router only lets through a name a
+    /// button on this page offers, so the arm at the end is unreachable; it is
+    /// written all the same, because a page with two actions on it decides
+    /// between them here and that is what a consumer copies.
+    fn act(
+        &self,
+        name: &str,
+        fields: &Fields,
+        args: &ViewArgs,
+        ctx: &Context,
+    ) -> Result<String, ApiError> {
+        match name {
+            "lend-a-book" => BranchDetail::lend(fields, args, ctx),
+            _ => Err(ApiError::new(
+                404,
+                format!("this page has no action called \"{name}\""),
+            )),
+        }
+    }
+}
+
+impl BranchDetail {
+    /// Lend a book out: mark it lent, work out when it is due back, and write
+    /// the loan into the row's notes.
+    ///
+    /// The write is the one a table's save makes: the rows are read through the
+    /// same context the page was rendered from, the table's own `serialize`
+    /// turns them back into JSONL, and `Context::write` replaces the file
+    /// through a temporary one. The rows are validated first and a write that
+    /// would introduce an error is refused, because an action has no cell to
+    /// show the error beside.
+    ///
+    /// The note is the loan's, so it replaces whatever the row said. An example
+    /// that appended would grow its own committed data file every time the
+    /// action was tried.
+    fn lend(fields: &Fields, args: &ViewArgs, ctx: &Context) -> Result<String, ApiError> {
+        let title = args.get_or("title", "");
+        let borrower = fields.text("borrower");
+        let days = fields.integer("days")?;
+        let from = fields.date("from")?;
+        let condition = fields.text("condition").to_lowercase();
+
+        if borrower.is_empty() {
+            return Err(ApiError::bad_request("a loan needs a borrower"));
+        }
+        if days < 1 {
+            return Err(ApiError::bad_request("a loan is at least one day long"));
+        }
+        let start = days_from_civil(from).ok_or_else(|| {
+            ApiError::bad_request(format!("{from} is not a date in the calendar"))
+        })?;
+        let due = civil_from_days(start + days);
+
+        let mut books: Vec<Book> = ctx.rows(BOOKS_FILE)?;
+        let book = books
+            .iter_mut()
+            .find(|b| b.title == title)
+            .ok_or_else(|| ApiError::bad_request(format!("no book is called \"{title}\"")))?;
+        if book.lent.unwrap_or(false) {
+            return Err(ApiError::bad_request(format!("\"{title}\" is already out")));
+        }
+        book.lent = Some(true);
+        book.due = due.clone();
+        book.notes = format!("Lent to {borrower} on {from}, {condition}.");
+
+        let problems = Books.validate(&books, ctx)?;
+        if let Some(first) = problems.first() {
+            return Err(ApiError::bad_request(format!(
+                "the loan would leave row {} in a state the table refuses: {}",
+                first.line, first.message
+            )));
+        }
+
+        let text = Books
+            .serialize(&books)
+            .map_err(|e| ApiError::server(format!("could not serialize {BOOKS_FILE}: {e}")))?;
+        ctx.write(BOOKS_FILE, &text)?;
+
+        Ok(format!("\"{title}\" is out to {borrower} until {due}."))
+    }
+}
+
 // ── The app ─────────────────────────────────────────────────────────────────
 
 struct Library {
@@ -636,6 +994,8 @@ struct Library {
     genres: Genres,
     branches: Branches,
     on_loan: OnLoan,
+    branch_cards: BranchCards,
+    branch_detail: BranchDetail,
 }
 
 impl App for Library {
@@ -652,13 +1012,13 @@ impl App for Library {
     }
 
     fn views(&self) -> Vec<&dyn View> {
-        vec![&self.on_loan]
+        vec![&self.branch_cards, &self.branch_detail, &self.on_loan]
     }
 
-    /// The reading happens on the view, so that is what a bare address opens;
-    /// the tables are where the writing happens.
+    /// The reading happens on the views, so one of them is what a bare address
+    /// opens; the tables are where the typing happens.
     fn front(&self) -> Front {
-        Front::View("on-loan")
+        Front::View("all-branches")
     }
 }
 
@@ -688,6 +1048,8 @@ fn main() -> anyhow::Result<()> {
             genres: Genres,
             branches: Branches,
             on_loan: OnLoan,
+            branch_cards: BranchCards,
+            branch_detail: BranchDetail,
         })
         .child_env("LIBRARY_EXAMPLE_CHILD")
         .default_port(DEFAULT_PORT)
