@@ -14,8 +14,9 @@
    is inside a media query and one is not.
 
    The faces are named rather than fetched. This page is served over loopback to
-   private tables and asks nothing of the network, so there are no web fonts:
-   Geist where the machine has it, and the system's own faces otherwise. */
+   private tables and asks nothing of the network, so there are no web fonts.
+   The stacks name broadly available faces, each platform's own interface face
+   first, so the page reads much the same on Windows, macOS and Linux. */
 :root {
   color-scheme: light;
 
@@ -78,11 +79,11 @@
 
 @theme {
   --font-sans:
-    "Geist", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial,
-    sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    "Noto Sans", "Liberation Sans", Arial, sans-serif;
   --font-mono:
-    "Geist Mono", ui-monospace, "SFMono-Regular", "Cascadia Mono",
-    "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    ui-monospace, "SFMono-Regular", Menlo, "Cascadia Mono", Consolas,
+    "DejaVu Sans Mono", "Liberation Mono", monospace;
 
   /* What a control puts around its text: the padding on both sides and the
      border on both sides. A width of `n` characters adds this, so that a

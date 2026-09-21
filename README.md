@@ -517,7 +517,7 @@ The light palette is the default, so a browser that says nothing about what it p
 
 Each of the five tones is at least 4.5:1 against both the page and a card, in both themes, which is what decides how dark the light theme's are: a brighter green or red than these does not survive a cream background.
 
-The faces are named rather than fetched. The page asks nothing of the network, so there are no web fonts: Geist and Geist Mono where the machine has them, and the system's own faces otherwise. Prose is set in the sans face; a table, a view's rows and their narrow-width cards are set in the monospaced one at 13px, which is the size the grid and `width_ch` were designed around.
+The faces are named rather than fetched. The page asks nothing of the network, so there are no web fonts: the stacks name broadly available faces, each platform's own interface face first, so the page reads much the same on Windows, macOS and Linux. Prose is set in the sans face; a table, a view's rows and their narrow-width cards are set in the monospaced one at 13px, which is the size the grid and `width_ch` were designed around.
 
 ## Reserved names
 
