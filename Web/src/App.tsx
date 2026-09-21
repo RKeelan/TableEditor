@@ -2,8 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { type AppPayload, getApp } from "./lib/api";
 import { describeError } from "./lib/errors";
 import type { PendingSave } from "./lib/save";
-import { type Target, parseTarget, tableHref, viewHref } from "./lib/view";
+import {
+  type Target,
+  parseTarget,
+  switcherViews,
+  tableHref,
+  viewHref,
+} from "./lib/view";
 import { TableEditor } from "./components/TableEditor";
+import { ThemeSwitch } from "./components/ThemeSwitch";
 import { ViewPage } from "./components/ViewPage";
 
 /** What to open: what the address asks for, or, where it asks for nothing,
@@ -75,6 +82,9 @@ export function App() {
 
   const asked = parseTarget(search);
   const target = app ? resolveTarget(app, asked) : null;
+  // What the switcher offers, which is not every view the app serves: a page
+  // about one thing is reached from the card that says which one.
+  const offered = switcherViews(app?.views ?? []);
   // Something nobody serves is said so, rather than quietly showing something
   // else: a bookmark that has gone stale should say it has.
   const missing = app !== null && target !== null && !isServed(app, target);
@@ -110,43 +120,44 @@ export function App() {
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden">
-      <header className="flex-none border-b border-ink-800 bg-ink-950/85">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 sm:px-5">
-          <h1 className="font-display text-xl font-medium tracking-tight text-paper sm:text-2xl">
+      <header className="flex-none border-b border-border bg-page">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2 px-3 py-2 sm:px-5">
+          <h1 className="font-mono text-lg tracking-tight sm:text-xl">
             {app?.name ?? "Table Editor"}
           </h1>
           {app?.subtitle && (
-            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
-              {app.subtitle}
-            </span>
+            <span className="text-sm text-muted">{app.subtitle}</span>
           )}
-          {app && (app.tables.length > 0 || (app.views ?? []).length > 0) && (
-            <nav
-              aria-label="Views and tables"
-              className="-mx-1 flex max-w-full items-center gap-1 overflow-x-auto px-1 sm:ml-auto"
-            >
-              {/* Views first: they are where the reading happens, and the
-                  tables are where the writing happens. */}
-              {(app.views ?? []).map((v) => (
-                <Switch
-                  key={`view-${v.view}`}
-                  href={viewHref(v.view, {})}
-                  title={v.title}
-                  active={target?.kind === "view" && target.name === v.view}
-                  go={go}
-                />
-              ))}
-              {app.tables.map((t) => (
-                <Switch
-                  key={`table-${t.table}`}
-                  href={tableHref(t.table)}
-                  title={t.title}
-                  active={target?.kind === "table" && target.name === t.table}
-                  go={go}
-                />
-              ))}
-            </nav>
-          )}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+            {app && (app.tables.length > 0 || offered.length > 0) && (
+              <nav
+                aria-label="Views and tables"
+                className="-mx-1 flex max-w-full items-center gap-1 overflow-x-auto px-1"
+              >
+                {/* Views first: they are where the reading happens, and the
+                    tables are where the typing happens. */}
+                {offered.map((v) => (
+                  <Switch
+                    key={`view-${v.view}`}
+                    href={viewHref(v.view, {})}
+                    title={v.title}
+                    active={target?.kind === "view" && target.name === v.view}
+                    go={go}
+                  />
+                ))}
+                {app.tables.map((t) => (
+                  <Switch
+                    key={`table-${t.table}`}
+                    href={tableHref(t.table)}
+                    title={t.title}
+                    active={target?.kind === "table" && target.name === t.table}
+                    go={go}
+                  />
+                ))}
+              </nav>
+            )}
+            <ThemeSwitch />
+          </div>
         </div>
       </header>
 
@@ -154,7 +165,7 @@ export function App() {
         {error !== null ? (
           <Banner message={error} />
         ) : !app ? (
-          <p className="font-mono text-[11px] text-slate-500">Loading…</p>
+          <p className="text-sm text-muted">Loading…</p>
         ) : missing && target && target.kind !== "none" ? (
           <Banner
             message={`${app.name} serves no ${target.kind} called “${target.name}”. It serves ${[
@@ -167,6 +178,7 @@ export function App() {
             key={target.name}
             view={target.name}
             args={target.args}
+            views={app.views ?? []}
             onAsk={ask}
           />
         ) : target?.kind === "table" ? (
@@ -196,10 +208,10 @@ function Switch({
       onClick={(e) => void go(e, href)}
       aria-current={active ? "page" : undefined}
       className={
-        "flex h-8 items-center whitespace-nowrap rounded px-2 font-mono text-[11px] uppercase tracking-[0.14em] transition " +
+        "flex h-8 items-center whitespace-nowrap rounded px-2 text-sm no-underline transition " +
         (active
-          ? "bg-gold-500/10 text-gold-400"
-          : "text-slate-500 hover:bg-ink-800 hover:text-slate-300")
+          ? "bg-accent/10 font-medium text-accent"
+          : "text-muted hover:bg-raised hover:text-ink")
       }
     >
       {title}
@@ -209,8 +221,8 @@ function Switch({
 
 function Banner({ message }: { message: string }) {
   return (
-    <div className="flex-none rounded-lg border border-rust-500/40 bg-rust-500/10 p-4 sm:p-6">
-      <p className="font-mono text-sm text-rust-400">{message}</p>
+    <div className="flex-none rounded-lg border border-bad/40 bg-bad/10 p-4 sm:p-6">
+      <p className="text-sm text-bad">{message}</p>
     </div>
   );
 }

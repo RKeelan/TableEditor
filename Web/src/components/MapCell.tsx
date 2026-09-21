@@ -161,26 +161,26 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
         className="field flex min-h-8 max-w-[16rem] flex-wrap items-center gap-1 text-left"
       >
         {mismatched ? (
-          <span className="text-rust-400">
+          <span className="text-bad">
             {String(row[column.field] === null ? "null" : row[column.field])}
           </span>
         ) : entries.length === 0 ? (
-          <span className="text-slate-500">—</span>
+          <span className="text-muted">—</span>
         ) : (
           <>
             {shown.map((entry) => (
               <span key={entry.key} className="chip" style={chipStyle()}>
-                <span className="text-slate-400" style={chipKeyStyle()}>
+                <span className="text-muted" style={chipKeyStyle()}>
                   {chipKey(entry)}
                 </span>
-                <span className="text-paper" style={chipValueStyle()}>
+                <span className="text-ink" style={chipValueStyle()}>
                   {optionLabel(valueOptions, entry.text)}
                 </span>
               </span>
             ))}
             {more > 0 && (
               <span
-                className="chip shrink-0 text-gold-400"
+                className="chip shrink-0 text-accent"
                 title="Open to see them all"
               >
                 +{more}
@@ -210,19 +210,19 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
                 visibility: place ? "visible" : "hidden",
               }}
             >
-              <div className="mb-2 flex items-baseline justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+              <div className="mb-2 flex items-baseline justify-between gap-3 font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
                 <span>{column.key_label ?? "Key"}</span>
                 <span>{column.value_label ?? "Value"}</span>
               </div>
 
               {entries.length === 0 && (
-                <p className="mb-2 text-[11px] text-slate-500">No entries.</p>
+                <p className="mb-2 text-[11px] text-muted">No entries.</p>
               )}
 
               {entries.map((entry) => (
                 <div key={entry.key} className="mb-1.5 flex items-center gap-1.5">
                   <span
-                    className="min-w-0 flex-1 truncate text-[11px] text-slate-300"
+                    className="min-w-0 flex-1 truncate text-[11px] text-ink"
                     title={entry.key}
                   >
                     {label(entry)}
@@ -239,7 +239,7 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
                     onClick={() => onRemove(column, entry.key)}
                     aria-label={`Remove ${entry.key}`}
                     title="Remove this entry"
-                    className="h-8 w-8 shrink-0 select-none text-slate-500 hover:text-rust-400"
+                    className="h-8 w-8 shrink-0 select-none text-muted hover:text-bad"
                   >
                     ×
                   </button>
@@ -247,7 +247,7 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
               ))}
 
               {canAdd ? (
-                <div className="mt-2 flex items-center gap-1.5 border-t border-ink-800 pt-2">
+                <div className="mt-2 flex items-center gap-1.5 border-t border-border pt-2">
                   {column.allow_new_keys ? (
                     <input
                       type="text"
@@ -256,14 +256,14 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
                       list={keyOptions.length > 0 ? keyListId : undefined}
                       placeholder={column.key_label ?? "Key"}
                       aria-label={`New ${column.key_label ?? "key"}`}
-                      className="field h-8 min-w-0 flex-1 border border-ink-700"
+                      className="field h-8 min-w-0 flex-1 border border-border"
                     />
                   ) : (
                     <select
                       value={newKey}
                       onChange={(e) => setNewKey(e.target.value)}
                       aria-label={`New ${column.key_label ?? "key"}`}
-                      className="field h-8 min-w-0 flex-1 border border-ink-700"
+                      className="field h-8 min-w-0 flex-1 border border-border"
                     >
                       <option value="">{column.key_label ?? "Key"}…</option>
                       {free.map((option) => (
@@ -291,7 +291,7 @@ export function MapCell({ column, row, rowId, error, onSet, onRemove }: Props) {
                   </button>
                 </div>
               ) : (
-                <p className="mt-2 border-t border-ink-800 pt-2 text-[11px] text-slate-500">
+                <p className="mt-2 border-t border-border pt-2 text-[11px] text-muted">
                   Every {(column.key_label ?? "key").toLowerCase()} is listed
                   already.
                 </p>
@@ -367,7 +367,7 @@ function ValueControl({
         list={options.length > 0 ? listId : undefined}
         placeholder={column.value_label ?? "Value"}
         aria-label={ariaLabel}
-        className="field h-8 w-28 min-w-0 border border-ink-700"
+        className="field h-8 w-28 min-w-0 border border-border"
       />
     );
   }
@@ -377,7 +377,7 @@ function ValueControl({
       value={value}
       onChange={(e) => onCommit(e.target.value)}
       aria-label={ariaLabel}
-      className="field h-8 w-28 min-w-0 border border-ink-700"
+      className="field h-8 w-28 min-w-0 border border-border"
     >
       <option value="">{column.value_label ?? "Value"}…</option>
       {options.map((option) => (

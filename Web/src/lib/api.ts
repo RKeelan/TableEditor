@@ -2,14 +2,14 @@
 // schema, the validation, and the derivation; the browser reads and writes over
 // the API and renders whatever the schema describes.
 import type { Row, Schema, ValidationError } from "./schema";
-import type { ViewPayload } from "./view";
+import type { ActionResult, ViewEntry, ViewPayload } from "./view";
 
 /** `GET api/app`: the shell's name, what it serves, and what a bare address
  *  opens. `views` and `front` are absent from an app that has neither. */
 export interface AppPayload {
   name: string;
   subtitle?: string;
-  views?: { view: string; title: string }[];
+  views?: ViewEntry[];
   tables: { table: string; title: string }[];
   front?: { view: string } | { table: string };
 }
@@ -73,8 +73,8 @@ export function getTable(table: string): Promise<TableGet> {
   return fetch(`${api()}/${table}`).then((r) => asJson<TableGet>(r));
 }
 
-/** `GET api/views/<view>`: a read-only page, with its parameters as the query
- *  string the address carried. */
+/** `GET api/views/<view>`: a page the server computed, with its parameters as
+ *  the query string the address carried. */
 export function getView(
   view: string,
   args: Record<string, string>,
@@ -84,6 +84,29 @@ export function getView(
   return fetch(`${api()}/views/${encodeURIComponent(view)}${suffix}`).then((r) =>
     asJson<ViewPayload>(r),
   );
+}
+
+/** `POST api/views/<view>/actions/<name>`: what a form on the page asks to be
+ *  written.
+ *
+ *  The arguments travel in the address, exactly as they do for a render, so
+ *  the server settles them the same way and the action is about the same thing
+ *  the page was. The body is the form's answers, all of them text, which is
+ *  what a control on a page produces. */
+export function postAction(
+  view: string,
+  action: string,
+  args: Record<string, string>,
+  fields: Record<string, string>,
+): Promise<ActionResult> {
+  const query = new URLSearchParams(args).toString();
+  const suffix = query === "" ? "" : `?${query}`;
+  const path = `${api()}/views/${encodeURIComponent(view)}/actions/${encodeURIComponent(action)}`;
+  return fetch(`${path}${suffix}`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ fields }),
+  }).then((r) => asJson<ActionResult>(r));
 }
 
 /** Write the rows, returning the derivation of what was written. */

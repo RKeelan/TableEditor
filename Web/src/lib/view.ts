@@ -1,7 +1,11 @@
-// A view is a read-only page the server computed: sections of rows described
-// by the same columns a table sends. Nothing here writes, sorts, or filters,
-// so none of the editor's machinery is reached — what arrives is what is
-// shown, and a parameter changing means asking again.
+// A view is a page the server computed: sections of rows described by the same
+// columns a table sends, groups of cards, or one thing in detail. Nothing here
+// sorts or filters, so none of the editor's machinery is reached — what arrives
+// is what is shown, and a parameter changing means asking again.
+//
+// A detail page may offer an action, which is the one thing a view writes. The
+// button and the form are on the page; what the form is posted to, and what
+// the write does, are the server's.
 
 import type { Column, Row, SelectOption } from "./schema";
 import { cellText } from "./rows";
@@ -12,6 +16,9 @@ export interface ViewParam {
   type: "select" | "string";
   options?: SelectOption[];
   default?: string;
+  /** Answered through a link rather than through a control, so the page draws
+   *  none for it. */
+  hidden?: boolean;
 }
 
 export interface ViewSection {
@@ -21,6 +28,105 @@ export interface ViewSection {
   rows: Row[];
 }
 
+/** One of the views an app serves, as `api/app` lists it. `in_switcher` is
+ *  written only for a view that asked to be left out of the top bar, since
+ *  being in it is what a view that says nothing gets. */
+export interface ViewEntry {
+  view: string;
+  title: string;
+  in_switcher?: boolean;
+}
+
+/** The views the top bar offers. A page about one thing is reached from the
+ *  card that says which one; an entry for it in the switcher would open
+ *  whichever one its parameters happen to default to, which is nobody's
+ *  question. Such a view is still served, still linked to, and still titled by
+ *  the shell — it is simply not offered. */
+export function switcherViews(views: readonly ViewEntry[]): ViewEntry[] {
+  return views.filter((entry) => entry.in_switcher !== false);
+}
+
+/** How a status reads. The bundle maps these five to colours; nothing outside
+ *  it names one. */
+export type Tone = "good" | "warning" | "bad" | "neutral" | "info";
+
+export interface Status {
+  word: string;
+  tone: Tone;
+}
+
+/** A link to another of this app's views, asked a particular question. */
+export interface ViewLink {
+  view: string;
+  args?: Record<string, string>;
+}
+
+export interface CardRow {
+  label: string;
+  value: string;
+}
+
+export interface Card {
+  statuses?: Status[];
+  identifier?: string;
+  title: string;
+  subtitle?: string;
+  rows?: CardRow[];
+  sentence?: string;
+  link?: ViewLink;
+}
+
+export interface CardGroup {
+  heading: string;
+  cards: Card[];
+}
+
+export interface FormField {
+  key: string;
+  label: string;
+  type: "text" | "number" | "date" | "one-of";
+  options?: SelectOption[];
+  default?: string;
+}
+
+/** Something a row offers: a page to open, a form to fill in, or a reason it
+ *  cannot be done yet. */
+export type Button =
+  | { label: string; type: "link"; url: string }
+  | {
+      label: string;
+      type: "form";
+      action: string;
+      args?: Record<string, string>;
+      fields: FormField[];
+    }
+  | { label: string; type: "disabled"; reason: string };
+
+export interface DetailRow {
+  title: string;
+  link?: string;
+  facts?: string[];
+  notes?: string[];
+  buttons?: Button[];
+}
+
+export interface DetailSection {
+  heading: string;
+  column: "main" | "side";
+  note?: string;
+  numbered?: boolean;
+  collapsed_on_phone?: boolean;
+  rows: DetailRow[];
+}
+
+export interface Detail {
+  title: string;
+  statuses?: Status[];
+  subtitle?: string;
+  back?: ViewLink;
+  sections: DetailSection[];
+}
+
 export interface ViewPayload {
   view: string;
   title: string;
@@ -28,6 +134,13 @@ export interface ViewPayload {
   args: Record<string, string>;
   note?: string;
   sections: ViewSection[];
+  groups?: CardGroup[];
+  detail?: Detail;
+}
+
+/** What `POST api/views/<view>/actions/<name>` answers with. */
+export interface ActionResult {
+  confirmation: string;
 }
 
 /** What the address asks for: a view with its parameters, a table, or nothing,
@@ -100,14 +213,54 @@ export function correctedHref(search: string, page: ViewPayload): string | null 
   return changed ? `?${asked.toString()}` : null;
 }
 
-/** What a screen reader is told when a page arrives, which is how many rows
- *  answered the question: the count is the whole point of a view, and it is
- *  the one thing a reader who cannot see the page would otherwise miss when
- *  only the rows change. */
+/** Which of the three bodies a page arrived with. A view answers with one of
+ *  them; the server refuses a page that is two. */
+export function bodyOf(page: ViewPayload): "detail" | "cards" | "rows" {
+  if (page.detail) return "detail";
+  if ((page.groups ?? []).length > 0) return "cards";
+  return "rows";
+}
+
+/** The address of the view a link names, asked the question it carries. */
+export function linkHref(link: ViewLink): string {
+  return viewHref(link.view, link.args ?? {});
+}
+
+/** Whether a card reads quieter than the rest, which is what every one of its
+ *  statuses being neutral means: it is on the page as a fact rather than as
+ *  something waiting to be done about. A card that says nothing about how it
+ *  stands is not saying it stands quietly. */
+export function isQuiet(statuses: readonly Status[] | undefined): boolean {
+  return (
+    statuses !== undefined &&
+    statuses.length > 0 &&
+    statuses.every((status) => status.tone === "neutral")
+  );
+}
+
+/** What a screen reader is told when a page arrives, which is how much
+ *  answered the question: the counts are the whole point of a view, and they
+ *  are what a reader who cannot see the page would otherwise miss when only
+ *  the contents change. A page about one thing says which thing instead, since
+ *  that is what changed. */
 export function announce(page: ViewPayload): string {
+  const counted = (n: number, one: string, many: string) =>
+    n === 1 ? `1 ${one}` : `${n} ${many}`;
+
+  if (page.detail) return `${page.title}: ${page.detail.title}.`;
+
+  const groups = page.groups ?? [];
+  if (groups.length > 0) {
+    const parts = groups.map(
+      (group) =>
+        `${group.heading}, ${counted(group.cards.length, "card", "cards")}`,
+    );
+    return `${page.title}: ${parts.join("; ")}.`;
+  }
+
   if (page.sections.length === 0) return `${page.title}: nothing to show.`;
   const parts = page.sections.map((section) => {
-    const count = section.rows.length === 1 ? "1 row" : `${section.rows.length} rows`;
+    const count = counted(section.rows.length, "row", "rows");
     return section.heading ? `${section.heading}, ${count}` : count;
   });
   return `${page.title}: ${parts.join("; ")}.`;
@@ -159,18 +312,19 @@ export function viewCellText(column: Column, row: Row): string {
   return cellText(column, row, row);
 }
 
-/** One row of a section as a card reads it at narrow widths: a title line from
- *  the first column, then a line per column that has something to say.
+/** One row of a section as it reads at narrow widths, where a table cannot go:
+ *  a title line from the first column, then a line per column that has
+ *  something to say.
  *
- *  A column with nothing in it is left out rather than shown empty, because a
- *  card is read down the page and blank lines in it are noise. */
-export interface Card {
+ *  A column with nothing in it is left out rather than shown empty, because it
+ *  is read down the page and blank lines in it are noise. */
+export interface RowCard {
   title: string;
   href: string | null;
   lines: { label: string; text: string }[];
 }
 
-export function cardFor(columns: readonly Column[], row: Row): Card {
+export function rowCardFor(columns: readonly Column[], row: Row): RowCard {
   const [first, ...rest] = columns;
   return {
     title: first ? viewCellText(first, row) : "",
@@ -198,4 +352,34 @@ export function controlWidthOfColumn(column: Column): string | undefined {
  *  answer, and a section that vanished would read as a page still loading. */
 export function isEmptySection(section: ViewSection): boolean {
   return section.rows.length === 0;
+}
+
+/** What a form is filled in with before anything is typed: each field's own
+ *  default, and an empty answer for a field that has none. Every field is
+ *  present from the start, so a form saved untouched still answers all of
+ *  them. */
+export function formValues(fields: readonly FormField[]): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of fields) {
+    values[field.key] = field.default ?? firstOption(field);
+  }
+  return values;
+}
+
+/** What a one-of field with no default starts on, which is its first option:
+ *  one of the answers is always chosen, since a segmented control has no way
+ *  to show none. Any other kind of field starts empty. */
+function firstOption(field: FormField): string {
+  if (field.type !== "one-of") return "";
+  return field.options?.[0]?.value ?? "";
+}
+
+/** The arguments an action is asked with: the question the page was asked,
+ *  plus whatever the form itself carries. The form is the more particular
+ *  answer — it was built for one row — so a key in both takes its value. */
+export function actionArgs(
+  pageArgs: Record<string, string>,
+  formArgs: Record<string, string> | undefined,
+): Record<string, string> {
+  return { ...pageArgs, ...(formArgs ?? {}) };
 }

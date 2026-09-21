@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Table Editor</title>
+    <script>
+      /* The chosen theme, set before the first paint, so a page the reader has
+         asked to be dark does not flash light on the way in. Storage throws in
+         some browsers' private modes, where the page follows the system
+         instead. The key is the one lib/theme.ts writes. */
+      (function () {
+        try {
+          var chosen = localStorage.getItem("table-editor-theme");
+          if (chosen === "light" || chosen === "dark") {
+            document.documentElement.setAttribute("data-theme", chosen);
+          }
+        } catch (error) {
+          /* there is no stored choice to be had */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
