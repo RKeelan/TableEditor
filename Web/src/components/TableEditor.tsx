@@ -21,10 +21,13 @@ import {
   cellText,
   controlWidth,
   datalistOptions,
+  editsAsLines,
+  linesText,
   newRow,
   nextSort,
   parseFilter,
   selectOptions,
+  withLineBreaksOf,
   writeCell,
   writeMapEntry,
 } from "../lib/rows";
@@ -50,6 +53,7 @@ import {
   writer,
 } from "../lib/save";
 import { MapCell } from "./MapCell";
+import { MultilineField } from "./MultilineField";
 import { SpeakButton } from "./SpeakButton";
 
 // A short debounce for the live derive, which redraws validation and computed
@@ -694,6 +698,11 @@ function Cell({
   onMapEntry,
 }: CellProps) {
   const row = entry.row;
+  const [editing, setEditing] = useState(false);
+  // The value as it was when the cell was focused, whose line breaks what is
+  // typed keeps even through a moment with none: see withLineBreaksOf.
+  const breaksFrom = useRef<unknown>(undefined);
+  const lines = editing || editsAsLines(column, row[column.field]);
   const mismatched = cellMismatch(column, row);
   const tdCls =
     "py-1 pr-3 whitespace-nowrap" +
@@ -811,6 +820,50 @@ function Cell({
             (column.width_ch === undefined ? " w-20" : "")
           }
         />
+      </td>
+    );
+  }
+
+  // A multiline column, and a one-line column whose value already holds a line
+  // break, edit as several lines. The second is marked, since the column did
+  // not expect it, and stays a box of several lines until it is left: taking
+  // the last break out while typing would otherwise swap the box for another
+  // one and lose the caret.
+  if (lines) {
+    const extra = column.type !== "multiline";
+    return (
+      <td
+        className={
+          tdCls +
+          (sticky ? " focus-within:z-[15]" : "") +
+          (extra && !mismatched ? " cell-mismatch" : "")
+        }
+      >
+        <span className="flex items-center gap-1">
+          <MultilineField
+            value={linesText(value)}
+            onChange={(raw) =>
+              onCell(entry.id, column, withLineBreaksOf(raw, breaksFrom.current))
+            }
+            onEditing={(now) => {
+              if (now) breaksFrom.current = value;
+              setEditing(now);
+            }}
+            ariaLabel={label}
+            title={
+              mismatched
+                ? oddTitle
+                : extra
+                  ? "Holds line breaks, which this one-line column does not expect; edited as several lines so they are kept"
+                  : undefined
+            }
+            width={controlWidth(column)}
+            spellCheck={column.type !== "string" && column.type !== "spaced-string"}
+          />
+          {column.speak && (
+            <SpeakButton speak={column.speak} value={linesText(value)} label={column.label} />
+          )}
+        </span>
       </td>
     );
   }

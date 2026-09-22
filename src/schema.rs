@@ -73,8 +73,12 @@ impl Schema {
 }
 
 /// How the browser renders and edits one column.
+///
+/// Non-exhaustive, so a column type added in a later release is not a breaking
+/// change: a `match` outside the crate needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ColumnType {
     /// A single-line value.
     String,
@@ -82,6 +86,9 @@ pub enum ColumnType {
     Text,
     /// A single-line value whose spacing is significant, so it is not trimmed.
     SpacedString,
+    /// A value of several lines, stored with its line breaks and spacing
+    /// exactly as typed.
+    Multiline,
     /// A numeric value, stored as a number rather than a string.
     Number,
     /// A true-or-false value, stored as a JSON boolean. A bundle gives the
@@ -165,6 +172,11 @@ impl Column {
 
     pub fn spaced_string(field: impl Into<String>, label: impl Into<String>) -> Self {
         Self::base(field, label, ColumnType::SpacedString)
+    }
+
+    /// A value of several lines. See [`ColumnType::Multiline`].
+    pub fn multiline(field: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::base(field, label, ColumnType::Multiline)
     }
 
     pub fn number(field: impl Into<String>, label: impl Into<String>) -> Self {
@@ -718,6 +730,7 @@ mod tests {
             (Column::string("f", "F"), "string"),
             (Column::text("f", "F"), "text"),
             (Column::spaced_string("f", "F"), "spaced-string"),
+            (Column::multiline("f", "F"), "multiline"),
             (Column::number("f", "F"), "number"),
             (Column::boolean("f", "F"), "boolean"),
             (Column::select("f", "F", ["a"]), "select"),

@@ -25,6 +25,7 @@ export type ColumnType =
   | "string"
   | "text"
   | "spaced-string"
+  | "multiline"
   | "number"
   | "boolean"
   | "select"
