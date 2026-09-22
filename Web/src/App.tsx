@@ -44,7 +44,7 @@ export function App() {
   // How the switcher reaches the editor's pending write before leaving it.
   const pending = useRef<PendingSave>({
     flush: async () => {},
-    unsaved: () => false,
+    waiting: () => false,
   });
 
   useEffect(() => {
@@ -101,7 +101,11 @@ export function App() {
     document.title = heading ? `${app.name} · ${heading}` : app.name;
   }, [app, heading]);
 
-  /** Leave for another table only once what was typed in this one is written. */
+  /** Leave for another table only once what was typed in this one is written.
+   *
+   *  A write the editor has stopped trying to make is not waited for: the
+   *  editor says why and offers the table as it now is, and the browser asks
+   *  on the way out rather than the switcher quietly doing nothing. */
   const go = async (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) {
       return;
@@ -114,7 +118,7 @@ export function App() {
       // throw the edit away, so stay put.
       return;
     }
-    if (pending.current.unsaved()) return;
+    if (pending.current.waiting()) return;
     window.location.assign(href);
   };
 

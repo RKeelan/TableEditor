@@ -52,7 +52,7 @@ pub(crate) fn handle(
         return respond_json(request, health_payload(app));
     }
     if method == Method::Post && path == "/api/shutdown" {
-        respond(request, 200, JSON, br#"{"status":"stopping"}"#)?;
+        respond_json(request, Ok(r#"{"status":"stopping"}"#.to_string()))?;
         std::process::exit(0);
     }
     if method == Method::Get && path == "/api/app" {
@@ -110,20 +110,43 @@ pub(crate) fn handle(
     respond(request, 404, TEXT, b"not found")
 }
 
+/// Every answer under `/api/` is a live read of a file, and none of them is
+/// worth keeping. A read of a table carries the version a later write is
+/// checked against, so an answer served from a browser's cache would leave a
+/// client holding a version the file does not have and every write it made
+/// refused.
+const NO_STORE: &str = "no-store";
+
 fn respond_json(request: Request, result: Result<String, ApiError>) -> Result<()> {
     let (status, body) = match result {
         Ok(json) => (200, json),
         Err(err) => (err.status, error_json(&err.message)),
     };
-    respond(request, status, JSON, body.as_bytes())
+    respond_with(
+        request,
+        status,
+        &[("Content-Type", JSON), ("Cache-Control", NO_STORE)],
+        body.as_bytes(),
+    )
 }
 
 fn respond(request: Request, status: u16, content_type: &str, body: &[u8]) -> Result<()> {
-    let header = Header::from_bytes(b"Content-Type".as_ref(), content_type.as_bytes())
-        .map_err(|_| anyhow!("invalid content-type header"))?;
-    let response = Response::from_data(body.to_vec())
-        .with_status_code(status)
-        .with_header(header);
+    respond_with(request, status, &[("Content-Type", content_type)], body)
+}
+
+/// Send one response, carrying the headers given.
+fn respond_with(
+    request: Request,
+    status: u16,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<()> {
+    let mut response = Response::from_data(body.to_vec()).with_status_code(status);
+    for (name, value) in headers {
+        let header = Header::from_bytes(name.as_bytes(), value.as_bytes())
+            .map_err(|_| anyhow!("invalid {name} header"))?;
+        response = response.with_header(header);
+    }
     request
         .respond(response)
         .map_err(|e| anyhow!("failed to send response: {e}"))?;

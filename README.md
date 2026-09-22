@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.2.0"
+table-editor = "=0.3.0"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.2.0", default-features = false }
+table-editor = { version = "=0.3.0", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -38,7 +38,7 @@ table-editor = { git = "https://github.com/RKeelan/TableEditor.git", rev = "<sha
 table-editor = { path = "../TableEditor" }
 ```
 
-The consumer's `table-editor = "=0.2.0"` stays as it is; the patch decides what that resolves to. A patched checkout serves whatever bundle that checkout has built, so run `./Deploy.ps1` there first or the editor's page is the placeholder. Keep the stanza in a gitignored `.cargo/config.toml` where it should not reach the consumer's history.
+The consumer's `table-editor = "=0.3.0"` stays as it is; the patch decides what that resolves to. A patched checkout serves whatever bundle that checkout has built, so run `./Deploy.ps1` there first or the editor's page is the placeholder. Keep the stanza in a gitignored `.cargo/config.toml` where it should not reach the consumer's history.
 
 ## A consumer
 
@@ -169,6 +169,8 @@ A table's own file must exist before the editor can open the table. The editor e
 
 `write` puts the new text in a sibling temporary file and renames it over the target, so an interrupted write leaves the previous table intact rather than a truncated one.
 
+`version` says what a file held: a hash of its bytes, as sixteen hex digits, and `absent` for a file that is not there. It answers for the text the context read rather than for the disk as it is now, so the rows a request serves and the version it serves them with describe one thing. It hashes the contents rather than reading the timestamp, because a timestamp says a file was touched where what matters is whether it now holds something else: a sync writing the same bytes back moves one and changes nothing anybody is holding. The hash is FNV-1a, which is a few lines, no dependency, and the same in every build, so a page that read a table from one server keeps saving through the next. Nothing is kept out by a version—anything that can write a table can state whatever version it likes—so telling two readings of a file apart is the whole of what it has to do.
+
 ## The API
 
 `GET /api/app` describes the shell:
@@ -185,13 +187,19 @@ A `subtitle` is included when the app supplies one, and omitted otherwise. So ar
 
 Three endpoints serve each table:
 
-* `GET /api/<table>` returns `{ "schema": …, "rows": [ … ], "derived": [ … ], "errors": [ … ], "siblings": … }`. `rows` is the stored table, `derived` parallels it index for index, `errors` is the validation, and `siblings` is whatever cross-table data the table supplies.
-* `PUT /api/<table>` takes `{ "rows": [ … ] }`, writes those rows, and returns `{ "derived": [ … ], "errors": [ … ] }`. A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells.
-* `POST /api/<table>/derive` takes the same body and returns the same payload without writing.
+* `GET /api/<table>` returns `{ "schema": …, "rows": [ … ], "derived": [ … ], "errors": [ … ], "siblings": …, "version": "…" }`. `rows` is the stored table, `derived` parallels it index for index, `errors` is the validation, `siblings` is whatever cross-table data the table supplies, and `version` is the file the rows were read from, as it was when they were read.
+* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…" }`, writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`. A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
+* `POST /api/<table>/derive` takes the same rows and answers with the derivation and the errors alone. It writes nothing, so it states no version and is answered with none; a version in its body is ignored.
+
+A write states the version of the file the rows it is writing were read from. The server compares it against the file as it is now and refuses the write with a 409 where the two differ, so a client holding a whole table cannot write its older rows over a change made since—by an action on a detail page, by a second tab, or by the owner editing the JSONL by hand. The comparison and the write are one request, and the server serves one request at a time, so nothing lands between them: the file compared against is the file replaced. A write that goes through answers with the version it left behind, which the next write states. A write that states no version is written whatever the file holds, which is what a repository's scripts and a client that does not read the version send.
+
+The write is the last thing a write request does. Everything that can fail—reading the body, comparing the version, serializing the rows, deriving and validating them—happens first, so a failure means the file was left as it was and the same request can simply be made again. A write that landed under an answer that failed would be worse than one that never happened: the client would retry, stating the version that write moved on from, and be refused over work that had in fact gone through. A `derive` or `validate` that reads the table's own file through the context therefore reads it as it stood before the write, which is what it reads under `POST /api/<table>/derive` as well: both hooks are handed the rows to judge and see the file the rows are not yet in.
+
+Every answer under `/api/` is sent `Cache-Control: no-store`. Each is a live read of a file, and a read of a table carries the version a later write is checked against, so an answer out of a cache would leave a client holding a version the file does not have and every write it made refused.
 
 A validation error is `{ "line": 3, "field": "title", "message": "title is required" }`, where `line` is the row's one-based position in the set being validated and `field` is null for a whole-row check.
 
-A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 403 and 415 for a write that does not come from a page this server served (below), 404 for a path under `/api/` that is no endpoint, 405 for a method the endpoint does not take, 413 for a body over 16 MiB, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
+A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 403 and 415 for a write that does not come from a page this server served (below), 404 for a path under `/api/` that is no endpoint, 405 for a method the endpoint does not take, 409 for a write of rows read before the file changed, 413 for a body over 16 MiB, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
 
 `GET /api/views/<view>` answers a view, taking its parameters as the query string:
 
@@ -350,7 +358,10 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 ## What the editor does with the table
 
 * Editing saves. There is no save button: a change is written a moment after it is made, and the page says when it last was.
+* One write is in flight at a time. A write states the version the file had when its rows were read, and the version it leaves behind is what the next write states, so two at once would state the same version and the server would refuse the second—a page refusing its own work and reporting it as somebody else's change. Edits made while a write is in flight are written by the one after it, which sends what is on screen by then rather than what was typed when it was asked for, so a burst of typing during one slow write is one write after it rather than one write per keystroke.
 * A save that fails is a banner that stays, naming what the server said, with the edits still on screen. It is retried on a lengthening timer as well as on the next edit, so a server that was restarted underneath the page catches up on its own. Closing the page while anything is unwritten asks first, and switching tables waits for the write before it navigates.
+* A save the server refuses because the table changed on disk stops the saving rather than retrying it: the rows on screen came from a version of the file that is gone, and writing them again would put them over whatever changed it. The banner says that is what happened and offers to read the table again, which throws away what has been typed since. Nothing is merged, and nothing is written behind the reader's back. Switching tables is not held up, since waiting cannot make that write go through, and leaving the page still asks first.
+* Opening a table reads it from the server rather than from the browser's cache, so the rows the editor holds, and the version it saves against, are the file as it is.
 * Deleting a row offers an undo rather than asking first. The row comes back where it was, with everything it held, and because editing saves, the restoration saves too. The offer lasts about ten seconds or until the next edit.
 * A cell holding something that is not what its column describes — a number column holding `"1994"`, a boolean holding `"true"`, a null — shows that value, marked, rather than appearing empty. Editing another cell of the row leaves it exactly as it was.
 * Dragging a row onto another puts it where that row was, the same rule in both directions. Sorting or filtering turns dragging off, since a view that is not the stored order has no order to rearrange.
@@ -477,7 +488,7 @@ fn act(&self, _name: &str, fields: &Fields, args: &ViewArgs, ctx: &Context)
 
 The write goes through the same `Context` a table's save goes through, and a consumer that reads its rows with `ctx.rows`, changes them, and writes them back with its own `TableLogic::serialize` has written exactly what the editor would have: the same ordering, the same bytes, the same atomic replace. Validating before writing is the consumer's to do and worth doing, since an action has no cell to show an error beside.
 
-What that guarantees is one request at a time: the server serves them in turn, so `ctx.rows` and the `ctx.write` after it see one snapshot of the file and no other request lands between them. What it does not guarantee is that nothing else holds an older copy. The editor reads a whole table into the browser and writes the whole of it back, so a tab left open on that table from before the action will, when it next saves, write its own rows over what the action wrote. Reload such a tab after acting on the table it is showing.
+What that guarantees is one request at a time: the server serves them in turn, so `ctx.rows` and the `ctx.write` after it see one snapshot of the file and no other request lands between them. A tab left open on the table an action wrote is holding an older copy of it, and the version its next save states is the one it read: that write is refused, and the tab stops saving and offers to read the table again. So an action and an open editor cannot write over each other, and the editor that was open says what happened rather than quietly undoing the action.
 
 The sentence `act` returns is shown to the reader, and the page is then fetched again, so an action says what it did and never what the page should now show. A view with no buttons that write implements none of this: the server renders the page before it writes and refuses anything no button on that page offers, so `act` is never reached on a view that has none.
 
@@ -535,7 +546,7 @@ That rule is exact, and deliberately so. `{"status":"ok"}` means an object with 
 
 The `Server` builder holds what differs between repositories:
 
-* `index_html` serves a bundle of the repository's own in place of the embedded one. Such a bundle takes on everything the server states but does not enforce: reading the address, and resolving a bare one through `front` to a view, a table, or the first table; the schema, meaning every column type and modifier and what `width_ch` counts; the write rules, meaning what a cleared cell writes and what a `cascades_to` change clears; and asking nothing of the network.
+* `index_html` serves a bundle of the repository's own in place of the embedded one. Such a bundle takes on everything the server states but does not enforce: reading the address, and resolving a bare one through `front` to a view, a table, or the first table; the schema, meaning every column type and modifier and what `width_ch` counts; the write rules, meaning what a cleared cell writes, what a `cascades_to` change clears, and stating the version the rows were read at, since a write that states none is written whatever the file holds; and asking nothing of the network.
 * `child_env` names the worker marker. A repository whose server is registered as a system service keeps its own name here, so the service entry does not have to change.
 * `command` names the subcommand that reaches `run`, used when re-invoking the binary as a worker. It defaults to `web`.
 * `default_port` is the port bound when `--port` names none. Each app takes its own, so two editors on one machine do not land on the same port. It defaults to 8787.
@@ -592,6 +603,8 @@ The crate is published to [crates.io](https://crates.io/crates/table-editor). Ve
 So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release that changes a trait, removes a method, or changes what an existing method means bumps the minor version. A release that adds a defaulted trait method, a builder, a column type, or a schema field bumps the patch version, as does one that only changes the page. After 1.0 the ordinary rules apply, with the wire format still understood as internal to the pair.
 
 `0.1.0` is the first published version. `0.2.0` adds the card, detail, and action vocabulary and the two-palette theme. Everything it adds to `ViewLogic` has a default, nothing it moved is named from anywhere but the crate root, and every wire shape `0.1.0` sent is still sent, so a consumer of `0.1.0` compiles against it unchanged apart from the pin. The rule above would have made that a patch release; it takes a minor one because the page a consumer gets is a different page, and a version that reads like a bug fix is a poor way to say so.
+
+`0.3.0` refuses a write of rows read before the file changed: a read carries the version of the file it read, a write states it back, and a write that states an older one is answered with a 409 rather than made. It also puts every way a write can fail ahead of the write itself, so a table whose `derive` or `validate` cannot run is left as it was rather than written and then reported as a failure. It adds one method to the Rust API, `Context::version`, and changes nothing else there, so a consumer of `0.2.0` compiles against it unchanged apart from the pin; a write that states no version is written whatever the file holds, so a repository's scripts keep working as well. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 

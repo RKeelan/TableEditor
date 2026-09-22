@@ -1,6 +1,7 @@
 // Fetch client for the editor's server. The server owns the file I/O, the
 // schema, the validation, and the derivation; the browser reads and writes over
 // the API and renders whatever the schema describes.
+import { ApiError } from "./errors";
 import type { Row, Schema, ValidationError } from "./schema";
 import type { ActionResult, ViewEntry, ViewPayload } from "./view";
 
@@ -14,19 +15,27 @@ export interface AppPayload {
   front?: { view: string } | { table: string };
 }
 
-/** `GET api/<table>`. */
+/** `GET api/<table>`. `version` is the file the rows were read from, as it was
+ *  when they were read; a write states it back. */
 export interface TableGet {
   schema: Schema;
   rows: Row[];
   derived: unknown[];
   errors: ValidationError[];
   siblings: unknown;
+  version: string;
 }
 
-/** `PUT api/<table>` and `POST api/<table>/derive`. */
+/** `POST api/<table>/derive`, which writes nothing. */
 export interface DeriveResult {
   derived: unknown[];
   errors: ValidationError[];
+}
+
+/** `PUT api/<table>`: the same, and the version the file now has, which the
+ *  next write states. */
+export interface PutResult extends DeriveResult {
+  version: string;
 }
 
 /** The API root for a page served at `pathname`.
@@ -50,7 +59,7 @@ function api(): string {
 const JSON_HEADERS = { "Content-Type": "application/json" } as const;
 
 /** Resolve a response to JSON, surfacing the server's `{ error }` body as the
- *  message of a thrown Error. */
+ *  message of a thrown ApiError carrying the status it was refused with. */
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -60,7 +69,7 @@ async function asJson<T>(res: Response): Promise<T> {
     } catch {
       // Non-JSON error body; keep the status-line message.
     }
-    throw new Error(message);
+    throw new ApiError(res.status, message);
   }
   return (await res.json()) as T;
 }
@@ -69,8 +78,16 @@ export function getApp(): Promise<AppPayload> {
   return fetch(`${api()}/app`).then((r) => asJson<AppPayload>(r));
 }
 
+/** Read a table, past the browser's cache.
+ *
+ *  The server says the same thing in `Cache-Control`; this is the same
+ *  requirement stated by the one request that most depends on it, since a body
+ *  served from a cache would leave the editor holding a version the file does
+ *  not have and every save refused. */
 export function getTable(table: string): Promise<TableGet> {
-  return fetch(`${api()}/${table}`).then((r) => asJson<TableGet>(r));
+  return fetch(`${api()}/${table}`, { cache: "no-store" }).then((r) =>
+    asJson<TableGet>(r),
+  );
 }
 
 /** `GET api/views/<view>`: a page the server computed, with its parameters as
@@ -109,16 +126,22 @@ export function postAction(
   }).then((r) => asJson<ActionResult>(r));
 }
 
-/** Write the rows, returning the derivation of what was written. */
+/** Write the rows, returning the derivation of what was written and the version
+ *  the file now has.
+ *
+ *  `version` is the file as it was when these rows were read. The server
+ *  refuses the write with a 409 where the file holds something else, so a
+ *  change made after the read is never written over. */
 export function putTable(
   table: string,
   rows: readonly Row[],
-): Promise<DeriveResult> {
+  version: string,
+): Promise<PutResult> {
   return fetch(`${api()}/${table}`, {
     method: "PUT",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ rows }),
-  }).then((r) => asJson<DeriveResult>(r));
+    body: JSON.stringify({ rows, version }),
+  }).then((r) => asJson<PutResult>(r));
 }
 
 /** Derive and validate without writing, which backs the live indicators. */
