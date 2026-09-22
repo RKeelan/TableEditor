@@ -52,6 +52,7 @@ export function writeCell(
   schema: Schema,
 ): Row {
   const next: Row = { ...row };
+  if (isTextColumn(column)) raw = withLineBreaksOf(raw, row[column.field]);
 
   switch (column.type) {
     case "number": {
@@ -87,8 +88,9 @@ export function writeCell(
       }
       break;
     }
-    case "spaced-string": {
-      // Spacing is the point of this type, so only an empty value clears it
+    case "spaced-string":
+    case "multiline": {
+      // Spacing is the point of these types, so only an empty value clears it
       // and what is typed is stored verbatim.
       if (raw === "") {
         clearField(next, schema, column.field);
@@ -114,6 +116,72 @@ export function writeCell(
   }
 
   return next;
+}
+
+// ── Lines ───────────────────────────────────────────────────────────────────
+
+/** Whether a column holds text a person types: the three single-line kinds and
+ *  `multiline`. */
+export function isTextColumn(column: Column): boolean {
+  switch (column.type) {
+    case "string":
+    case "text":
+    case "spaced-string":
+    case "multiline":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Whether a stored value holds a line break of any kind. */
+export function hasLineBreak(value: unknown): boolean {
+  return typeof value === "string" && /[\r\n]/.test(value);
+}
+
+/** Whether a cell edits as several lines: a `multiline` column always, and a
+ *  single-line text column whose stored value holds a line break.
+ *
+ *  A one-line box strips line breaks from whatever it is given, so the first
+ *  keystroke in such a cell would write the value back without them. Editing
+ *  it as several lines keeps them, and lets the breaks be taken out by hand
+ *  where they were a mistake. */
+export function editsAsLines(column: Column, value: unknown): boolean {
+  if (column.type === "multiline") return true;
+  return isTextColumn(column) && hasLineBreak(value);
+}
+
+/** A stored value as a box of several lines shows it.
+ *
+ *  A browser's text area hands back every line break as `\n` whatever it was
+ *  given, so the value it is given is put that way first: a box whose value
+ *  differed from what it hands back would be written to on every render, and
+ *  the caret would jump to the end with each keystroke. */
+export function linesText(value: unknown): string {
+  if (value == null) return "";
+  return String(value).replace(/\r\n?/g, "\n");
+}
+
+/** Typed text with the line breaks the stored value used.
+ *
+ *  A value whose every line break is `\r\n` keeps that convention when it is
+ *  edited, so one keystroke does not rewrite every line ending in it. The cell
+ *  passes the value as it was when it was focused, so the convention holds for
+ *  the whole edit, even one that passes through a moment with no line breaks;
+ *  a write of a row passes the value it is replacing. Anything
+ *  else—no line breaks, `\n` alone, a lone `\r`, or a mixture—has no single
+ *  convention to keep, and what is typed is stored with `\n`. */
+export function withLineBreaksOf(typed: string, stored: unknown): string {
+  if (typeof stored !== "string" || !stored.includes("\r\n")) return typed;
+  if (/[\r\n]/.test(stored.replaceAll("\r\n", ""))) return typed;
+  return typed.replace(/\r\n?/g, "\n").replaceAll("\n", "\r\n");
+}
+
+/** The first line of a cell's text and how many lines follow it, which is
+ *  what a cell of several lines shows until it is edited. */
+export function firstLine(text: string): { line: string; more: number } {
+  const lines = text.split(/\r\n?|\n/);
+  return { line: lines[0], more: lines.length - 1 };
 }
 
 /** A row to add at the end: the schema's defaults, then each `carry_forward`
@@ -500,6 +568,25 @@ export function speakUrl(
 
 // ── Sizing ──────────────────────────────────────────────────────────────────
 
+/** Which way an open cell of several lines grows, and how tall it may be.
+ *
+ *  It opens downward, over the rows beneath it, where its text fits there.
+ *  Where it does not, it opens upward if there is more room above, so a cell
+ *  near the bottom of the pane is not cut off by the pane's edge. Either way it
+ *  is no taller than the room on its side, and scrolls inside itself beyond
+ *  that, so the whole box is always on screen. `wanted` is the height its text
+ *  asks for, and `least` the height of a cell at rest, below which it never
+ *  goes. */
+export function openBoxPlacement(
+  wanted: number,
+  below: number,
+  above: number,
+  least: number,
+): { up: boolean; max: number } {
+  const up = wanted > below && above > below;
+  return { up, max: Math.max(least, up ? above : below) };
+}
+
 /** How many chips a cell shows before it says how many more there are.
  *
  *  A fixed count rather than a measurement: the cell is one line of a dense
@@ -597,6 +684,7 @@ export function widthChOf(column: Column): number | undefined {
     case "string":
     case "text":
     case "spaced-string":
+    case "multiline":
       return column.wide ? 40 : 16;
     default:
       // A number, a select, a boolean and a map are as wide as their own

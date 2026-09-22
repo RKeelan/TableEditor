@@ -60,6 +60,9 @@ struct Book {
     /// The catalogue entry a view links to.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     link: String,
+    /// What is written inside the cover, which runs to several lines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    inscription: String,
     notes: String,
 }
 
@@ -218,6 +221,7 @@ impl TableLogic for Books {
             Column::string("due", "Due").width_ch(10),
             Column::string("link", "Catalogue").width_ch(30),
             Column::computed("shelf", "Shelf mark", "shelf").width_ch(18),
+            Column::multiline("inscription", "Inscription").width_ch(24),
             Column::text("notes", "Notes").wide(),
         ])
         .sortable()

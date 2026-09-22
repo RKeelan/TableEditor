@@ -305,6 +305,7 @@ The schema is data, not code: it carries everything the editor needs to render a
       "value_options": [{ "value": "None" }, { "value": "One" }],
       "allow_new_keys": false, "allow_new_values": false },
     { "field": "shelf", "label": "Shelf", "type": "computed", "from": "shelf" },
+    { "field": "inscription", "label": "Inscription", "type": "multiline" },
     { "field": "comment", "label": "Comment", "type": "text", "wide": true }
   ],
   "new_row": { "defaults": { "title": "", "genre": "" }, "carry_forward": ["genre"] },
@@ -312,10 +313,11 @@ The schema is data, not code: it carries everything the editor needs to render a
 }
 ```
 
-The column types are `string`, `text`, `spaced-string`, `number`, `boolean`, `select`, `computed`, and `map`.
+The column types are `string`, `text`, `spaced-string`, `multiline`, `number`, `boolean`, `select`, `computed`, and `map`.
 
 The sentences below say what a bundle does with each. They are the contract a bundle honours, not a description of one: a repository serving a bundle of its own through `index_html` is taking these on.
 
+* `string`, `text` and `spaced-string` are one line, and `multiline` is several, whose line breaks and spacing a bundle stores exactly as typed. A bundle never strips a line break from a stored value of these four types: a one-line cell that holds one is edited as several lines. A map entry is edited in one line and does lose a line break when it is edited.
 * A `number` column stores a number rather than a string. Under `int_only`, a bundle rounds what the cell is given to a whole number and steps it by one.
 * A `boolean` column stores a JSON boolean. A bundle gives the cell an unset state beside true and false, and writes unset as an absent field rather than as `false`, so a row nobody has answered is told apart from one answered no.
 * A `select` carries either a fixed `options` list or an `options_by` map keyed on another column's value. An option is `{ "value": …, "label": … }`, and the label is omitted where it would repeat the value; a bundle shows the label and stores the value.
@@ -351,7 +353,9 @@ A PUT sends every field of every row the server sent, including fields no column
 
 A cleared cell is written as an absent field, not as an empty string, so clearing a cell leaves the stored JSONL as though the field had never been filled in. The exception is a field the schema's `new_row.defaults` gives an empty string: that is the server saying a row of this table always carries the field, and a row type with a plain `String` there could not read an absent one back. Such a field is cleared to `""` instead. The same rule clears the dependants of a `cascades_to` column when its value changes.
 
-A cell of a `string` or `text` column counts as cleared when nothing but whitespace is left in it. A `spaced-string` counts as cleared only when it is empty, and is stored exactly as typed, because spacing is what that type is for.
+A cell of a `string` or `text` column counts as cleared when nothing but whitespace is left in it. A `spaced-string` or `multiline` cell counts as cleared only when it is empty, and is stored exactly as typed, because spacing is what those types are for.
+
+A browser hands back every line break typed into a box of several lines as `\n`, whatever the box was given. The file format itself keeps whatever a string holds—`\r\n` is escaped inside the JSON like any other character and read back unchanged—so what changes a stored `\r\n` is an edit of that cell. A value whose every line break is `\r\n` when its cell is focused is written back with `\r\n` for as long as the cell is being edited, even through a moment with no line breaks at all, so an edit does not rewrite every line ending in it. A value with a lone `\r`, or with `\r\n` and `\n` mixed, has no one convention to keep, and an edit of it writes `\n` throughout. A cell that is not edited is written exactly as it was read.
 
 A map entry the edit did not touch is written back exactly as it was read, so a value the editor shows as text but the file stores as a number stays a number. An entry that is edited follows the map it is in: where the entry's own previous value was a number, or every other value is, what is typed is stored as a number when it reads as one.
 
@@ -364,6 +368,8 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 * Opening a table reads it from the server rather than from the browser's cache, so the rows the editor holds, and the version it saves against, are the file as it is.
 * Deleting a row offers an undo rather than asking first. The row comes back where it was, with everything it held, and because editing saves, the restoration saves too. The offer lasts about ten seconds or until the next edit.
 * A cell holding something that is not what its column describes — a number column holding `"1994"`, a boolean holding `"true"`, a null — shows that value, marked, rather than appearing empty. Editing another cell of the row leaves it exactly as it was.
+* A cell of several lines is one line tall until it is focused, like every other cell, and shows the first line with a count of the lines after it. Focused, it opens over the rows beneath it, or over those above it where its text does not fit beneath and there is more room above, rather than pushing those rows aside under the pointer. It is as tall as its text up to about a dozen lines and the room on its side of the table, and scrolls beyond that, so the whole box is on screen. Enter is a line break, and Tab leaves it as it leaves any other cell; like every other cell, it is saved as it is typed.
+* A cell of a one-line column holding a line break—typed into the JSONL by hand, or written by a script—is edited as several lines, and marked, since a one-line box would strip the break on the first keystroke and the save would write that. It stays a box of several lines until it is left, even if the last break is taken out.
 * Dragging a row onto another puts it where that row was, the same rule in both directions. Sorting or filtering turns dragging off, since a view that is not the stored order has no order to rearrange.
 * Adding a row while a filter is on clears the filter, so the new row cannot be added somewhere invisible.
 * The page is served from a repository's own machine and asks nothing of the network: no fonts, no analytics, nothing from a CDN. A build that introduced such a request fails the test that reads the committed page.
@@ -585,7 +591,7 @@ A release never ships the placeholder. `./Release.ps1` builds the bundle, packag
 
 The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and the example's one action, Lend it out, whose form carries all four kinds of field and writes to `Books.jsonl`; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it.
 
-Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width. The second is lent from the Central branch, so its refused link is on that branch's page as well as in a table.
+Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width. The second is lent from the Central branch, so its refused link is on that branch's page as well as in a table. Three more fields hold line breaks for the same reason: two inscriptions in the Inscription column, one written with `\n` and one with `\r\n`, and a note of two lines in the one-line Notes column.
 
 ```
 cargo run --example library -- web --api-only    # the API on 127.0.0.1:8791
@@ -604,7 +610,7 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 
 `0.1.0` is the first published version. `0.2.0` adds the card, detail, and action vocabulary and the two-palette theme. Everything it adds to `ViewLogic` has a default, nothing it moved is named from anywhere but the crate root, and every wire shape `0.1.0` sent is still sent, so a consumer of `0.1.0` compiles against it unchanged apart from the pin. The rule above would have made that a patch release; it takes a minor one because the page a consumer gets is a different page, and a version that reads like a bug fix is a poor way to say so.
 
-`0.3.0` refuses a write of rows read before the file changed: a read carries the version of the file it read, a write states it back, and a write that states an older one is answered with a 409 rather than made. It also puts every way a write can fail ahead of the write itself, so a table whose `derive` or `validate` cannot run is left as it was rather than written and then reported as a failure. It adds one method to the Rust API, `Context::version`, and changes nothing else there, so a consumer of `0.2.0` compiles against it unchanged apart from the pin; a write that states no version is written whatever the file holds, so a repository's scripts keep working as well. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
+`0.3.0` refuses a write of rows read before the file changed: a read carries the version of the file it read, a write states it back, and a write that states an older one is answered with a 409 rather than made. It also puts every way a write can fail ahead of the write itself, so a table whose `derive` or `validate` cannot run is left as it was rather than written and then reported as a failure. It adds the `multiline` column type, declared with `Column::multiline`, for a value of several lines, and edits a one-line cell whose stored value holds a line break as several lines rather than stripping the break. To the Rust API it adds `Context::version`, `Column::multiline` and `ColumnType::Multiline`, and marks `ColumnType` `#[non_exhaustive]`, so the next column type is not a breaking change. A `match` on `ColumnType` outside the crate now needs a wildcard arm, but nothing in the API hands a consumer one to match on. It changes nothing else there, so a consumer of `0.2.0` compiles against it unchanged apart from the pin; a write that states no version is written whatever the file holds, so a repository's scripts keep working as well. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 

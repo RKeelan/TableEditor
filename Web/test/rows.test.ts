@@ -14,15 +14,21 @@ import {
   compareByColumn,
   controlWidth,
   datalistOptions,
+  editsAsLines,
+  firstLine,
+  hasLineBreak,
+  linesText,
   mapEntries,
   newRow,
   nextSort,
+  openBoxPlacement,
   parseFilter,
   removeMapEntry,
   rowMatches,
   selectOptions,
   speakUrl,
   widthChOf,
+  withLineBreaksOf,
   writeCell,
   writeMapEntry,
 } from "../src/lib/rows";
@@ -31,6 +37,7 @@ import { apiRoot } from "../src/lib/api";
 const title: Column = { field: "title", label: "Title", type: "string" };
 const notes: Column = { field: "notes", label: "Notes", type: "text", wide: true };
 const call: Column = { field: "call", label: "Call", type: "spaced-string" };
+const letter: Column = { field: "letter", label: "Letter", type: "multiline" };
 const year: Column = { field: "year", label: "Year", type: "number" };
 const copies: Column = {
   field: "copies",
@@ -625,5 +632,162 @@ describe("a chip that will not fit", () => {
     expect(chipKeyStyle().minWidth).toBe(0);
     expect(chipKeyStyle().textOverflow).toBe("ellipsis");
     expect(chipValueStyle().textOverflow).toBe("ellipsis");
+  });
+});
+
+describe("cells of several lines", () => {
+  test("store what is typed exactly, line breaks and spacing included", () => {
+    const typed = "  Dear Ada,\n\nThank you.\n  Bo\n";
+    expect(writeCell({}, letter, typed, schemaOf())).toEqual({ letter: typed });
+  });
+
+  test("clear only when empty", () => {
+    expect(writeCell({ letter: "a" }, letter, "\n", schemaOf())).toEqual({
+      letter: "\n",
+    });
+    expect("letter" in writeCell({ letter: "a" }, letter, "", schemaOf())).toBe(
+      false,
+    );
+  });
+
+  test("keep a stored value's \\r\\n when every break in it is one", () => {
+    const stored = "Dear Ada,\r\nThanks.";
+    expect(withLineBreaksOf("Dear Ada,\nThanks!\nBo", stored)).toBe(
+      "Dear Ada,\r\nThanks!\r\nBo",
+    );
+    expect(
+      writeCell({ letter: stored }, letter, "Dear Ada,\nThanks!", schemaOf()),
+    ).toEqual({ letter: "Dear Ada,\r\nThanks!" });
+  });
+
+  test("write \\n where the stored value has no single convention", () => {
+    expect(withLineBreaksOf("a\nb", "a\r\nb\nc")).toBe("a\nb");
+    expect(withLineBreaksOf("a\nb", "a\rb")).toBe("a\nb");
+    expect(withLineBreaksOf("a\nb", "ab")).toBe("a\nb");
+    expect(withLineBreaksOf("a\nb", undefined)).toBe("a\nb");
+  });
+
+  test("are shown with every break as \\n, which is what a text area hands back", () => {
+    expect(linesText("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
+    expect(linesText(undefined)).toBe("");
+    expect(linesText(3)).toBe("3");
+  });
+
+  test("show their first line and count the rest", () => {
+    expect(firstLine("Dear Ada,\r\n\r\nThanks.")).toEqual({
+      line: "Dear Ada,",
+      more: 2,
+    });
+    expect(firstLine("one line")).toEqual({ line: "one line", more: 0 });
+    expect(firstLine("")).toEqual({ line: "", more: 0 });
+  });
+
+  test("take a text column's width", () => {
+    expect(widthChOf(letter)).toBe(16);
+    expect(widthChOf({ ...letter, wide: true })).toBe(40);
+  });
+});
+
+describe("a one-line cell holding a line break", () => {
+  test("edits as several lines rather than stripping the break", () => {
+    for (const column of [title, notes, call]) {
+      expect(editsAsLines(column, "a\nb")).toBe(true);
+      expect(editsAsLines(column, "a\r\nb")).toBe(true);
+      expect(editsAsLines(column, "a\rb")).toBe(true);
+      expect(editsAsLines(column, "ab")).toBe(false);
+      expect(editsAsLines(column, undefined)).toBe(false);
+    }
+    expect(editsAsLines(letter, undefined)).toBe(true);
+    expect(editsAsLines(year, "1\n2")).toBe(false);
+    expect(editsAsLines(genre, "a\nb")).toBe(false);
+  });
+
+  test("keeps the break through an edit of that cell", () => {
+    const row: Row = { notes: "Loose plates.\nRebound." };
+    expect(
+      writeCell(row, notes, "Loose plates.\nRebound 2019.", schemaOf()),
+    ).toEqual({ notes: "Loose plates.\nRebound 2019." });
+  });
+
+  test("is untouched by an edit elsewhere in the row", () => {
+    const row: Row = { title: "Moss", notes: "Loose plates.\r\nRebound." };
+    expect(writeCell(row, title, "Mosses", schemaOf())).toEqual({
+      title: "Mosses",
+      notes: "Loose plates.\r\nRebound.",
+    });
+  });
+
+  test("is told apart from one without", () => {
+    expect(hasLineBreak("a\nb")).toBe(true);
+    expect(hasLineBreak("ab")).toBe(false);
+    expect(hasLineBreak(12)).toBe(false);
+  });
+});
+
+describe("line breaks through an edit", () => {
+  test("keep a one-line column's \\r\\n when every break in it is one", () => {
+    const row: Row = { notes: "Loose plates.\r\nRebound." };
+    expect(
+      writeCell(row, notes, "Loose plates.\nRebound 2019.", schemaOf()),
+    ).toEqual({ notes: "Loose plates.\r\nRebound 2019." });
+  });
+
+  test("keep the convention of the value as it was focused, through a moment with no breaks", () => {
+    const focused = "Dear Ada,\r\nThanks.";
+    // Everything was selected and replaced, so the row now holds no break.
+    const row: Row = { letter: "D" };
+    const typed = withLineBreaksOf("Dear Bo,\nThanks!", focused);
+    expect(writeCell(row, letter, typed, schemaOf())).toEqual({
+      letter: "Dear Bo,\r\nThanks!",
+    });
+  });
+
+  test("come out the same when the convention is applied twice", () => {
+    const stored = "a\r\nb";
+    const once = withLineBreaksOf("a\nb\nc", stored);
+    expect(withLineBreaksOf(once, stored)).toBe(once);
+    expect(writeCell({ letter: stored }, letter, once, schemaOf())).toEqual({
+      letter: "a\r\nb\r\nc",
+    });
+  });
+
+  test("store a multiline value of whitespace alone rather than clearing it", () => {
+    expect(writeCell({ letter: "a" }, letter, "  ", schemaOf())).toEqual({
+      letter: "  ",
+    });
+    expect(writeCell({ letter: "a" }, letter, " \n\t", schemaOf())).toEqual({
+      letter: " \n\t",
+    });
+  });
+
+  test("clear a one-line cell left holding a line break alone, as it clears whitespace", () => {
+    expect("notes" in writeCell({ notes: "a\nb" }, notes, "\n", schemaOf())).toBe(
+      false,
+    );
+    expect(writeCell({ notes: "a\nb" }, notes, "\n", schemaOf({ notes: "" }))).toEqual(
+      { notes: "" },
+    );
+    // Spacing is the point of a spaced string, so it keeps even this.
+    expect(writeCell({ call: "a\nb" }, call, "\n", schemaOf())).toEqual({
+      call: "\n",
+    });
+  });
+});
+
+describe("where an open cell of several lines goes", () => {
+  test("downward where its text fits beneath it", () => {
+    expect(openBoxPlacement(120, 400, 50, 32)).toEqual({ up: false, max: 400 });
+  });
+
+  test("upward where it does not and there is more room above", () => {
+    expect(openBoxPlacement(256, 44, 500, 32)).toEqual({ up: true, max: 500 });
+  });
+
+  test("downward, cut to the room there, where above is no better", () => {
+    expect(openBoxPlacement(256, 200, 150, 32)).toEqual({ up: false, max: 200 });
+  });
+
+  test("never shorter than a cell at rest", () => {
+    expect(openBoxPlacement(256, 10, 5, 32)).toEqual({ up: false, max: 32 });
   });
 });
