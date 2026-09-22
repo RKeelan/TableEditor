@@ -134,11 +134,20 @@ pub trait Table: Send + Sync {
     fn data_file(&self) -> &'static str;
 
     /// `GET /api/<table>`: the schema, the stored rows, their derivation, their
-    /// validation errors, and any sibling data.
+    /// validation errors, any sibling data, and the version of the file the
+    /// rows were read from.
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError>;
 
-    /// `PUT /api/<table>`: write the posted rows, then return the derivation of
-    /// what was written.
+    /// `PUT /api/<table>`: write the posted rows, and return their derivation
+    /// and the version the file now has.
+    ///
+    /// A body that states the version its rows were read at is refused with a
+    /// 409 where the file now holds something else, so a client holding a whole
+    /// table cannot write its older rows over a change made since. A body that
+    /// states no version is written whatever the file holds.
+    ///
+    /// The write is the last thing the request does, so a failure means the
+    /// file was left as it was and the request can be made again.
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError>;
 
     /// `POST /api/<table>/derive`: derive and validate the posted rows without
@@ -175,42 +184,74 @@ impl<T: TableLogic> Table for T {
             derived: self.derive(&rows, ctx)?,
             errors: self.validate(&rows, ctx)?,
             siblings: self.siblings(ctx)?,
+            version: ctx.version(file)?,
         })
     }
 
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
         let file = self.file();
-        let rows: Vec<T::Row> = parse_rows(body)?;
+        let request: RowsRequest<T::Row> = parse_body(body)?;
+
+        // The check and the write are one request, and the server serves one
+        // request at a time, so nothing lands between them: the file compared
+        // against is the file replaced.
+        if let Some(loaded) = request.version.as_deref()
+            && loaded != ctx.version(file)?
+        {
+            return Err(ApiError::new(
+                409,
+                format!("{file} changed on disk after it was loaded; read it again before writing"),
+            ));
+        }
+
+        // The write is last, so a request either answers for a write it made
+        // or leaves the file as it was. A write that landed under an answer
+        // that failed would be retried by a client stating the version that
+        // write moved on from, and the retry would be refused over a write
+        // that had in fact gone through.
         let text = self
-            .serialize(&rows)
+            .serialize(&request.rows)
             .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?;
+        let (derived, errors) = self.derivation(ctx, &request.rows)?;
         ctx.write(file, &text)?;
-        self.derive_payload(ctx, &rows)
+
+        to_json(&PutResponse {
+            derived,
+            errors,
+            version: ctx.version(file)?,
+        })
     }
 
     fn handle_derive(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
-        let rows: Vec<T::Row> = parse_rows(body)?;
-        self.derive_payload(ctx, &rows)
+        let request: RowsRequest<T::Row> = parse_body(body)?;
+        let (derived, errors) = self.derivation(ctx, &request.rows)?;
+        to_json(&DeriveResponse { derived, errors })
     }
 }
 
-/// The shared tail of a write and a derivation: validate and derive the rows in
-/// hand.
-trait DerivePayload: TableLogic {
-    fn derive_payload(&self, ctx: &Context, rows: &[Self::Row]) -> Result<String, ApiError> {
-        to_json(&DeriveResponse {
-            derived: self.derive(rows, ctx)?,
-            errors: self.validate(rows, ctx)?,
-        })
+/// The shared tail of a write and a derivation: what the rows in hand derive to,
+/// and what is wrong with them.
+trait Derivation: TableLogic {
+    fn derivation(
+        &self,
+        ctx: &Context,
+        rows: &[Self::Row],
+    ) -> Result<(Vec<serde_json::Value>, Vec<ValidationError>), ApiError> {
+        Ok((self.derive(rows, ctx)?, self.validate(rows, ctx)?))
     }
 }
 
-impl<T: TableLogic> DerivePayload for T {}
+impl<T: TableLogic> Derivation for T {}
 
-/// The body of a PUT or derive request: the full set of rows for a table.
+/// The body of a PUT or derive request: the full set of rows for a table, and,
+/// for a write, the version those rows were read at.
 #[derive(Deserialize)]
 struct RowsRequest<T> {
     rows: Vec<T>,
+    /// Absent from a write that states no version, which is then written
+    /// whatever the file holds, and from a derive, which writes nothing.
+    #[serde(default)]
+    version: Option<String>,
 }
 
 /// `GET /api/<table>`. `rows` is borrowed to avoid a clone.
@@ -221,20 +262,33 @@ struct GetPayload<'a, R> {
     derived: Vec<serde_json::Value>,
     errors: Vec<ValidationError>,
     siblings: serde_json::Value,
+    /// The version of the file `rows` were read from, which a write states
+    /// back.
+    version: String,
 }
 
-/// `PUT /api/<table>` and `POST /api/<table>/derive`.
+/// `PUT /api/<table>`.
+#[derive(Serialize)]
+struct PutResponse {
+    derived: Vec<serde_json::Value>,
+    errors: Vec<ValidationError>,
+    /// The version the file now has, which the next write states.
+    version: String,
+}
+
+/// `POST /api/<table>/derive`, which writes nothing and so has no version to
+/// report.
 #[derive(Serialize)]
 struct DeriveResponse {
     derived: Vec<serde_json::Value>,
     errors: Vec<ValidationError>,
 }
 
-/// Read the posted rows, mapping a malformed body to a 400.
-fn parse_rows<T: DeserializeOwned>(body: &str) -> Result<Vec<T>, ApiError> {
-    let request: RowsRequest<T> = serde_json::from_str(body)
-        .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))?;
-    Ok(request.rows)
+/// Read the posted rows and the version they were read at, mapping a malformed
+/// body to a 400.
+fn parse_body<T: DeserializeOwned>(body: &str) -> Result<RowsRequest<T>, ApiError> {
+    serde_json::from_str(body)
+        .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))
 }
 
 /// Serialize a response value, mapping failure to a 500.
@@ -247,7 +301,8 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::fixture::{self, BOOKS_FILE, Book, Books, GENRES_FILE, Genres};
+    use crate::fixture::{self, BOOKS_FILE, Book, Books, GENRES_FILE, Genre, Genres};
+    use crate::schema::Column;
 
     #[test]
     fn get_shapes_schema_rows_derived_errors_and_siblings() {
@@ -426,14 +481,233 @@ mod tests {
         assert_eq!(v["rows"][0]["subgenre"], "Natural History");
     }
 
-    #[test]
-    fn parse_rows_rejects_a_malformed_body() {
-        assert_eq!(parse_rows::<Book>("not json").unwrap_err().status, 400);
+    /// The status a body was refused with, or nothing where it was read. The
+    /// request itself is not compared, so a row type need not print.
+    fn refusal(body: &str) -> Option<u16> {
+        parse_body::<Book>(body).err().map(|e| e.status)
     }
 
     #[test]
-    fn parse_rows_rejects_a_body_without_rows() {
-        assert_eq!(parse_rows::<Book>("{}").unwrap_err().status, 400);
+    fn parse_body_rejects_a_malformed_body() {
+        assert_eq!(refusal("not json"), Some(400));
+    }
+
+    #[test]
+    fn parse_body_rejects_a_body_without_rows() {
+        assert_eq!(refusal("{}"), Some(400));
+    }
+
+    #[test]
+    fn a_body_that_states_no_version_states_none() {
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::MOSS);
+        assert!(parse_body::<Book>(&body).unwrap().version.is_none());
+
+        let stated = format!(
+            r#"{{"rows":[{}],"version":"0123456789abcdef"}}"#,
+            fixture::MOSS
+        );
+        assert_eq!(
+            parse_body::<Book>(&stated).unwrap().version.as_deref(),
+            Some("0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn get_sends_the_version_of_the_file_it_read() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+
+        let v: Value = serde_json::from_str(&Books.handle_get(&dir.context()).unwrap()).unwrap();
+        assert_eq!(
+            v["version"],
+            dir.context().version(BOOKS_FILE).unwrap().as_str()
+        );
+    }
+
+    #[test]
+    fn put_refuses_rows_read_before_the_file_changed() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let read_at = dir.context().version(BOOKS_FILE).unwrap();
+
+        // Something else writes the table: an action on a detail page, another
+        // tab, or the owner editing the file by hand.
+        let outside = r#"{"title":"The Harbour Road","genre":"Travel","subgenre":"Field Guides"}"#;
+        dir.write(BOOKS_FILE, outside);
+
+        let body = format!(r#"{{"rows":[{}],"version":"{read_at}"}}"#, fixture::MOSS);
+        let err = Books.handle_put(&dir.context(), &body).unwrap_err();
+        assert_eq!(err.status, 409);
+        assert!(err.message.contains("changed on disk"), "{}", err.message);
+        // The change that was there is still there.
+        assert!(dir.read(BOOKS_FILE).contains("The Harbour Road"));
+    }
+
+    #[test]
+    fn put_takes_the_version_the_get_sent_and_answers_with_the_next_one() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+
+        let got: Value = serde_json::from_str(&Books.handle_get(&dir.context()).unwrap()).unwrap();
+        let read_at = got["version"].as_str().unwrap();
+
+        let body = format!(
+            r#"{{"rows":[{}],"version":"{read_at}"}}"#,
+            r#"{"title":"The Harbour Road","genre":"Travel","subgenre":"Field Guides"}"#
+        );
+        let put: Value =
+            serde_json::from_str(&Books.handle_put(&dir.context(), &body).unwrap()).unwrap();
+
+        // What the write answered with is the version of what is now stored, so
+        // the next write states it and is not refused.
+        let written = dir.context().version(BOOKS_FILE).unwrap();
+        assert_eq!(put["version"], written.as_str());
+        assert_ne!(put["version"], read_at);
+
+        let again = format!(r#"{{"rows":[{}],"version":"{written}"}}"#, fixture::MOSS);
+        assert!(Books.handle_put(&dir.context(), &again).is_ok());
+    }
+
+    #[test]
+    fn put_without_a_version_writes_whatever_the_file_holds() {
+        let dir = fixture::temp_dir();
+        dir.write(
+            BOOKS_FILE,
+            r#"{"title":"The Harbour Road","genre":"Travel","subgenre":"Field Guides"}"#,
+        );
+
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::MOSS);
+        assert!(Books.handle_put(&dir.context(), &body).is_ok());
+        assert!(dir.read(BOOKS_FILE).contains("A Field Guide to Moss"));
+    }
+
+    #[test]
+    fn put_refuses_rows_read_from_a_file_since_deleted() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let read_at = dir.context().version(BOOKS_FILE).unwrap();
+        std::fs::remove_file(dir.path().join(BOOKS_FILE)).unwrap();
+
+        let body = format!(r#"{{"rows":[{}],"version":"{read_at}"}}"#, fixture::MOSS);
+        assert_eq!(
+            Books.handle_put(&dir.context(), &body).unwrap_err().status,
+            409
+        );
+        assert!(!dir.path().join(BOOKS_FILE).exists());
+    }
+
+    #[test]
+    fn put_creates_a_table_for_rows_read_from_a_file_that_was_not_there() {
+        let dir = fixture::temp_dir();
+        let absent = dir.context().version(BOOKS_FILE).unwrap();
+
+        // The editor cannot open a table whose file is missing, but a script
+        // can read one as absent and write the file it means to create.
+        let body = format!(r#"{{"rows":[{}],"version":"{absent}"}}"#, fixture::MOSS);
+        let put: Value =
+            serde_json::from_str(&Books.handle_put(&dir.context(), &body).unwrap()).unwrap();
+
+        assert!(dir.read(BOOKS_FILE).contains("A Field Guide to Moss"));
+        assert_eq!(
+            put["version"],
+            dir.context().version(BOOKS_FILE).unwrap().as_str()
+        );
+        assert_ne!(put["version"], absent.as_str());
+    }
+
+    #[test]
+    fn put_of_the_same_rows_again_leaves_the_version_where_it_was() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let read_at = dir.context().version(BOOKS_FILE).unwrap();
+
+        // Writing the same bytes back moves nothing, so the version a client
+        // holds is still the file's and its next write is not refused. This is
+        // what a hash of the contents buys over a timestamp.
+        let body = format!(r#"{{"rows":[{}],"version":"{read_at}"}}"#, fixture::MOSS);
+        let put: Value =
+            serde_json::from_str(&Books.handle_put(&dir.context(), &body).unwrap()).unwrap();
+        assert_eq!(put["version"], read_at.as_str());
+
+        let again = format!(r#"{{"rows":[{}],"version":"{read_at}"}}"#, fixture::MOSS);
+        assert!(Books.handle_put(&dir.context(), &again).is_ok());
+    }
+
+    #[test]
+    fn put_leaves_the_file_alone_when_the_derivation_fails() {
+        /// A table whose derivation cannot run: a sibling it needs is
+        /// unreadable, say.
+        struct Brittle;
+
+        impl TableLogic for Brittle {
+            type Row = Genre;
+
+            fn name(&self) -> &'static str {
+                "brittle"
+            }
+
+            fn file(&self) -> &'static str {
+                GENRES_FILE
+            }
+
+            fn title(&self) -> &'static str {
+                "Brittle"
+            }
+
+            fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+                Ok(Schema::new([Column::string("genre", "Genre")]))
+            }
+
+            fn validate(
+                &self,
+                _rows: &[Genre],
+                _ctx: &Context,
+            ) -> Result<Vec<ValidationError>, ApiError> {
+                Ok(Vec::new())
+            }
+
+            fn derive(
+                &self,
+                _rows: &[Genre],
+                _ctx: &Context,
+            ) -> Result<Vec<serde_json::Value>, ApiError> {
+                Err(ApiError::server("the almanac is unreadable"))
+            }
+        }
+
+        let dir = fixture::temp_dir();
+        dir.write(GENRES_FILE, fixture::NATURAL_HISTORY);
+        let read_at = dir.context().version(GENRES_FILE).unwrap();
+
+        let body = format!(
+            r#"{{"rows":[{}],"version":"{read_at}"}}"#,
+            r#"{"genre":"Travel","subgenre":"Memoir"}"#
+        );
+        assert_eq!(
+            Brittle
+                .handle_put(&dir.context(), &body)
+                .unwrap_err()
+                .status,
+            500
+        );
+
+        // The rows were not written, so the version the client holds is still
+        // the file's and the request can simply be made again.
+        assert!(dir.read(GENRES_FILE).contains("Natural History"));
+        assert_eq!(dir.context().version(GENRES_FILE).unwrap(), read_at);
+    }
+
+    #[test]
+    fn derive_answers_with_no_version() {
+        let dir = fixture::temp_dir();
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::MOSS);
+
+        let v: Value =
+            serde_json::from_str(&Books.handle_derive(&dir.context(), &body).unwrap()).unwrap();
+        assert!(v["version"].is_null());
+        // A version in a derive body is ignored, since nothing is written.
+        let stated = format!(r#"{{"rows":[{}],"version":"nonsense"}}"#, fixture::MOSS);
+        assert!(Books.handle_derive(&dir.context(), &stated).is_ok());
     }
 
     #[test]

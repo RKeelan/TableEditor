@@ -299,6 +299,66 @@ fn the_api_answers_over_http() {
         2
     );
 
+    // ── Rows read before the file changed ──────────────────────────────────
+    // A read says which version of the file its rows came from. A write that
+    // states that version is refused once the file holds something else, so a
+    // client holding the whole table cannot write its older rows over what
+    // changed it.
+    let (_, body) = request(port, "GET", "/api/books", "");
+    let read_at = json(&body)["version"].as_str().unwrap().to_string();
+
+    let outside = "{\"title\":\"The Harbour Road\",\"year\":2003}\n";
+    std::fs::write(data.join(BOOKS_FILE), outside).unwrap();
+
+    let stale = format!(
+        r#"{{"rows":[{{"title":"A Field Guide to Moss","year":1994}}],"version":"{read_at}"}}"#
+    );
+    let (status, body) = request(port, "PUT", "/api/books", &stale);
+    assert_eq!(status, 409);
+    assert!(
+        json(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("changed on disk")
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join(BOOKS_FILE)).unwrap(),
+        outside
+    );
+
+    // Reading again gives the version the file has now, which the write states
+    // and is answered with the next one.
+    let (_, body) = request(port, "GET", "/api/books", "");
+    let now = json(&body)["version"].as_str().unwrap().to_string();
+    assert_ne!(now, read_at);
+
+    let restored = format!(
+        r#"{{"rows":[{{"title":"A Field Guide to Moss","year":1994}},{{"title":"","year":2001}}],"version":"{now}"}}"#
+    );
+    let (status, body) = request(port, "PUT", "/api/books", &restored);
+    assert_eq!(status, 200);
+    let next = json(&body)["version"].as_str().unwrap().to_string();
+    assert_ne!(next, now);
+    let (_, body) = request(port, "GET", "/api/books", "");
+    assert_eq!(json(&body)["version"], next.as_str());
+
+    // A write that states no version is written whatever the file holds, which
+    // is what a script and a client that does not read the version send.
+    let (status, _) = request(port, "PUT", "/api/books", rows);
+    assert_eq!(status, 200);
+    assert_eq!(
+        std::fs::read_to_string(data.join(BOOKS_FILE)).unwrap(),
+        "{\"title\":\"A Field Guide to Moss\",\"year\":1994}\n{\"title\":\"\",\"year\":2001}\n"
+    );
+
+    // The version a read carries is only good while the answer is, so no
+    // client is left holding one out of a cache. Every answer under /api/ says
+    // so, since each is a live read of a file.
+    for path in ["/api/books", "/api/app", "/api/views/recent", "/api/health"] {
+        let head = response_headers(port, "GET", path);
+        assert!(head.contains("cache-control: no-store"), "{path}: {head}");
+    }
+
     // ── Views ──────────────────────────────────────────────────────────────
     // An address that names no parameter gets the view's own default, and is
     // told what it got.
@@ -655,6 +715,38 @@ fn request_with(
     body: &str,
     headers: &[(&str, &str)],
 ) -> (u16, String) {
+    let response = exchange(port, method, path, body, headers);
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap();
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// The headers of one answer, lower-cased, for the answers that say something
+/// in a header rather than in a body.
+fn response_headers(port: u16, method: &str, path: &str) -> String {
+    let response = exchange(
+        port,
+        method,
+        path,
+        "",
+        &[("Content-Type", "application/json")],
+    );
+    response
+        .split_once("\r\n\r\n")
+        .map(|(head, _)| head.to_lowercase())
+        .unwrap_or_default()
+}
+
+/// One HTTP/1.0 exchange, returning the whole of what came back.
+fn exchange(port: u16, method: &str, path: &str, body: &str, headers: &[(&str, &str)]) -> String {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut stream = TcpStream::connect(addr).unwrap();
     let extra: String = headers
@@ -671,16 +763,5 @@ fn request_with(
 
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-
-    let status = response
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse().ok())
-        .unwrap();
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_default();
-    (status, body)
+    response
 }

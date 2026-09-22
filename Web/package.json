@@ -1,7 +1,7 @@
 {
   "name": "table-editor-web",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "The browser bundle the table-editor crate embeds: a schema-driven editor for a repository's JSONL tables.",
   "scripts": {

@@ -56,8 +56,9 @@ impl std::error::Error for ParseError {}
 /// A failure with the HTTP status to report it under. Body and parse problems
 /// are 400; a write that does not come from a page this server served is 403 or
 /// 415; an endpoint or an action nobody offers is 404; an endpoint reached by
-/// the wrong method is 405; a body past the size cap is 413; and filesystem and
-/// serialization failures are 500.
+/// the wrong method is 405; a write of rows read before the file changed is
+/// 409; a body past the size cap is 413; and filesystem and serialization
+/// failures are 500.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub status: u16,

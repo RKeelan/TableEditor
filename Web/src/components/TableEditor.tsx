@@ -14,6 +14,7 @@ import {
   type Schema,
   type ValidationError,
 } from "../lib/schema";
+import type { Pending } from "../lib/save";
 import {
   type Sort,
   cellMismatch,
@@ -41,9 +42,12 @@ import {
 import {
   type PendingSave,
   type SaveState,
+  type Writer,
   hasUnsavedWork,
   retryDelay,
   saveBanner,
+  waitingToSave,
+  writer,
 } from "../lib/save";
 import { MapCell } from "./MapCell";
 import { SpeakButton } from "./SpeakButton";
@@ -78,13 +82,10 @@ export function TableEditor({ table, pending }: Props) {
     { removed: RowEntry; index: number }[]
   >([]);
 
-  // The rows last written to disk; null until the first load.
-  const lastSaved = useRef<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deriveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const failures = useRef(0);
   // A request id shared by derive and PUT, so the freshest answer wins and a
   // stale one is dropped.
   const reqSeq = useRef(0);
@@ -96,7 +97,6 @@ export function TableEditor({ table, pending }: Props) {
   const rowsKey = useMemo(() => JSON.stringify(entryRows(entries)), [entries]);
   const rowsKeyRef = useRef(rowsKey);
   rowsKeyRef.current = rowsKey;
-  const dirty = lastSaved.current !== null && rowsKey !== lastSaved.current;
 
   /** Take a derivation only when it answers the rows on screen. A response to
    *  rows that have since been edited, deleted or reordered would hang errors
@@ -113,32 +113,6 @@ export function TableEditor({ table, pending }: Props) {
     [],
   );
 
-  // ── Load ──────────────────────────────────────────────────────────────────
-  const load = useCallback(async () => {
-    setLoadError(null);
-    try {
-      const data = await getTable(table);
-      const loaded = toEntries(data.rows);
-      lastSaved.current = JSON.stringify(data.rows);
-      entriesRef.current = loaded;
-      rowsKeyRef.current = lastSaved.current;
-      failures.current = 0;
-      setSchema(data.schema);
-      setEntries(loaded);
-      setDerived(data.derived);
-      setErrors(data.errors);
-      setUndoable([]);
-      setSave({ kind: "idle" });
-      appliedSeq.current = ++reqSeq.current;
-    } catch (e) {
-      setLoadError(describeError(e));
-    }
-  }, [table]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   // ── Saving ────────────────────────────────────────────────────────────────
   const clearRetry = () => {
     if (retryTimer.current) {
@@ -147,39 +121,90 @@ export function TableEditor({ table, pending }: Props) {
     }
   };
 
-  const write = useCallback(async () => {
-    const rows = entryRows(entriesRef.current);
-    const asked = JSON.stringify(rows);
-    if (asked === lastSaved.current) return;
+  /** The rows to write, read when the write starts rather than when it was
+   *  asked for. */
+  const onScreen = useCallback(
+    () => ({ rows: entryRows(entriesRef.current), key: rowsKeyRef.current }),
+    [],
+  );
 
-    const id = ++reqSeq.current;
+  const put = useCallback(
+    ({ rows, key }: Pending, version: string) => {
+      const id = ++reqSeq.current;
+      return putTable(table, rows, version).then((res) => {
+        applyDerived(id, key, res);
+        return res;
+      });
+    },
+    [table, applyDerived],
+  );
+
+  const report = useCallback((state: SaveState) => {
+    setSave(state);
     clearRetry();
-    setSave({ kind: "saving" });
-    try {
-      const res = await putTable(table, rows);
-      lastSaved.current = asked;
-      failures.current = 0;
-      setSave({ kind: "saved", at: Date.now() });
-      applyDerived(id, asked, res);
-    } catch (e) {
-      failures.current += 1;
-      const attempt = failures.current;
-      setSave({ kind: "failed", message: describeError(e), attempt });
-      // A failure is not the end of it: try again on a lengthening timer, as
-      // well as whenever the next edit lands.
-      retryTimer.current = setTimeout(() => void write(), retryDelay(attempt));
+    // A failure is not the end of it: try again on a lengthening timer, as
+    // well as whenever the next edit lands. A refusal schedules nothing,
+    // because retrying it cannot help.
+    if (state.kind === "failed") {
+      retryTimer.current = setTimeout(
+        () => void held.current?.writes.save(),
+        retryDelay(state.attempt),
+      );
     }
-  }, [table, applyDerived]);
+  }, []);
 
-  /** Write now rather than when the timer says so, and wait for it. */
+  // The writes of this table, made one at a time, each stating the version the
+  // one before it left behind.
+  //
+  // A writer holds the version it must state next and whether a write has been
+  // refused, so it is kept in a ref rather than memoised: a memo is a cache
+  // that may be thrown away, and a writer made again would have forgotten the
+  // version and stopped saving without saying so. One writer per table, since
+  // a version belongs to a file.
+  const held = useRef<{ table: string; writes: Writer } | null>(null);
+  if (held.current === null || held.current.table !== table) {
+    held.current = { table, writes: writer({ pending: onScreen, put, report }) };
+  }
+  const writes = held.current.writes;
+
+  const lastWritten = writes.written();
+  const dirty = lastWritten !== null && rowsKey !== lastWritten;
+
+  // ── Load ──────────────────────────────────────────────────────────────────
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const data = await getTable(table);
+      const loaded = toEntries(data.rows);
+      const key = JSON.stringify(data.rows);
+      entriesRef.current = loaded;
+      rowsKeyRef.current = key;
+      writes.loaded(key, data.version);
+      setSchema(data.schema);
+      setEntries(loaded);
+      setDerived(data.derived);
+      setErrors(data.errors);
+      setUndoable([]);
+      appliedSeq.current = ++reqSeq.current;
+    } catch (e) {
+      setLoadError(describeError(e));
+    }
+  }, [table, writes]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  /** Write now rather than when the timer says so, and wait for it. The write
+   *  queues behind one already in flight, so what is on screen reaches the
+   *  disk rather than whatever the write in flight happens to be carrying. */
   const flush = useCallback(async () => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
-    clearRetry();
-    await write();
-  }, [write]);
+    await writes.save();
+  }, [writes]);
 
   const saveRef = useRef<SaveState>(save);
   saveRef.current = save;
@@ -189,18 +214,20 @@ export function TableEditor({ table, pending }: Props) {
   useEffect(() => {
     pending.current = {
       flush,
-      unsaved: () =>
-        hasUnsavedWork(
+      waiting: () => {
+        const written = writes.written();
+        return waitingToSave(
           saveRef.current,
-          lastSaved.current !== null && rowsKeyRef.current !== lastSaved.current,
-        ),
+          written !== null && rowsKeyRef.current !== written,
+        );
+      },
     };
     // A page that is not this editor has nothing pending, and leaving this
     // one's flush behind would have the shell wait on an editor that is gone.
     return () => {
-      pending.current = { flush: async () => {}, unsaved: () => false };
+      pending.current = { flush: async () => {}, waiting: () => false };
     };
-  }, [flush, pending]);
+  }, [flush, pending, writes]);
 
   // Closing the page mid-edit throws the edit away, so say so first.
   useEffect(() => {
@@ -218,6 +245,9 @@ export function TableEditor({ table, pending }: Props) {
     if (!dirty) return;
     if (deriveTimer.current) clearTimeout(deriveTimer.current);
     deriveTimer.current = setTimeout(() => {
+      // A page that can no longer save has nothing to show a fresh derivation
+      // of: what is on screen is not going to be written.
+      if (writes.stale()) return;
       const id = ++reqSeq.current;
       const asked = rowsKeyRef.current;
       deriveTable(table, entryRows(entriesRef.current))
@@ -229,17 +259,17 @@ export function TableEditor({ table, pending }: Props) {
     return () => {
       if (deriveTimer.current) clearTimeout(deriveTimer.current);
     };
-  }, [rowsKey, dirty, table, applyDerived]);
+  }, [rowsKey, dirty, table, applyDerived, writes]);
 
   // ── Autosave, debounced ───────────────────────────────────────────────────
   useEffect(() => {
     if (!dirty) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => void write(), SAVE_DELAY);
+    saveTimer.current = setTimeout(() => void writes.save(), SAVE_DELAY);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [rowsKey, dirty, write]);
+  }, [rowsKey, dirty, writes]);
 
   useEffect(
     () => () => {
@@ -405,7 +435,7 @@ export function TableEditor({ table, pending }: Props) {
           <button
             className="btn h-9"
             onClick={() => void flush().then(() => load())}
-            title="Write anything pending, then re-read from disk"
+            title="Write anything pending, then re-read from disk. Anything that cannot be written is discarded."
           >
             Reload
           </button>
@@ -420,9 +450,15 @@ export function TableEditor({ table, pending }: Props) {
           <p className="font-mono text-[12px] text-bad">{banner.message}</p>
           <p className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
             {banner.detail}
-            <button className="btn h-8" onClick={() => void flush()}>
-              Save now
-            </button>
+            {save.kind === "stale" ? (
+              <button className="btn h-8" onClick={() => void load()}>
+                Reload
+              </button>
+            ) : (
+              <button className="btn h-8" onClick={() => void flush()}>
+                Save now
+              </button>
+            )}
           </p>
         </div>
       )}
@@ -813,6 +849,6 @@ function SaveBadge({ save }: { save: SaveState }) {
         saved {new Date(save.at).toLocaleTimeString()}
       </span>
     );
-  // A failure is a banner, not a badge: see saveBanner.
+  // A failure and a refusal are banners rather than badges: see saveBanner.
   return null;
 }

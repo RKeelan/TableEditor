@@ -39,7 +39,7 @@ All dependencies are pinned to exact versions (for example, `anyhow = "=1.0.104"
 Consumers depend on the published crate by exact version, matching that policy:
 
 ```toml
-table-editor = "=0.2.0"
+table-editor = "=0.3.0"
 ```
 
 For local work spanning this repository and a consumer, put a `[patch.crates-io]` stanza pointing at a sibling checkout in the consumer's `.cargo/config.toml`, which is gitignored because CI has no sibling checkout to point at.

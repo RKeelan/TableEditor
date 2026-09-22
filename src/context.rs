@@ -14,6 +14,11 @@ use crate::jsonl;
 /// error that said it was not there.
 type Cached = Result<String, String>;
 
+/// The version a file that is not there has. No present file can take it,
+/// since a hash is sixteen hex digits, so a write that states the version of a
+/// file since deleted is refused rather than quietly recreating it.
+const ABSENT: &str = "absent";
+
 /// The `Data/` directory a request's tables live in. Sibling reads go through
 /// it too, so a table that cross-checks against another reads it from the same
 /// place the editor writes it.
@@ -112,6 +117,26 @@ impl Context {
         Ok(cached)
     }
 
+    /// The version of one file as this context sees it: a hash of the bytes it
+    /// read, or [`ABSENT`] where the file is not there.
+    ///
+    /// It is what a client states back when it writes rows it read, so that a
+    /// write cannot go over a change made after the read. Within one request
+    /// this answers for the same bytes the rows were parsed from, since a
+    /// context reads a file once and a write replaces what it read.
+    ///
+    /// The version is the file's contents rather than its timestamp, because a
+    /// timestamp says a file was touched where what matters is whether it now
+    /// holds something else: a sync that writes the same bytes back, or a tool
+    /// that rewrites a file unchanged, moves the timestamp and changes nothing
+    /// a client is holding.
+    pub fn version(&self, file: &str) -> Result<String, ApiError> {
+        Ok(match self.cached(file)? {
+            Ok(text) => hash(text.as_bytes()),
+            Err(_) => ABSENT.to_string(),
+        })
+    }
+
     fn cache(&self) -> MutexGuard<'_, HashMap<String, Cached>> {
         // A panic under the lock would poison it, and a poisoned cache is
         // still a usable one: the map is taken back rather than propagated.
@@ -164,6 +189,25 @@ impl Context {
             None => Ok(Vec::new()),
         }
     }
+}
+
+/// FNV-1a over some bytes, as sixteen hex digits.
+///
+/// A version only has to say whether two readings of a file found the same
+/// thing, so this is a hash and not a signature: nothing is kept out by it,
+/// and anything that can write a table can state whatever version it likes.
+/// FNV-1a is a fixed algorithm in a few lines and costs no dependency, which
+/// is what the job wants. The standard library's `DefaultHasher` computes
+/// something deliberately unspecified that may differ between builds, so a
+/// page that loaded from one build of a server would have its next save
+/// refused by the next.
+fn hash(bytes: &[u8]) -> String {
+    let mut value: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        value ^= u64::from(*byte);
+        value = value.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{value:016x}")
 }
 
 #[cfg(test)]
@@ -309,6 +353,92 @@ mod tests {
         assert_eq!(
             ctx.read_optional("Rows.jsonl").unwrap().as_deref(),
             Some("{\"name\":\"a\"}\n")
+        );
+    }
+
+    #[test]
+    fn a_version_follows_the_contents_and_not_the_timestamp() {
+        let dir = fixture::temp_dir();
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+        let first = dir.context().version("Rows.jsonl").unwrap();
+
+        // The same bytes written again: a sync or a tool that rewrites a file
+        // unchanged has changed nothing anybody is holding.
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+        assert_eq!(dir.context().version("Rows.jsonl").unwrap(), first);
+
+        dir.write("Rows.jsonl", "{\"name\":\"b\"}");
+        assert_ne!(dir.context().version("Rows.jsonl").unwrap(), first);
+    }
+
+    #[test]
+    fn a_version_is_the_published_fnv_1a_of_the_bytes() {
+        // The test vectors for FNV-1a 64. The algorithm has to compute the
+        // same value in every build, or a page that read a table from one
+        // build of the server would have its next save refused by the next, so
+        // it is pinned by value and not only by shape.
+        assert_eq!(hash(b""), "cbf29ce484222325");
+        assert_eq!(hash(b"a"), "af63dc4c8601ec8c");
+    }
+
+    #[test]
+    fn a_version_is_of_the_bytes_as_stored_rather_than_of_tidied_text() {
+        let dir = fixture::temp_dir();
+        let write = |file: &str, bytes: &[u8]| {
+            std::fs::write(dir.path().join(file), bytes).unwrap();
+            dir.context().version(file).unwrap()
+        };
+
+        // The same rows stored three ways. A checkout with CRLF line endings,
+        // or a file some editor has left a byte order mark on, holds different
+        // bytes and has a version of its own, which is what keeps the version
+        // a client states comparable with the file it read.
+        let lf = write("Lf.jsonl", b"a\nb\n");
+        let crlf = write("Crlf.jsonl", b"a\r\nb\r\n");
+        let marked = write("Marked.jsonl", "\u{feff}a\nb\n".as_bytes());
+
+        assert_ne!(lf, crlf);
+        assert_ne!(lf, marked);
+        assert_ne!(crlf, marked);
+    }
+
+    #[test]
+    fn a_version_is_sixteen_hex_digits() {
+        let dir = fixture::temp_dir();
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+        let version = dir.context().version("Rows.jsonl").unwrap();
+        assert_eq!(version.len(), 16, "{version}");
+        assert!(version.chars().all(|c| c.is_ascii_hexdigit()), "{version}");
+    }
+
+    #[test]
+    fn a_missing_file_has_a_version_no_present_file_can_take() {
+        let dir = fixture::temp_dir();
+        assert_eq!(dir.context().version("Rows.jsonl").unwrap(), ABSENT);
+
+        dir.write("Rows.jsonl", "");
+        assert_ne!(dir.context().version("Rows.jsonl").unwrap(), ABSENT);
+    }
+
+    #[test]
+    fn a_version_answers_for_the_text_this_context_read() {
+        let dir = fixture::temp_dir();
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}");
+        let ctx = dir.context();
+        let read = ctx.version("Rows.jsonl").unwrap();
+
+        // The file is rewritten under the request. This context still answers
+        // for what it handed out, so the rows it served and the version it
+        // served them with still describe one thing.
+        dir.write("Rows.jsonl", "{\"name\":\"b\"}");
+        assert_eq!(ctx.version("Rows.jsonl").unwrap(), read);
+
+        // A write through the context makes the version the written text's,
+        // which is what the disk now holds.
+        ctx.write("Rows.jsonl", "{\"name\":\"c\"}\n").unwrap();
+        assert_eq!(
+            ctx.version("Rows.jsonl").unwrap(),
+            dir.context().version("Rows.jsonl").unwrap()
         );
     }
 
