@@ -1,12 +1,34 @@
-import { useEffect, useId, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { postAction } from "../lib/api";
 import { describeError } from "../lib/errors";
 import {
-  type FormPanel,
+  Drafts,
+  type Editing,
+  type FormState,
+  type Found,
+  type Opening,
+  type Place,
   SAVING,
-  TYPING,
   WRITTEN,
+  buttonMark,
+  current,
+  draftKey,
+  drawsCopy,
+  edited,
+  fieldAnswer,
+  fieldText,
+  formIdentity,
+  isEdited,
+  isStale,
+  landing,
   refused,
+  reset,
+  rowIdentity,
+  rowMark,
+  sectionMark,
+  settled,
+  toggled,
+  undoReset,
 } from "../lib/form";
 import type { SelectOption } from "../lib/schema";
 import {
@@ -19,11 +41,21 @@ import {
   formValues,
   safeHref,
 } from "../lib/view";
+import { CopyButton } from "./CopyButton";
 import { OutsideLink, PageLink, StatusWord } from "./parts";
+import { SidePanel } from "./SidePanel";
 
 /** Where the page has room for two columns beside each other. Below it there
  *  is one, and a section that folds is folded. */
 const WIDE = "(min-width: 900px)";
+
+/** What was typed into forms that were shut without being saved, kept for as
+ *  long as the page is open: see `Drafts`. */
+const drafts = new Drafts();
+
+/** Each opening of a form is numbered, so a save's answer can be matched to
+ *  the opening that sent it: see `settled`. */
+let openings = 0;
 
 interface Props {
   detail: Detail;
@@ -40,12 +72,32 @@ interface Props {
   onWrote: (confirmation: string) => void;
 }
 
+/** What the page's rows need to show a form and open one. */
+interface Forms {
+  view: string;
+  args: Record<string, string>;
+  onWrote: (confirmation: string) => void;
+  /** The form open on the page, if any. */
+  opening: Opening | null;
+  /** The row the open form is under: the first row on the page that offers
+   *  it, where two offer the same form. */
+  openRow: DetailRow | null;
+  onToggle: (found: Found) => void;
+  onSettle: (sentBy: number, next: FormState) => void;
+  onClose: () => void;
+}
+
 /** One thing in full: a header saying what it is and how it stands, then its
  *  sections in two columns on a wide screen and one on a phone.
  *
  *  The sections are given in one order and drawn in two columns, so each keeps
  *  its place in that order: on a phone, where the columns collapse into one,
- *  the page reads the way it was written. */
+ *  the page reads the way it was written.
+ *
+ *  One form is open on the page at a time, and the page rather than its row
+ *  holds which: a save that changes a row's title, moves it, or takes it away
+ *  fetches the page again under an open side panel, and the panel stays, with
+ *  what was typed into it. */
 export function DetailPage({
   detail,
   view,
@@ -55,9 +107,84 @@ export function DetailPage({
   onWrote,
 }: Props) {
   const wide = useWide();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const [opening, setOpening] = useState<Opening | null>(null);
   const ordered = detail.sections.map((section, order) => ({ section, order }));
   const main = ordered.filter((s) => s.section.column === "main");
   const side = ordered.filter((s) => s.section.column === "side");
+  const open = opening === null ? null : current(detail, opening);
+
+  // The open form, for a save's answer to be checked against: the answer
+  // arrives in a closure from the render the save was sent from.
+  const now = useRef(opening);
+  now.current = opening;
+
+  /** Put the focus where a form was opened from, or the nearest thing to it
+   *  still on the page: see `landing`. */
+  const land = (place: Place) => {
+    const found = landing(detail, place);
+    const target =
+      "mark" in found
+        ? [...document.querySelectorAll<HTMLElement>("[data-landing]")].find(
+            (el) => el.dataset.landing === found.mark,
+          )
+        : undefined;
+    (target ?? heading.current)?.focus();
+  };
+
+  // A form that shuts gives the focus back once it has gone, since nothing
+  // behind a modal dialog can take it while the dialog is open.
+  const returnTo = useRef<Place | null>(null);
+  useEffect(() => {
+    if (opening !== null || returnTo.current === null) return;
+    land(returnTo.current);
+    returnTo.current = null;
+  }, [opening]);
+
+  // A save puts it back again once the page has been fetched again, since the
+  // write may have taken the button away.
+  const saved = useRef<Place | null>(null);
+  useEffect(() => {
+    if (saved.current === null) return;
+    land(saved.current);
+    saved.current = null;
+  }, [detail]);
+
+  // A form under a row goes with its row; only a side panel outlives it.
+  useEffect(() => {
+    if (open !== null && open.gone && open.form.panel !== true) setOpening(null);
+  }, [open?.gone]);
+
+  const placeOf = (was: Opening): Place => {
+    const found = current(detail, was);
+    return {
+      identity: was.identity,
+      row: rowIdentity(found.row),
+      section: found.section,
+    };
+  };
+
+  const forms: Forms = {
+    view,
+    args,
+    onWrote,
+    opening,
+    openRow: open?.gone === false ? open.row : null,
+    onToggle: (found) =>
+      setOpening((was) => toggled(was, found, ++openings)),
+    onSettle: (sentBy, next) => {
+      const was = now.current;
+      if (!next.open && was?.id === sentBy) {
+        returnTo.current = placeOf(was);
+        saved.current = placeOf(was);
+      }
+      setOpening((w) => settled(w, sentBy, next));
+    },
+    onClose: () => {
+      if (opening !== null) returnTo.current = placeOf(opening);
+      setOpening(null);
+    },
+  };
 
   const column = (sections: typeof ordered) =>
     sections.map(({ section, order }) => (
@@ -66,9 +193,7 @@ export function DetailPage({
         section={section}
         order={order}
         wide={wide}
-        view={view}
-        args={args}
-        onWrote={onWrote}
+        forms={forms}
       />
     ));
 
@@ -88,8 +213,15 @@ export function DetailPage({
         )}
 
         {/* The heading of the page, since what the view is called is the kind
-            of thing this is and this is the thing. */}
-        <h2 className="max-w-[34ch] text-2xl">{detail.title}</h2>
+            of thing this is and this is the thing. It takes the focus when a
+            write has left nothing nearer to take it. */}
+        <h2
+          ref={heading}
+          tabIndex={-1}
+          className="max-w-[34ch] text-2xl focus:outline-none"
+        >
+          {detail.title}
+        </h2>
 
         {((detail.statuses ?? []).length > 0 ||
           detail.subtitle !== undefined) && (
@@ -113,6 +245,18 @@ export function DetailPage({
           <div className="detail-column">{column(side)}</div>
         )}
       </div>
+
+      {/* A side panel is drawn by the page rather than by its row, so it
+          stays open whatever a save does to the row. */}
+      {opening !== null && open !== null && open.form.panel === true && (
+        <FormBlock
+          key={opening.id}
+          found={open}
+          identity={opening.identity}
+          opening={opening}
+          forms={forms}
+        />
+      )}
     </div>
   );
 }
@@ -135,19 +279,30 @@ function SectionBlock({
   section,
   order,
   wide,
-  view,
-  args,
-  onWrote,
+  forms,
 }: {
   section: DetailSection;
   order: number;
   wide: boolean;
-} & Pick<Props, "view" | "args" | "onWrote">) {
+  forms: Forms;
+}) {
   // A section that folds is open wherever there is room for it beside the main
   // column, and folded where there is not. Opening or shutting it by hand
   // holds until the window crosses that width again.
   const [open, setOpen] = useState(wide);
   useEffect(() => setOpen(wide), [wide]);
+  const mark = sectionMark(section.heading);
+
+  // Rows are keyed by which row each is rather than by where it is or what it
+  // is called, so a save that retitles or reorders them draws each in place:
+  // see `rowIdentity`. Two rows the page cannot tell apart are numbered.
+  const seen = new Map<string, number>();
+  const keyed = section.rows.map((row) => {
+    const identity = rowIdentity(row);
+    const n = seen.get(identity) ?? 0;
+    seen.set(identity, n + 1);
+    return { row, key: `${identity}#${n}` };
+  });
 
   const body = (
     <>
@@ -156,13 +311,12 @@ function SectionBlock({
       )}
       {section.rows.length > 0 && (
         <ul className={"detail-rows" + (section.numbered ? " ranked" : "")}>
-          {section.rows.map((row, i) => (
+          {keyed.map(({ row, key }) => (
             <RowBlock
-              key={`${i}-${row.title}`}
+              key={key}
               row={row}
-              view={view}
-              args={args}
-              onWrote={onWrote}
+              section={section.heading}
+              forms={forms}
             />
           ))}
         </ul>
@@ -173,7 +327,13 @@ function SectionBlock({
   if (!section.collapsed_on_phone) {
     return (
       <section style={{ order }}>
-        <h3 className="mb-3 text-base">{section.heading}</h3>
+        <h3
+          tabIndex={-1}
+          data-landing={mark}
+          className="mb-3 text-base focus:outline-none"
+        >
+          {section.heading}
+        </h3>
         {body}
       </section>
     );
@@ -193,6 +353,7 @@ function SectionBlock({
           the mouse is worse than one that cannot be folded at all. */}
       <summary
         tabIndex={wide ? -1 : undefined}
+        data-landing={mark}
         className={
           "mb-3 " +
           (wide
@@ -209,37 +370,39 @@ function SectionBlock({
 
 function RowBlock({
   row,
-  view,
-  args,
-  onWrote,
-}: { row: DetailRow } & Pick<Props, "view" | "args" | "onWrote">) {
-  // One form at a time in a row: the button that is pressed shows its own and
-  // shuts whichever other one was open.
-  const [showing, setShowing] = useState<number | null>(null);
-  const [panel, setPanel] = useState<FormPanel>(TYPING);
+  section,
+  forms,
+}: {
+  row: DetailRow;
+  /** The heading of the section the row is in. */
+  section: string;
+  forms: Forms;
+}) {
   const buttons = row.buttons ?? [];
   const facts = row.facts ?? [];
   const notes = row.notes ?? [];
   const href = row.link === undefined ? null : safeHref(row.link);
-  const open = buttons[showing ?? -1];
-
-  /** Show this button's form, or shut it where it is the one already open. A
-   *  form that opens starts clean, so nothing a save said before it hangs
-   *  about, and its fields start from what the page now says. */
-  const toggle = (index: number) => {
-    setPanel(TYPING);
-    setShowing((was) => (was === index ? null : index));
-  };
-
-  /** What a save answered decides what the panel does next; a panel that has
-   *  gone takes its form with it. */
-  const settle = (next: FormPanel) => {
-    setPanel(next);
-    if (!next.open) setShowing(null);
-  };
+  const identityOf = (button: Extract<Button, { type: "form" }>) =>
+    formIdentity(section, row.title, button);
+  // The form open under this row, if the open form is one of its own and is
+  // not in a side panel. Two rows offering the same form are one offer to the
+  // server, and the form is drawn under the first of them only.
+  const inline =
+    forms.openRow !== row
+      ? undefined
+      : buttons.find(
+          (b): b is Extract<Button, { type: "form" }> =>
+            b.type === "form" &&
+            b.panel !== true &&
+            forms.opening?.identity === identityOf(b),
+        );
 
   return (
-    <li className="rounded-lg border border-border bg-surface px-4 py-3.5">
+    <li
+      tabIndex={-1}
+      data-landing={rowMark(rowIdentity(row))}
+      className="rounded-lg border border-border bg-surface px-4 py-3.5 focus:outline-none"
+    >
       <div className="min-w-0">
         <span className="block break-words font-semibold">
           {href !== null ? (
@@ -262,22 +425,32 @@ function RowBlock({
               <ButtonControl
                 key={`${i}-${button.label}`}
                 button={button}
-                showing={showing === i}
-                onToggle={() => toggle(i)}
+                mark={
+                  button.type === "form"
+                    ? buttonMark(identityOf(button))
+                    : undefined
+                }
+                showing={
+                  button.type === "form" &&
+                  forms.opening?.identity === identityOf(button)
+                }
+                onToggle={() => {
+                  if (button.type === "form") {
+                    forms.onToggle({ form: button, section, row });
+                  }
+                }}
               />
             ))}
           </div>
         )}
 
-        {open?.type === "form" && (
+        {inline !== undefined && forms.opening !== null && (
           <FormBlock
-            key={open.action}
-            form={open}
-            view={view}
-            args={args}
-            panel={panel}
-            onSettle={settle}
-            onWrote={onWrote}
+            key={forms.opening.id}
+            found={{ form: inline, section, row, gone: false }}
+            identity={forms.opening.identity}
+            opening={forms.opening}
+            forms={forms}
           />
         )}
       </div>
@@ -287,19 +460,27 @@ function RowBlock({
 
 function ButtonControl({
   button,
+  mark,
   showing,
   onToggle,
 }: {
   button: Button;
+  /** Where the focus finds a form button again: see `landing`. */
+  mark: string | undefined;
   showing: boolean;
   onToggle: () => void;
 }) {
   if (button.type === "form") {
+    // A form under its row is shown and hidden, which is what `expanded`
+    // says; a form in a side panel opens a dialog over the page, which is
+    // what `haspopup` does.
     return (
       <button
         type="button"
         className="btn btn-primary"
-        aria-expanded={showing}
+        data-landing={mark}
+        aria-expanded={button.panel ? undefined : showing}
+        aria-haspopup={button.panel ? "dialog" : undefined}
         onClick={onToggle}
       >
         {button.label}
@@ -340,70 +521,196 @@ function ButtonControl({
   );
 }
 
-/** What a form asks for, and the one button that writes it.
+/** What a form asks for, the button that writes it, and the one that puts
+ *  back what it starts with, under its row or in a side panel.
  *
- *  It is a real form, so Enter in any of its fields saves it, as it would
- *  anywhere else. What a save leaves behind is `lib/form.ts`'s to say. */
+ *  It is a real form, so Enter in any of its one-line fields saves it, as it
+ *  would anywhere else; in a box of several lines Enter is a line break. What
+ *  a save leaves behind, what is kept of a form that shuts, and what a reset
+ *  does are `lib/form.ts`'s to say. */
 function FormBlock({
-  form,
-  view,
-  args,
-  panel,
-  onSettle,
-  onWrote,
+  found,
+  identity,
+  opening,
+  forms,
 }: {
-  form: Extract<Button, { type: "form" }>;
-  panel: FormPanel;
-  onSettle: (panel: FormPanel) => void;
-} & Pick<Props, "view" | "args" | "onWrote">) {
+  /** The form as the page now has it, or as it was last seen where the page
+   *  no longer has it. */
+  found: Found & { gone: boolean };
+  identity: string;
+  opening: Opening;
+  forms: Forms;
+}) {
+  const { form, gone } = found;
   const group = useId();
-  const [values, setValues] = useState(() => formValues(form.fields));
+  const key = draftKey(forms.view, forms.args, identity);
+  const start = formValues(form.fields);
+  const [held, setHeld] = useState<Editing>(() =>
+    drafts.opening(key, form.fields),
+  );
+  const values = held.values;
+  const changed = isEdited(form.fields, values, start);
+  const stale = isStale(form.fields, held.basis, start);
+  const failure = useRef<HTMLParagraphElement>(null);
+  const inPanel = form.panel === true;
+  const state = opening.state;
+
+  // What is typed is kept as it is typed, so shutting the form by any means
+  // leaves it to be opened on again. A reset keeps nothing: the draft it
+  // replaced stays kept until something is typed after it, so a form shut with
+  // Undo reset still on offer opens on the draft again.
+  const change = (next: Record<string, string>) => {
+    const was = edited(held, next);
+    setHeld(was);
+    drafts.keep(key, form.fields, was);
+  };
+
+  // A refusal is read out and shown beside the Save button, and the focus
+  // goes to it: a Save button that is disabled while a save is on its way
+  // drops the focus, and it must not be left on nothing.
+  useEffect(() => {
+    if (state.failure !== null) failure.current?.focus();
+  }, [state.failure]);
 
   const save = async () => {
-    onSettle(SAVING);
+    const sentBy = opening.id;
+    forms.onSettle(sentBy, SAVING);
     try {
       const written = await postAction(
-        view,
+        forms.view,
         form.action,
-        actionArgs(args, form.args),
+        actionArgs(forms.args, form.args),
         values,
       );
-      onSettle(WRITTEN);
-      onWrote(written.confirmation);
+      drafts.written(key, form.fields, values);
+      forms.onSettle(sentBy, WRITTEN);
+      forms.onWrote(written.confirmation);
     } catch (e) {
-      onSettle(refused(describeError(e)));
+      forms.onSettle(sentBy, refused(describeError(e)));
     }
   };
+
+  /** Move the focus to the first field, which a button that has just been
+   *  pressed and has nothing more to do hands it to. */
+  const toFirstField = (from: HTMLElement) =>
+    from
+      .closest("form")
+      ?.querySelector<HTMLElement>("textarea, input")
+      ?.focus();
+
+  const fields = form.fields.map((field) => (
+    <FieldControl
+      key={field.key}
+      field={field}
+      group={group}
+      inPanel={inPanel}
+      value={values[field.key] ?? ""}
+      onChange={(value) => change({ ...values, [field.key]: value })}
+    />
+  ));
+
+  const actions = (
+    <>
+      {gone && (
+        <p role="status" className="mb-2.5 text-sm text-bad">
+          The row this form belongs to is no longer on the page, so it cannot
+          be saved from here. What is typed is kept, and can still be copied.
+        </p>
+      )}
+      {stale && !gone && (
+        <div role="status" className="mb-2.5 text-sm">
+          <p className="text-warning">
+            The suggested text has changed since you edited this.
+          </p>
+          <button
+            type="button"
+            className="btn mt-1.5 px-2.5 py-0.5 text-sm"
+            onClick={(e) => {
+              setHeld(reset(held, start));
+              toFirstField(e.currentTarget);
+            }}
+          >
+            Use the new text
+          </button>
+        </div>
+      )}
+      {state.failure !== null && (
+        <p
+          ref={failure}
+          role="alert"
+          tabIndex={-1}
+          className="mb-2.5 text-sm text-bad focus:outline-none"
+        >
+          {state.failure}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={state.saving || gone}
+        >
+          {state.saving ? "Saving…" : "Save"}
+        </button>
+        {held.undo !== null ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={state.saving}
+            onClick={() => setHeld(undoReset(held))}
+          >
+            Undo reset
+          </button>
+        ) : (
+          (inPanel || changed) && (
+            <button
+              type="button"
+              className="btn"
+              disabled={!changed || state.saving}
+              onClick={(e) => {
+                // The button turns into Undo reset, which keeps the focus; the
+                // draft stays kept until something is typed.
+                setHeld(reset(held, start));
+                e.currentTarget.focus();
+              }}
+            >
+              Reset
+            </button>
+          )
+        )}
+      </div>
+    </>
+  );
+
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!gone) void save();
+  };
+
+  if (inPanel) {
+    return (
+      <SidePanel heading={form.heading ?? form.label} onClose={forms.onClose}>
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pt-4">
+            {fields}
+          </div>
+          {/* Outside the part that scrolls, so Save and what it answered stay
+              in view however little room the fields are left. */}
+          <div className="shrink-0 border-t border-border px-5 py-3">
+            {actions}
+          </div>
+        </form>
+      </SidePanel>
+    );
+  }
 
   return (
     <form
       className="unfolds mt-3.5 border-t border-border pt-3.5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void save();
-      }}
+      onSubmit={onSubmit}
     >
-      {form.fields.map((field) => (
-        <FieldControl
-          key={field.key}
-          field={field}
-          group={group}
-          value={values[field.key] ?? ""}
-          onChange={(value) =>
-            setValues((was) => ({ ...was, [field.key]: value }))
-          }
-        />
-      ))}
-
-      <button type="submit" className="btn btn-primary" disabled={panel.saving}>
-        {panel.saving ? "Saving…" : "Save"}
-      </button>
-
-      {panel.failure !== null && (
-        <p role="alert" className="mt-2.5 text-sm text-bad">
-          {panel.failure}
-        </p>
-      )}
+      {fields}
+      {actions}
     </form>
   );
 }
@@ -411,14 +718,22 @@ function FormBlock({
 function FieldControl({
   field,
   group,
+  inPanel,
   value,
   onChange,
 }: {
   field: FormField;
   group: string;
+  /** Whether the form is in a side panel, where a box of several lines takes
+   *  whatever height the panel has left. */
+  inPanel: boolean;
   value: string;
   onChange: (value: string) => void;
 }) {
+  const id = useId();
+  const line = useRef<HTMLInputElement>(null);
+  const lines = useRef<HTMLTextAreaElement>(null);
+
   if (field.type === "one-of") {
     const options: SelectOption[] = field.options ?? [];
     return (
@@ -442,6 +757,45 @@ function FieldControl({
     );
   }
 
+  const heading = drawsCopy(field) ? (
+    <div className="mb-1.5 flex items-center justify-between gap-3">
+      <label htmlFor={id} className="text-sm text-muted">
+        {field.label}
+      </label>
+      <CopyButton
+        box={field.type === "multiline" ? lines : line}
+        label={field.label}
+      />
+    </div>
+  ) : (
+    <label htmlFor={id} className="mb-1.5 block text-sm text-muted">
+      {field.label}
+    </label>
+  );
+
+  if (field.type === "multiline") {
+    // In a side panel the box takes the height the panel has left and gives
+    // it up first when the room shrinks, as it does under a phone's keyboard,
+    // so the Copy button above it and the Save button below stay in view.
+    return (
+      <div className={"mb-3.5 flex flex-col" + (inPanel ? " min-h-0 flex-1" : "")}>
+        {heading}
+        <textarea
+          ref={lines}
+          id={id}
+          rows={inPanel ? undefined : 6}
+          value={fieldText(field, value)}
+          onChange={(e) => onChange(fieldAnswer(field, e.target.value))}
+          spellCheck
+          className={
+            "field w-full border border-border bg-page leading-relaxed" +
+            (inPanel ? " min-h-16 flex-1 resize-none" : " resize-y")
+          }
+        />
+      </div>
+    );
+  }
+
   const width =
     field.type === "number"
       ? " w-24"
@@ -450,14 +804,16 @@ function FieldControl({
         : " w-full sm:w-64";
 
   return (
-    <label className="mb-3.5 block">
-      <span className="mb-1.5 block text-sm text-muted">{field.label}</span>
+    <div className="mb-3.5">
+      {heading}
       <input
+        ref={line}
+        id={id}
         type={field.type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className={"field h-9 border border-border bg-page" + width}
       />
-    </label>
+    </div>
   );
 }

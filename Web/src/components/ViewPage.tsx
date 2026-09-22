@@ -49,11 +49,14 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
   const [page, setPage] = useState<ViewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [written, setWritten] = useState<string | null>(null);
+  // What the last write said, numbered, so a second write that says the same
+  // thing is still read out as news.
+  const [written, setWritten] = useState<{ sentence: string; n: number } | null>(
+    null,
+  );
   // Answers can arrive in an order the questions were not asked in, so only
   // the latest question's answer is allowed to land.
   const asked = useRef(0);
-  const confirmation = useRef<HTMLParagraphElement>(null);
 
   const load = useCallback(async () => {
     const mine = ++asked.current;
@@ -90,15 +93,9 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
   /** A write has landed. The sentence is what the server said it did, and the
    *  page is asked again for what it now shows. */
   const wrote = (sentence: string) => {
-    setWritten(sentence);
+    setWritten((was) => ({ sentence, n: (was?.n ?? 0) + 1 }));
     void load();
   };
-
-  // The panel the button was in may be gone, so the cursor goes to the
-  // sentence that replaced it rather than nowhere.
-  useEffect(() => {
-    if (written !== null) confirmation.current?.focus();
-  }, [written]);
 
   // A question asked of the page is a different question from the one the
   // write answered, so the sentence goes.
@@ -151,15 +148,18 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
           </div>
         )}
 
-        {written !== null && (
-          <p
-            ref={confirmation}
-            tabIndex={-1}
-            className="mt-3 text-sm text-muted"
-          >
-            {written}
-          </p>
-        )}
+        {/* Always on the page and never hidden, so what a write said is read
+            out when it arrives, the first time included: a live region that
+            only just became visible is often not read out. The focus goes back
+            to where the form was opened from rather than to this. Each write's
+            sentence is a new node, so the same sentence twice is read out
+            twice. Empty, it takes no room. */}
+        <p
+          role="status"
+          className={"text-sm text-muted" + (written !== null ? " mt-3" : "")}
+        >
+          {written !== null && <span key={written.n}>{written.sentence}</span>}
+        </p>
 
         {error !== null && (
           <div className="mt-3 rounded-lg border border-bad/40 bg-bad/10 px-3 py-2">
@@ -182,12 +182,15 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
       <div
         aria-busy={loading || undefined}
         className={
-          "mt-5 min-h-0 flex-1 overflow-y-auto transition-opacity" +
+          "view-body mt-5 min-h-0 flex-1 overflow-y-auto transition-opacity" +
           (stale ? " opacity-50" : "")
         }
       >
         {body === "detail" && page.detail ? (
           <DetailPage
+            // A page asked a different question is a different page, so
+            // nothing typed into one of its forms follows it to the next.
+            key={`${page.view}?${JSON.stringify(page.args)}`}
             detail={page.detail}
             view={page.view}
             args={page.args}
