@@ -4,7 +4,8 @@
 //! The shutdown endpoint exits the process that serves it, so the server under
 //! test has to be a process of its own. This test binary is that process: the
 //! two `child_` functions below are the servers, and a test that needs one
-//! re-invokes this binary naming it, with the port to bind in the environment.
+//! re-invokes this binary naming it. The server chooses its own port and names
+//! it on its standard output.
 //!
 //! They are marked `#[ignore]` so that a normal run reports them as ignored
 //! rather than as tests that passed without asserting anything, and the
@@ -14,7 +15,7 @@
 
 #![cfg(feature = "server")]
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -26,14 +27,13 @@ use table_editor::{
 };
 
 /// Set on the re-invoked copy of this binary to make it serve.
-const CHILD_PORT: &str = "TABLE_EDITOR_TEST_PORT";
+const CHILD: &str = "TABLE_EDITOR_TEST_CHILD";
 
-/// Set on the re-invoked copy of this binary to make it answer a health body
-/// of the test's choosing on that port.
-const CHILD_HEALTH_PORT: &str = "TABLE_EDITOR_TEST_HEALTH_PORT";
-
-/// The body that child answers `GET /api/health` with.
+/// The body the health child answers `GET /api/health` with.
 const CHILD_HEALTH_BODY: &str = "TABLE_EDITOR_TEST_HEALTH_BODY";
+
+/// What a child writes before the port it serves on.
+const PORT_LINE: &str = "test server port: ";
 
 #[derive(Serialize, Deserialize)]
 struct Book {
@@ -104,10 +104,12 @@ fn args(command: Option<ServerCommand>, port: u16) -> ServerArgs {
 #[test]
 #[ignore = "the server a test drives, not a test of its own"]
 fn child_server() {
-    let port: u16 = std::env::var(CHILD_PORT)
-        .expect("the port to serve")
-        .parse()
-        .expect("a port number");
+    std::env::var(CHILD).expect("run only as the server a test drives");
+    // `Server` binds the port it is given, so this process picks it. It starts
+    // no process of its own, so the listener that found the port is gone for
+    // good before the server binds it.
+    let port = free_port();
+    println!("{PORT_LINE}{port}");
     Server::new(Named::new("Library"))
         .run(args(None, port))
         .unwrap();
@@ -121,12 +123,9 @@ fn child_server() {
 #[test]
 #[ignore = "the server a test drives, not a test of its own"]
 fn child_health_server() {
-    let port: u16 = std::env::var(CHILD_HEALTH_PORT)
-        .expect("the port to serve")
-        .parse()
-        .expect("a port number");
     let health = std::env::var(CHILD_HEALTH_BODY).expect("the health body to answer with");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("the health port");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port to serve");
+    println!("{PORT_LINE}{}", listener.local_addr().unwrap().port());
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
@@ -371,50 +370,68 @@ impl Drop for Spawned {
 
 /// Start this app's server on a port it holds.
 fn serve_app() -> (Spawned, u16) {
-    spawn_on_a_free_port(CHILD_PORT, "child_server", None)
+    spawn_child("child_server", None)
 }
 
 /// Start a server answering `health` on a port it holds.
 fn serve_health(health: &str) -> (Spawned, u16) {
-    spawn_on_a_free_port(CHILD_HEALTH_PORT, "child_health_server", Some(health))
+    spawn_child("child_health_server", Some(health))
 }
 
-/// Spawn a child on a free port, trying again on another port if it does not
-/// come up: a port that was free when it was picked is not necessarily free
-/// when the child gets to it.
-fn spawn_on_a_free_port(variable: &str, test: &str, health: Option<&str>) -> (Spawned, u16) {
-    for _ in 0..5 {
-        let port = free_port();
-        let child = spawn_child(variable, test, port, health);
-        if came_up(port) {
-            return (child, port);
-        }
-    }
-    panic!("the test server came up on none of the ports tried");
-}
-
-/// Re-invoke this test binary as the named child, with what it should serve in
-/// the environment. The child is an ignored test, so it runs only when it is
-/// named and asked for.
-fn spawn_child(variable: &str, test: &str, port: u16, health: Option<&str>) -> Spawned {
+/// Re-invoke this test binary as the named child, which is an ignored test and
+/// so runs only when it is named and asked for, and wait until it is serving on
+/// the port it names.
+///
+/// The child chooses the port because this process cannot choose one safely:
+/// see [`free_port`].
+fn spawn_child(test: &str, health: Option<&str>) -> (Spawned, u16) {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args([test, "--exact", "--ignored", "--nocapture"])
-        .env(variable, port.to_string())
+        .env(CHILD, "1")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(health) = health {
         command.env(CHILD_HEALTH_BODY, health);
     }
-    Spawned(
+    let mut child = Spawned(
         command
             .spawn()
             .expect("could not re-invoke this test binary"),
-    )
+    );
+
+    // The pipe is read to its end, so the child never writes into one that
+    // nobody is reading.
+    let out = child.0.stdout.take().expect("a pipe to read");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(port) = line.strip_prefix(PORT_LINE) {
+                let _ = tx.send(port.parse::<u16>().expect("a port number"));
+            }
+        }
+    });
+    let port = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the test server named its port");
+
+    assert!(came_up(port), "the test server did not come up on {port}");
+    (child, port)
 }
 
-/// A port nothing is listening on, freed again before the server binds it.
+/// A port nothing was listening on a moment ago, found by a listener that is
+/// gone before the port is used, so something else can take the port in
+/// between.
+///
+/// A process that another thread is starting can also hold the listener for a
+/// moment: on Unix a child is a copy of this process, holding every
+/// descriptor this one had open, until it replaces itself with the program it
+/// runs. A connection to the port in that window is accepted by a listener
+/// that nothing is serving, and one made after it is refused, whatever the
+/// server that was meant to have the port has done. A test that uses a port
+/// from here has to allow for that; the servers the stop tests drive choose
+/// their own instead.
 fn free_port() -> u16 {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.local_addr().unwrap().port()
