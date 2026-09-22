@@ -547,6 +547,10 @@ pub struct Form {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     args: BTreeMap<String, String>,
     fields: Vec<Field>,
+    #[serde(skip_serializing_if = "is_false")]
+    panel: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heading: Option<String>,
 }
 
 impl Form {
@@ -555,6 +559,8 @@ impl Form {
             action: action.into(),
             args: BTreeMap::new(),
             fields: Vec::new(),
+            panel: false,
+            heading: None,
         }
     }
 
@@ -582,6 +588,27 @@ impl Form {
         self
     }
 
+    /// Open the form in a side panel rather than under its row: a panel
+    /// that slides out from the side on a wide screen and takes the whole
+    /// width on a phone. It is for a form with more in it than fits under a
+    /// row, such as a letter to be read over and edited before it is saved.
+    /// What is saved, and where it is posted, are the same either way.
+    pub fn in_panel(mut self) -> Self {
+        self.panel = true;
+        self
+    }
+
+    /// What the form's side panel is headed with, where the button's label
+    /// does not say enough: the label is the same on every row, and the
+    /// heading can say which row the panel is for, which a phone, where the
+    /// panel covers the page, cannot otherwise show. A panel given none is
+    /// headed with the label. A form under its row has no heading, and
+    /// ignores it.
+    pub fn heading(mut self, heading: impl Into<String>) -> Self {
+        self.heading = Some(heading.into());
+        self
+    }
+
     pub(crate) fn action(&self) -> &str {
         &self.action
     }
@@ -601,6 +628,7 @@ pub(crate) enum FieldKind {
     Number,
     Date,
     OneOf,
+    Multiline,
 }
 
 /// One thing a form asks for.
@@ -614,6 +642,8 @@ pub struct Field {
     options: Vec<SelectOption>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    copyable: bool,
 }
 
 impl Field {
@@ -628,6 +658,17 @@ impl Field {
     /// A date, asked for as `YYYY-MM-DD`.
     pub fn date(key: impl Into<String>, label: impl Into<String>) -> Self {
         Self::of_kind(key, label, FieldKind::Date)
+    }
+
+    /// Text of several lines, such as a letter. Its default and its answer keep
+    /// their line breaks and spacing exactly, by the rules a `multiline`
+    /// column's cell follows, so it is read back with [`Fields::get`] rather
+    /// than the trimming [`Fields::text`].
+    ///
+    /// [`Fields::get`]: crate::Fields::get
+    /// [`Fields::text`]: crate::Fields::text
+    pub fn multiline(key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::of_kind(key, label, FieldKind::Multiline)
     }
 
     /// One of a few answers, all of them on screen at once. The options take
@@ -650,6 +691,7 @@ impl Field {
             kind,
             options: Vec::new(),
             default: None,
+            copyable: false,
         }
     }
 
@@ -657,6 +699,14 @@ impl Field {
     /// text, as every answer does.
     pub fn default(mut self, value: impl fmt::Display) -> Self {
         self.default = Some(value.to_string());
+        self
+    }
+
+    /// Put a Copy button beside the field, which copies what the field holds
+    /// as it stands, edits and all. It is drawn on a text field and a
+    /// multi-line one, whose answers are prose; the other kinds draw none.
+    pub fn copyable(mut self) -> Self {
+        self.copyable = true;
         self
     }
 }
@@ -956,6 +1006,43 @@ mod tests {
             json!({ "key": "result", "label": "What came back", "type": "one-of",
                     "options": [{ "value": "Rejected" }, { "value": "Accepted" }],
                     "default": "Rejected" })
+        );
+    }
+
+    #[test]
+    fn a_multiline_field_keeps_its_default_exactly() {
+        let letter = "Dear editor,\r\n\r\n  Please find attached.\r\n";
+        assert_eq!(
+            serde_json::to_value(
+                Field::multiline("letter", "Letter")
+                    .default(letter)
+                    .copyable()
+            )
+            .unwrap(),
+            json!({ "key": "letter", "label": "Letter", "type": "multiline",
+                    "default": letter, "copyable": true })
+        );
+    }
+
+    #[test]
+    fn a_form_in_a_panel_says_so_and_one_under_its_row_says_nothing() {
+        assert_eq!(
+            serde_json::to_value(Form::new("draft-letter").in_panel()).unwrap(),
+            json!({ "action": "draft-letter", "fields": [], "panel": true })
+        );
+        assert_eq!(
+            serde_json::to_value(
+                Form::new("draft-letter")
+                    .in_panel()
+                    .heading("Cover letter for Clarkesworld")
+            )
+            .unwrap(),
+            json!({ "action": "draft-letter", "fields": [], "panel": true,
+                    "heading": "Cover letter for Clarkesworld" })
+        );
+        assert_eq!(
+            serde_json::to_value(Form::new("draft-letter")).unwrap(),
+            json!({ "action": "draft-letter", "fields": [] })
         );
     }
 

@@ -1004,12 +1004,16 @@ impl BranchDetail {
 
 // ── The Book view, which is one book in detail ───────────────────────────────
 
-/// One book and who wrote it, which is as little as a detail page can be.
+/// One book, who wrote it, and what is written inside its cover.
 ///
 /// It is reached from a row of the Books table, whose link answers its one
 /// parameter with the row's title, so the parameter is hidden and the view is
 /// not in the switcher. It names no way back of its own: the page goes back to
 /// the table it was reached from.
+///
+/// Its one action writes the inscription, in a form that opens in a panel: a
+/// box of several lines, filled with the inscription the book has or a draft
+/// of one where it has none, which can be copied as well as saved.
 struct BookDetail;
 
 impl ViewLogic for BookDetail {
@@ -1042,10 +1046,79 @@ impl ViewLogic for BookDetail {
             "" => "No author is recorded",
             named => named,
         };
+        let inside = if book.inscription.is_empty() {
+            DetailRow::new("Nothing is written inside the cover")
+        } else {
+            let lines = book.inscription.lines().count();
+            DetailRow::new(book.inscription.lines().next().unwrap_or(""))
+                .fact(format!("{lines} line{}", if lines == 1 { "" } else { "s" }))
+        };
+        let draft = if book.inscription.is_empty() {
+            format!("For whoever borrows this next,\n\nwith the good wishes of\n{author}")
+        } else {
+            book.inscription.clone()
+        };
+        let inside = inside.button(Button::form(
+            "Write the inscription",
+            Form::new("write-inscription")
+                // The row is titled with the inscription's first line, which a
+                // save changes, so the form says which row it is by argument:
+                // an open panel and a kept draft follow the row through that.
+                .arg("inside", book.title.as_str())
+                .in_panel()
+                .heading(format!("Inscription in \"{}\"", book.title))
+                .field(
+                    Field::multiline("inscription", "Inscription")
+                        .default(draft)
+                        .copyable(),
+                ),
+        ));
+
         Ok(ViewData::new().detail(
             Detail::new(book.title.as_str())
-                .section(DetailSection::main("Written by").row(DetailRow::new(author))),
+                .section(DetailSection::main("Written by").row(DetailRow::new(author)))
+                .section(DetailSection::main("Inside the cover").row(inside)),
         ))
+    }
+
+    /// Write the inscription exactly as it stands in the box, line breaks and
+    /// spacing included, which is why it is read with `get` rather than the
+    /// trimming `text`. An empty box clears it.
+    fn act(
+        &self,
+        _name: &str,
+        fields: &Fields,
+        args: &ViewArgs,
+        ctx: &Context,
+    ) -> Result<String, ApiError> {
+        let title = args.get_or("title", "");
+        let inscription = fields.get("inscription").unwrap_or("");
+
+        let mut books: Vec<Book> = ctx.rows(BOOKS_FILE)?;
+        let book = books
+            .iter_mut()
+            .find(|b| b.title == title)
+            .ok_or_else(|| ApiError::bad_request(format!("no book is called \"{title}\"")))?;
+        book.inscription = inscription.to_string();
+
+        let problems = Books.validate(&books, ctx)?;
+        if let Some(first) = problems.first() {
+            return Err(ApiError::bad_request(format!(
+                "the inscription would leave row {} in a state the table refuses: {}",
+                first.line, first.message
+            )));
+        }
+
+        let text = Books
+            .serialize(&books)
+            .map_err(|e| ApiError::server(format!("could not serialize {BOOKS_FILE}: {e}")))?;
+        ctx.write(BOOKS_FILE, &text)?;
+
+        Ok(if inscription.is_empty() {
+            format!("\"{title}\" has nothing written inside the cover now.")
+        } else {
+            format!("The inscription in \"{title}\" is written.")
+        })
     }
 }
 

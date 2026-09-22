@@ -781,6 +781,14 @@ mod tests {
     }
 
     #[test]
+    fn a_letter_is_read_exactly_as_it_was_written() {
+        let letter = "Dear editor,\r\n\r\n  Please find attached.\r\n";
+        let filled = fields(&[("letter", letter)]);
+        assert_eq!(filled.get("letter"), Some(letter));
+        assert_eq!(filled.text("letter"), letter.trim());
+    }
+
+    #[test]
     fn a_field_the_form_did_not_carry_reads_as_empty_text() {
         let empty = fields(&[]);
         assert_eq!(empty.text("borrower"), "");

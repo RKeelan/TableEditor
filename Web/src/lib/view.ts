@@ -84,9 +84,14 @@ export interface CardGroup {
 export interface FormField {
   key: string;
   label: string;
-  type: "text" | "number" | "date" | "one-of";
+  type: "text" | "number" | "date" | "one-of" | "multiline";
   options?: SelectOption[];
+  /** For a `multiline` field, kept exactly, line breaks and spacing
+   *  included. */
   default?: string;
+  /** Whether the field has a Copy button beside it, which a `text` and a
+   *  `multiline` field draw. */
+  copyable?: boolean;
 }
 
 /** Something a row offers: a page to open, a form to fill in, or a reason it
@@ -99,6 +104,11 @@ export type Button =
       action: string;
       args?: Record<string, string>;
       fields: FormField[];
+      /** Whether the form opens in a side panel rather than under its row. */
+      panel?: boolean;
+      /** What a side panel is headed with, where it is not the button's
+       *  label. */
+      heading?: string;
     }
   | { label: string; type: "disabled"; reason: string };
 
