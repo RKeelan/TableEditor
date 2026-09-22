@@ -52,6 +52,7 @@ import {
   waitingToSave,
   writer,
 } from "../lib/save";
+import { type RowTarget, savedRowTarget } from "../lib/view";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
 import { SpeakButton } from "./SpeakButton";
@@ -66,13 +67,26 @@ const UNDO_WINDOW = 10_000;
 
 const NO_COLUMNS: Column[] = [];
 
+// The width of the row controls at the start of each row, in pixels, which is
+// the sum of the sizes in the markup below: the cell's padding (12 + 8), a drag
+// handle (24), a gap (8), and a delete button (32); and, where the table has a
+// link, a wider gap (8 + 12) and the link (32), kept apart from the delete
+// button so that a thumb aiming at one does not land on the other.
+const CONTROLS = 84;
+const CONTROLS_WITH_LINK = 136;
+
 interface Props {
   table: string;
+  /** What the app serves, so a row's link can say which page it opens. */
+  views: readonly { view: string; title: string }[];
   /** How the shell reaches the pending save before it navigates away. */
   pending: RefObject<PendingSave>;
+  /** How the shell leaves a table, which a row's link does the way the
+   *  switcher does. */
+  go: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
 }
 
-export function TableEditor({ table, pending }: Props) {
+export function TableEditor({ table, views, pending, go }: Props) {
   const [schema, setSchema] = useState<Schema | null>(null);
   const [entries, setEntries] = useState<RowEntry[]>([]);
   const [derived, setDerived] = useState<unknown[]>([]);
@@ -82,6 +96,10 @@ export function TableEditor({ table, pending }: Props) {
   const [filterNote, setFilterNote] = useState(false);
   const [sort, setSort] = useState<Sort | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  // The rows as they were last written, which is what a row's link may point
+  // at: the page it opens reads the file.
+  const [saved, setSaved] = useState<RowEntry[]>([]);
+  const writing = useRef<RowEntry[]>([]);
   const [undoable, setUndoable] = useState<
     { removed: RowEntry; index: number }[]
   >([]);
@@ -127,10 +145,10 @@ export function TableEditor({ table, pending }: Props) {
 
   /** The rows to write, read when the write starts rather than when it was
    *  asked for. */
-  const onScreen = useCallback(
-    () => ({ rows: entryRows(entriesRef.current), key: rowsKeyRef.current }),
-    [],
-  );
+  const onScreen = useCallback(() => {
+    writing.current = entriesRef.current;
+    return { rows: entryRows(entriesRef.current), key: rowsKeyRef.current };
+  }, []);
 
   const put = useCallback(
     ({ rows, key }: Pending, version: string) => {
@@ -145,6 +163,10 @@ export function TableEditor({ table, pending }: Props) {
 
   const report = useCallback((state: SaveState) => {
     setSave(state);
+    // The shell asks whether a write is outstanding as soon as the write it
+    // waited for settles, before the page has rendered what it reported.
+    saveRef.current = state;
+    if (state.kind === "saved") setSaved(writing.current);
     clearRetry();
     // A failure is not the end of it: try again on a lengthening timer, as
     // well as whenever the next edit lands. A refusal schedules nothing,
@@ -186,6 +208,7 @@ export function TableEditor({ table, pending }: Props) {
       writes.loaded(key, data.version);
       setSchema(data.schema);
       setEntries(loaded);
+      setSaved(loaded);
       setDerived(data.derived);
       setErrors(data.errors);
       setUndoable([]);
@@ -225,24 +248,34 @@ export function TableEditor({ table, pending }: Props) {
           written !== null && rowsKeyRef.current !== written,
         );
       },
+      failing: () => saveRef.current.kind === "failed",
     };
     // A page that is not this editor has nothing pending, and leaving this
     // one's flush behind would have the shell wait on an editor that is gone.
     return () => {
-      pending.current = { flush: async () => {}, waiting: () => false };
+      pending.current = {
+        flush: async () => {},
+        waiting: () => false,
+        failing: () => false,
+      };
     };
   }, [flush, pending, writes]);
 
-  // Closing the page mid-edit throws the edit away, so say so first.
+  // Closing the page mid-edit throws the edit away, so say so first. What is
+  // unwritten is read when the page is left rather than at the last render,
+  // since leaving through the switcher or a row's link comes straight after a
+  // write that the page has not yet rendered.
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
-      if (!hasUnsavedWork(saveRef.current, dirty)) return;
+      const written = writes.written();
+      const unwritten = written !== null && rowsKeyRef.current !== written;
+      if (!hasUnsavedWork(saveRef.current, unwritten)) return;
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", guard);
     return () => window.removeEventListener("beforeunload", guard);
-  }, [dirty]);
+  }, [writes]);
 
   // ── Live derive, debounced ────────────────────────────────────────────────
   useEffect(() => {
@@ -408,6 +441,12 @@ export function TableEditor({ table, pending }: Props) {
 
   const banner = saveBanner(save);
   const reorderable = sort === null && !filtering;
+  const link = schema.link;
+  const linkTitle = link
+    ? (views.find((v) => v.view === link.view)?.title ?? link.view)
+    : "";
+  const controls = link ? CONTROLS_WITH_LINK : CONTROLS;
+  const savedById = new Map(saved.map((e) => [e.id, e.row]));
   const headCls =
     "sticky top-0 z-20 border-b border-border bg-raised py-2 font-medium";
 
@@ -483,12 +522,15 @@ export function TableEditor({ table, pending }: Props) {
       {/* The pane is the only thing that scrolls sideways, and it takes
           whatever height the header and the bars leave it. */}
       <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40">
-        <table className="border-collapse text-left">
+        <table
+          className="border-collapse text-left"
+          style={{ "--controls": `${controls}px` } as React.CSSProperties}
+        >
           <thead>
             <tr className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
               <th
                 scope="col"
-                className={headCls + " sticky left-0 z-30 w-[84px] bg-raised pl-3"}
+                className={headCls + " sticky left-0 z-30 w-[var(--controls)] bg-raised pl-3"}
               >
                 <span className="sr-only">Row controls</span>
               </th>
@@ -499,7 +541,7 @@ export function TableEditor({ table, pending }: Props) {
                   className={
                     headCls +
                     " whitespace-nowrap pr-3" +
-                    (i === 0 ? " sticky left-[84px] z-30 bg-raised" : "")
+                    (i === 0 ? " sticky left-[var(--controls)] z-30 bg-raised" : "")
                   }
                 >
                   {schema.sortable ? (
@@ -543,6 +585,13 @@ export function TableEditor({ table, pending }: Props) {
                     .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
                     .join("\n")}
                   reorderable={reorderable}
+                  target={
+                    link
+                      ? savedRowTarget(link, table, entry.row, savedById.get(entry.id))
+                      : null
+                  }
+                  linkTitle={linkTitle}
+                  go={go}
                   onCell={setCell}
                   onMapEntry={setMapEntry}
                   onDelete={onDelete}
@@ -596,6 +645,11 @@ interface RowProps {
   errFields: Set<string>;
   errTitle: string;
   reorderable: boolean;
+  /** The page this row links to, or nothing. */
+  target: RowTarget | null;
+  /** The heading of the view the link opens. */
+  linkTitle: string;
+  go: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
   onCell: (id: number, column: Column, raw: string) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
   onDelete: (id: number) => void;
@@ -604,6 +658,7 @@ interface RowProps {
 }
 
 function TableRow(p: RowProps) {
+  const target = p.target;
   const rowErr = p.errTitle.length > 0;
   // A sticky cell needs a background of its own, since the rest of the row
   // slides underneath it.
@@ -620,7 +675,7 @@ function TableRow(p: RowProps) {
       }
     >
       <td
-        className={`sticky left-0 z-10 w-[84px] whitespace-nowrap py-1 pl-3 pr-2 ${stuck}`}
+        className={`sticky left-0 z-10 w-[var(--controls)] whitespace-nowrap py-1 pl-3 pr-2 ${stuck}`}
       >
         <span className="flex items-center gap-2">
           <span
@@ -650,6 +705,17 @@ function TableRow(p: RowProps) {
           >
             ×
           </button>
+          {target !== null && (
+            <a
+              href={target.href}
+              onClick={(e) => p.go(e, target.href)}
+              aria-label={`Open ${target.name} in ${p.linkTitle}`}
+              title={`Open in ${p.linkTitle}`}
+              className="ml-3 flex h-8 w-8 select-none items-center justify-center rounded text-muted no-underline hover:bg-accent/10 hover:text-accent"
+            >
+              →
+            </a>
+          )}
         </span>
       </td>
       {p.columns.map((column, i) => (
@@ -706,7 +772,7 @@ function Cell({
   const mismatched = cellMismatch(column, row);
   const tdCls =
     "py-1 pr-3 whitespace-nowrap" +
-    (sticky ? ` sticky left-[84px] z-10 ${sticky}` : "") +
+    (sticky ? ` sticky left-[var(--controls)] z-10 ${sticky}` : "") +
     (error ? " cell-error" : "") +
     (mismatched ? " cell-mismatch" : "");
   const value = row[column.field];

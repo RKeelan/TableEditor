@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::context::Context;
 use crate::error::{ApiError, ParseError, ValidationError};
 use crate::jsonl;
-use crate::schema::Schema;
+use crate::schema::{RowLink, Schema};
 use crate::view::View;
 
 /// Where the editor opens when the address names nothing.
@@ -119,6 +119,17 @@ pub trait TableLogic: Send + Sync + 'static {
     fn siblings(&self, _ctx: &Context) -> Result<serde_json::Value, ApiError> {
         Ok(serde_json::json!({}))
     }
+
+    /// The view each row links into, asked about that row.
+    ///
+    /// It is declared here rather than in the schema because it does not
+    /// depend on the data, and so it can be checked when the [`crate::Server`]
+    /// is built: a link naming a view the app does not serve, or a parameter
+    /// that view does not declare, panics there. It is sent to the browser as
+    /// the schema's `link`.
+    fn link(&self) -> Option<RowLink> {
+        None
+    }
 }
 
 /// The object-safe façade the router holds. Each method returns the JSON body
@@ -132,6 +143,9 @@ pub trait Table: Send + Sync {
 
     /// The file under `Data/`, from [`TableLogic::file`].
     fn data_file(&self) -> &'static str;
+
+    /// The view each row links into, from [`TableLogic::link`].
+    fn row_link(&self) -> Option<RowLink>;
 
     /// `GET /api/<table>`: the schema, the stored rows, their derivation, their
     /// validation errors, any sibling data, and the version of the file the
@@ -168,6 +182,10 @@ impl<T: TableLogic> Table for T {
         self.file()
     }
 
+    fn row_link(&self) -> Option<RowLink> {
+        self.link()
+    }
+
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError> {
         let file = self.file();
         let text = ctx.read(file)?;
@@ -177,6 +195,7 @@ impl<T: TableLogic> Table for T {
 
         let mut schema = self.schema(ctx)?;
         schema.identify(self.name(), self.title());
+        schema.link_rows(self.link())?;
 
         to_json(&GetPayload {
             schema,
@@ -320,6 +339,49 @@ mod tests {
         );
         assert!(v["errors"].as_array().unwrap().is_empty());
         assert_eq!(v["siblings"]["genres"][0]["subgenre"], "Natural History");
+    }
+
+    #[test]
+    fn get_carries_the_view_a_row_links_into() {
+        struct Linked;
+        impl TableLogic for Linked {
+            type Row = Book;
+            fn name(&self) -> &'static str {
+                "books"
+            }
+            fn file(&self) -> &'static str {
+                BOOKS_FILE
+            }
+            fn title(&self) -> &'static str {
+                "Books"
+            }
+            fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+                Ok(Schema::new([Column::string("title", "Title")]))
+            }
+            fn validate(
+                &self,
+                _rows: &[Book],
+                _ctx: &Context,
+            ) -> Result<Vec<ValidationError>, ApiError> {
+                Ok(Vec::new())
+            }
+            fn link(&self) -> Option<RowLink> {
+                Some(RowLink::new("book").arg("title", "title"))
+            }
+        }
+
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+
+        let v: Value = serde_json::from_str(&Linked.handle_get(&dir.context()).unwrap()).unwrap();
+        assert_eq!(
+            v["schema"]["link"],
+            serde_json::json!({ "view": "book", "args": { "title": "title" } })
+        );
+
+        let plain: Value =
+            serde_json::from_str(&Books.handle_get(&dir.context()).unwrap()).unwrap();
+        assert!(plain["schema"].get("link").is_none());
     }
 
     #[test]

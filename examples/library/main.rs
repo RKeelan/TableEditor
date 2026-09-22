@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
     ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
-    DetailSection, Field, Fields, Form, Front, MapSpec, NewRow, OptionsBy, Param, Schema, Section,
-    SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone, ValidationError,
-    View, ViewArgs, ViewData, ViewLink, ViewLogic,
+    DetailSection, Field, Fields, Form, Front, MapSpec, NewRow, OptionsBy, Param, RowLink, Schema,
+    Section, SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone,
+    ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -304,6 +304,11 @@ impl TableLogic for Books {
     fn siblings(&self, ctx: &Context) -> Result<Value, ApiError> {
         Ok(json!({ "genres": Self::genres(ctx)? }))
     }
+
+    /// Each book opens a page of its own, found by its title.
+    fn link(&self) -> Option<RowLink> {
+        Some(RowLink::new("book").arg("title", "title"))
+    }
 }
 
 // ── Genres ──────────────────────────────────────────────────────────────────
@@ -417,6 +422,12 @@ impl TableLogic for Branches {
                 .with("librarian_first", "")
                 .with("librarian_last", ""),
         ))
+    }
+
+    /// Each branch opens its own page, the same one its card on the front page
+    /// opens.
+    fn link(&self) -> Option<RowLink> {
+        Some(RowLink::new("branch").arg("branch", "code"))
     }
 
     fn validate(&self, rows: &[Branch], _ctx: &Context) -> Result<Vec<ValidationError>, ApiError> {
@@ -991,6 +1002,53 @@ impl BranchDetail {
     }
 }
 
+// ── The Book view, which is one book in detail ───────────────────────────────
+
+/// One book and who wrote it, which is as little as a detail page can be.
+///
+/// It is reached from a row of the Books table, whose link answers its one
+/// parameter with the row's title, so the parameter is hidden and the view is
+/// not in the switcher. It names no way back of its own: the page goes back to
+/// the table it was reached from.
+struct BookDetail;
+
+impl ViewLogic for BookDetail {
+    fn name(&self) -> &'static str {
+        "book"
+    }
+
+    fn title(&self) -> &'static str {
+        "Book"
+    }
+
+    fn in_switcher(&self) -> bool {
+        false
+    }
+
+    fn params(&self, _ctx: &Context, _asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+        Ok(vec![Param::string("title", "Title").hidden()])
+    }
+
+    fn render(&self, args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        let books: Vec<Book> = ctx.optional_rows(BOOKS_FILE)?;
+        let title = args.get_or("title", "");
+        let book = books
+            .iter()
+            .find(|b| b.title == title)
+            .ok_or_else(|| ApiError::new(404, format!("no book is called \"{title}\"")))?;
+
+        let author = format!("{} {}", book.author_first, book.author_last);
+        let author = match author.trim() {
+            "" => "No author is recorded",
+            named => named,
+        };
+        Ok(ViewData::new().detail(
+            Detail::new(book.title.as_str())
+                .section(DetailSection::main("Written by").row(DetailRow::new(author))),
+        ))
+    }
+}
+
 // ── The app ─────────────────────────────────────────────────────────────────
 
 struct Library {
@@ -1000,6 +1058,7 @@ struct Library {
     on_loan: OnLoan,
     branch_cards: BranchCards,
     branch_detail: BranchDetail,
+    book_detail: BookDetail,
 }
 
 impl App for Library {
@@ -1016,7 +1075,12 @@ impl App for Library {
     }
 
     fn views(&self) -> Vec<&dyn View> {
-        vec![&self.branch_cards, &self.branch_detail, &self.on_loan]
+        vec![
+            &self.branch_cards,
+            &self.branch_detail,
+            &self.book_detail,
+            &self.on_loan,
+        ]
     }
 
     /// The reading happens on the views, so one of them is what a bare address
@@ -1054,6 +1118,7 @@ fn main() -> anyhow::Result<()> {
             on_loan: OnLoan,
             branch_cards: BranchCards,
             branch_detail: BranchDetail,
+            book_detail: BookDetail,
         })
         .child_env("LIBRARY_EXAMPLE_CHILD")
         .default_port(DEFAULT_PORT)

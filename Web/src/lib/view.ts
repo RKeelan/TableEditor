@@ -7,7 +7,7 @@
 // button and the form are on the page; what the form is posted to, and what
 // the write does, are the server's.
 
-import type { Column, Row, SelectOption } from "./schema";
+import type { Column, Row, RowLink, SelectOption } from "./schema";
 import { cellText } from "./rows";
 
 export interface ViewParam {
@@ -268,6 +268,113 @@ export function announce(page: ViewPayload): string {
 
 export function tableHref(name: string): string {
   return `?table=${encodeURIComponent(name)}`;
+}
+
+/** Where a row of a table links to: the address, and the name a screen
+ *  reader gives the link, which is the values the address carries — the
+ *  codename a reader knows the row by, rather than where it happens to be
+ *  stored. */
+export interface RowTarget {
+  href: string;
+  name: string;
+}
+
+/** Where a row links to, or nothing where the row cannot say which page it is
+ *  about.
+ *
+ *  Each of the view's arguments is the row's value of the field the link pairs
+ *  it with. A row where any of them is empty — a new row nobody has named yet —
+ *  has no link, since the page would be about nothing. A value that is not
+ *  text, a number, or a boolean counts as empty, because it has no one way to
+ *  be written into an address.
+ *
+ *  The address also names the table as `table`, which no view may declare as a
+ *  parameter, so the page it opens can offer the way back to the table it was
+ *  reached from. */
+export function rowTarget(
+  link: RowLink,
+  table: string,
+  row: Row,
+): RowTarget | null {
+  const args: Record<string, string> = {};
+  const values: string[] = [];
+  for (const [param, field] of Object.entries(link.args)) {
+    const value = row[field];
+    if (
+      typeof value !== "string" &&
+      typeof value !== "number" &&
+      typeof value !== "boolean"
+    ) {
+      return null;
+    }
+    const text = String(value);
+    if (text.trim() === "") return null;
+    args[param] = text;
+    values.push(text);
+  }
+  args.table = table;
+  return { href: viewHref(link.view, args), name: values.join(", ") };
+}
+
+/** Where a row links to, drawn only once the server has what the address asks
+ *  for.
+ *
+ *  A link reads the row on screen, and the page it opens reads the file. A
+ *  row whose linked fields have been edited and not yet written would open a
+ *  page about a value the file does not hold, so it has no link until the
+ *  write lands; `saved` is the row as it was last written, or nothing for a row
+ *  never written. An edit to any other field leaves the link where it is, and
+ *  following it writes the edit first. */
+export function savedRowTarget(
+  link: RowLink,
+  table: string,
+  row: Row,
+  saved: Row | undefined,
+): RowTarget | null {
+  if (saved === undefined) return null;
+  const now = rowTarget(link, table, row);
+  const then = rowTarget(link, table, saved);
+  return now !== null && then !== null && now.href === then.href ? now : null;
+}
+
+/** Whether a click on a link to one of this app's pages is the page's to
+ *  answer. A click with a modifier held, or with any button but the main one,
+ *  is the browser's: a new tab, a new window, a download. */
+export function isPageClick(event: {
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): boolean {
+  return (
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey
+  );
+}
+
+/** Where a detail page's way back goes, and what it is called.
+ *
+ *  A page reached from a row of a table goes back to that table, which its
+ *  address names as `table`. Otherwise it goes to the view the page itself
+ *  names, under the heading the app gives that view, or nowhere where it names
+ *  none. A `table` the app does not serve is ignored. */
+export function backLink(
+  back: ViewLink | undefined,
+  args: Record<string, string>,
+  tables: readonly { table: string; title: string }[],
+  views: readonly { view: string; title: string }[],
+): { href: string; title: string } | null {
+  const from = tables.find((t) => t.table === args.table);
+  if (from) return { href: tableHref(from.table), title: from.title };
+  if (!back) return null;
+  return {
+    href: linkHref(back),
+    title: views.find((v) => v.view === back.view)?.title ?? "Back",
+  };
 }
 
 /** A link the page is willing to follow.

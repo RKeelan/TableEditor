@@ -7,6 +7,7 @@ import {
   type ViewPayload,
   type ViewSection,
   announce,
+  backLink,
   bodyOf,
   controlWidthOfColumn,
   correctedHref,
@@ -26,6 +27,9 @@ interface Props {
   /** What the app serves, so a page that links back to another view can be
    *  shown under that view's own heading. */
   views: readonly { view: string; title: string }[];
+  /** What the app serves, so a page reached from a row of a table can go back
+   *  to that table. */
+  tables: readonly { table: string; title: string }[];
   onAsk: (href: string) => void;
 }
 
@@ -41,7 +45,7 @@ interface Props {
  *  a detail page: it posts to the action its button named, says what the server
  *  answered, and fetches the page again, so what the write changed shows
  *  without the page being told how. */
-export function ViewPage({ view, args, views, onAsk }: Props) {
+export function ViewPage({ view, args, views, tables, onAsk }: Props) {
   const [page, setPage] = useState<ViewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -187,10 +191,7 @@ export function ViewPage({ view, args, views, onAsk }: Props) {
             detail={page.detail}
             view={page.view}
             args={page.args}
-            backTitle={
-              views.find((v) => v.view === page.detail?.back?.view)?.title ??
-              "Back"
-            }
+            back={backLink(page.detail.back, args, tables, views)}
             onAsk={onAsk}
             onWrote={wrote}
           />

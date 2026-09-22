@@ -1,7 +1,7 @@
 // The pieces more than one kind of page is made of: how a thing stands, a link
 // out of the app, and a link to another of the app's views.
 
-import type { Status } from "../lib/view";
+import { type Status, isPageClick } from "../lib/view";
 
 /** A word for how a thing stands, with a dot in its tone's colour. The tone is
  *  an attribute rather than a class, so the five colours are one rule apiece in
@@ -60,7 +60,7 @@ export function PageLink({
     <a
       href={href}
       onClick={(e) => {
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        if (!isPageClick(e)) return;
         e.preventDefault();
         onAsk(href);
       }}

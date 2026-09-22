@@ -9,6 +9,7 @@ import {
   type ViewSection,
   actionArgs,
   announce,
+  backLink,
   bodyOf,
   controlWidthOfColumn,
   correctedHref,
@@ -19,6 +20,9 @@ import {
   linkHref,
   parseTarget,
   rowCardFor,
+  isPageClick,
+  rowTarget,
+  savedRowTarget,
   safeHref,
   switcherViews,
   tableHref,
@@ -314,6 +318,177 @@ describe("a link to another view", () => {
       "?branch=cen&view=branch",
     );
     expect(linkHref({ view: "branches" })).toBe("?view=branches");
+  });
+});
+
+describe("a row's link into a view", () => {
+  const story = { view: "story", args: { codename: "codename" } };
+  const href = (row: Row) => rowTarget(story, "stories", row)?.href ?? null;
+
+  test("asks the view about the row, and names the table it came from", () => {
+    expect(rowTarget(story, "stories", { codename: "Moss" })).toEqual({
+      href: "?codename=Moss&table=stories&view=story",
+      name: "Moss",
+    });
+  });
+
+  test("is named by the values it carries", () => {
+    const loan = { view: "loan", args: { branch: "branch", title: "title" } };
+    expect(
+      rowTarget(loan, "books", { branch: "cen", title: "Nine Doors" })?.name,
+    ).toBe("cen, Nine Doors");
+  });
+
+  test("survives the journey into the address and back", () => {
+    for (const codename of [
+      "A & B",
+      "C++",
+      "#1",
+      "AI 0.1",
+      "Café à la mode",
+      "?view=other&table=x",
+      "  padded  ",
+    ]) {
+      expect(parseTarget(href({ codename })!)).toEqual({
+        kind: "view",
+        name: "story",
+        args: { codename, table: "stories" },
+      });
+    }
+  });
+
+  test("escapes what an address would otherwise read as its own", () => {
+    expect(href({ codename: "A & B" })).toBe(
+      "?codename=A+%26+B&table=stories&view=story",
+    );
+    expect(href({ codename: "C++" })).toBe(
+      "?codename=C%2B%2B&table=stories&view=story",
+    );
+    expect(href({ codename: "#1" })).toBe(
+      "?codename=%231&table=stories&view=story",
+    );
+    expect(href({ codename: "AI 0.1" })).toBe(
+      "?codename=AI+0.1&table=stories&view=story",
+    );
+    expect(href({ codename: "é" })).toBe(
+      "?codename=%C3%A9&table=stories&view=story",
+    );
+  });
+
+  test("takes numbers and booleans as they print", () => {
+    const link = { view: "loan", args: { year: "year", lent: "lent" } };
+    expect(rowTarget(link, "books", { year: 1994, lent: false })?.href).toBe(
+      "?lent=false&table=books&year=1994&view=loan",
+    );
+  });
+
+  test("is not there for a row nobody has named yet", () => {
+    expect(href({})).toBeNull();
+    expect(href({ codename: "" })).toBeNull();
+    expect(href({ codename: "   " })).toBeNull();
+    expect(href({ codename: null })).toBeNull();
+  });
+
+  test("is not there where any one of its fields is empty", () => {
+    const link = { view: "loan", args: { branch: "branch", title: "title" } };
+    expect(rowTarget(link, "books", { branch: "cen", title: "" })).toBeNull();
+  });
+
+  test("is not there for a value with no one way to be written", () => {
+    expect(href({ codename: { a: 1 } })).toBeNull();
+    expect(href({ codename: ["Moss"] })).toBeNull();
+  });
+});
+
+describe("a row's link before its edits are written", () => {
+  const story = { view: "story", args: { codename: "codename" } };
+
+  test("is there where the file holds what it asks for", () => {
+    expect(
+      savedRowTarget(
+        story,
+        "stories",
+        { codename: "Moss", genre: "SF" },
+        { codename: "Moss", genre: "Fantasy" },
+      )?.href,
+    ).toBe("?codename=Moss&table=stories&view=story");
+  });
+
+  test("is not there while the field it reads is unwritten", () => {
+    expect(
+      savedRowTarget(story, "stories", { codename: "Lichen" }, { codename: "Moss" }),
+    ).toBeNull();
+  });
+
+  test("is not there for a row never written", () => {
+    expect(
+      savedRowTarget(story, "stories", { codename: "Moss" }, undefined),
+    ).toBeNull();
+  });
+
+  test("is not there where the file holds a row nobody had named", () => {
+    expect(
+      savedRowTarget(story, "stories", { codename: "Moss" }, { codename: "" }),
+    ).toBeNull();
+  });
+});
+
+describe("which clicks the page answers", () => {
+  const plain = {
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+  };
+
+  test("a plain click with the main button", () => {
+    expect(isPageClick(plain)).toBe(true);
+  });
+
+  test("none with a modifier held, or with another button", () => {
+    expect(isPageClick({ ...plain, metaKey: true })).toBe(false);
+    expect(isPageClick({ ...plain, ctrlKey: true })).toBe(false);
+    expect(isPageClick({ ...plain, shiftKey: true })).toBe(false);
+    expect(isPageClick({ ...plain, altKey: true })).toBe(false);
+    expect(isPageClick({ ...plain, button: 1 })).toBe(false);
+    expect(isPageClick({ ...plain, button: 2 })).toBe(false);
+  });
+});
+
+describe("the way back from a detail page", () => {
+  const tables = [{ table: "stories", title: "Stories" }];
+  const views = [{ view: "dashboard", title: "Dashboard" }];
+
+  test("goes to the table the page was reached from", () => {
+    expect(
+      backLink({ view: "dashboard" }, { codename: "Moss", table: "stories" }, tables, views),
+    ).toEqual({ href: "?table=stories", title: "Stories" });
+  });
+
+  test("goes to the table even where the page names no way back", () => {
+    expect(backLink(undefined, { table: "stories" }, tables, views)).toEqual({
+      href: "?table=stories",
+      title: "Stories",
+    });
+  });
+
+  test("goes to the view the page names where no table is named", () => {
+    expect(backLink({ view: "dashboard" }, { codename: "Moss" }, tables, views)).toEqual({
+      href: "?view=dashboard",
+      title: "Dashboard",
+    });
+  });
+
+  test("ignores a table the app does not serve", () => {
+    expect(
+      backLink({ view: "dashboard" }, { table: "gone" }, tables, views),
+    ).toEqual({ href: "?view=dashboard", title: "Dashboard" });
+    expect(backLink(undefined, { table: "gone" }, tables, views)).toBeNull();
+  });
+
+  test("is called Back where the app does not name the view", () => {
+    expect(backLink({ view: "elsewhere" }, {}, tables, views)?.title).toBe("Back");
   });
 });
 

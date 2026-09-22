@@ -17,7 +17,6 @@ import {
   type FormField,
   actionArgs,
   formValues,
-  linkHref,
   safeHref,
 } from "../lib/view";
 import { OutsideLink, PageLink, StatusWord } from "./parts";
@@ -32,9 +31,9 @@ interface Props {
    *  what an action is posted with. */
   view: string;
   args: Record<string, string>;
-  /** The heading of the view the header goes back to, which the app already
-   *  names, so a page never has to carry it. */
-  backTitle: string;
+  /** Where the header goes back to and what that page is called, which the
+   *  app already names, so a page never has to carry it. See `backLink`. */
+  back: { href: string; title: string } | null;
   onAsk: (href: string) => void;
   /** What to do once a form has written: show the sentence it answered with
    *  and fetch the page again. */
@@ -51,7 +50,7 @@ export function DetailPage({
   detail,
   view,
   args,
-  backTitle,
+  back,
   onAsk,
   onWrote,
 }: Props) {
@@ -76,14 +75,14 @@ export function DetailPage({
   return (
     <div className="pb-2">
       <header className="border-b border-border pb-6">
-        {detail.back && (
+        {back && (
           <nav aria-label="Breadcrumb" className="mb-2 text-sm">
             <PageLink
-              href={linkHref(detail.back)}
+              href={back.href}
               onAsk={onAsk}
               className="text-muted no-underline hover:underline"
             >
-              <span aria-hidden>←</span> {backTitle}
+              <span aria-hidden>←</span> {back.title}
             </PageLink>
           </nav>
         )}

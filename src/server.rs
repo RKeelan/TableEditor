@@ -213,7 +213,9 @@ impl Server {
     /// Panics when a table takes one of the reserved names, because such a
     /// table is unreachable: the control endpoints and the `stop` subcommand
     /// are matched first. Panics, too, when a table's file is not a bare name,
-    /// since every file is resolved against the one `Data/` directory.
+    /// since every file is resolved against the one `Data/` directory. Panics
+    /// when a table's rows link to a view the app does not serve, or with a
+    /// parameter that view does not declare.
     pub fn new(app: impl App) -> Self {
         let app: Box<dyn App> = Box::new(app);
         for table in app.tables() {
@@ -278,8 +280,39 @@ impl Server {
             for key in view.param_keys(&ctx).unwrap_or_default() {
                 assert!(
                     !RESERVED_PARAM_KEYS.contains(&key.as_str()),
-                    "view \"{name}\" has a parameter keyed \"{key}\"; the address uses that word                      to say which page it is on"
+                    "view \"{name}\" has a parameter keyed \"{key}\"; the address uses that word \
+                     to say which page it is on"
                 );
+            }
+        }
+
+        // A row's link is an address into a view, built by the page from the
+        // row. One naming a view this app does not serve, or a parameter that
+        // view does not declare, would be a link on every row to a page that
+        // does not answer it. The keys are asked for the way the check on
+        // reserved keys asks, and a view that cannot say without its files
+        // has its parameters left unchecked.
+        for table in app.tables() {
+            let Some(link) = table.row_link() else {
+                continue;
+            };
+            let Some(view) = app.view(link.view()) else {
+                panic!(
+                    "table \"{}\" links its rows to the view \"{}\", which this app does not serve",
+                    table.route(),
+                    link.view()
+                );
+            };
+            if let Ok(keys) = view.param_keys(&Context::new(".")) {
+                for (param, _) in link.args() {
+                    assert!(
+                        keys.iter().any(|key| key == param),
+                        "table \"{}\" links its rows to the view \"{}\" with the parameter \
+                         \"{param}\", which that view does not declare",
+                        table.route(),
+                        link.view()
+                    );
+                }
             }
         }
 
@@ -514,7 +547,10 @@ mod tests {
     use super::*;
     use crate::context::Context;
     use crate::error::ApiError;
+    use crate::error::ValidationError;
     use crate::fixture::{Clashing, Library, Straying};
+    use crate::schema::{Column, RowLink, Schema};
+    use crate::table::TableLogic;
     use crate::table::{App, Table};
     use crate::view::{Param, View, ViewArgs, ViewData, ViewLogic};
 
@@ -894,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "the address uses that word")]
+    #[should_panic(expected = "the address uses that word to say which page it is on")]
     fn a_parameter_may_not_be_keyed_for_the_address_itself() {
         struct Hijack;
         impl ViewLogic for Hijack {
@@ -915,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "the address uses that word")]
+    #[should_panic(expected = "the address uses that word to say which page it is on")]
     fn a_parameter_may_not_be_keyed_for_a_table_either() {
         struct Hijack;
         impl ViewLogic for Hijack {
@@ -933,6 +969,107 @@ mod tests {
             }
         }
         let _ = Server::new(WithViews(vec![&Hijack]));
+    }
+
+    /// A table whose rows link into the fixture's `on-loan` view, or into
+    /// whatever view and parameter a test names instead.
+    struct Linked {
+        view: &'static str,
+        param: &'static str,
+    }
+
+    impl TableLogic for Linked {
+        type Row = crate::fixture::Genre;
+
+        fn name(&self) -> &'static str {
+            "linked"
+        }
+        fn file(&self) -> &'static str {
+            "Linked.jsonl"
+        }
+        fn title(&self) -> &'static str {
+            "Linked"
+        }
+        fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+            Ok(Schema::new([Column::string("genre", "Genre")]))
+        }
+        fn validate(
+            &self,
+            _rows: &[crate::fixture::Genre],
+            _ctx: &Context,
+        ) -> Result<Vec<ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+        fn link(&self) -> Option<RowLink> {
+            Some(RowLink::new(self.view).arg(self.param, "genre"))
+        }
+    }
+
+    /// A view that cannot say what its parameters are without its files.
+    struct Unreadable;
+
+    impl ViewLogic for Unreadable {
+        fn name(&self) -> &'static str {
+            "unreadable"
+        }
+        fn title(&self) -> &'static str {
+            "Unreadable"
+        }
+        fn params(&self, ctx: &Context, _asked: &ViewArgs) -> Result<Vec<Param>, ApiError> {
+            let _: Vec<crate::fixture::Genre> = ctx.rows("Nowhere.jsonl")?;
+            Ok(Vec::new())
+        }
+        fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+            Ok(ViewData::new())
+        }
+    }
+
+    struct WithLink(Linked);
+
+    impl App for WithLink {
+        fn name(&self) -> &str {
+            "WithLink"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&self.0]
+        }
+        fn views(&self) -> Vec<&dyn View> {
+            vec![&crate::fixture::OnLoan, &Unreadable]
+        }
+    }
+
+    #[test]
+    fn a_row_may_link_to_a_view_by_a_parameter_it_declares() {
+        let _ = Server::new(WithLink(Linked {
+            view: "on-loan",
+            param: "genre",
+        }));
+    }
+
+    #[test]
+    fn a_view_that_cannot_list_its_parameters_leaves_them_unchecked() {
+        let _ = Server::new(WithLink(Linked {
+            view: "unreadable",
+            param: "codename",
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "which this app does not serve")]
+    fn a_row_may_not_link_to_a_view_the_app_does_not_serve() {
+        let _ = Server::new(WithLink(Linked {
+            view: "story",
+            param: "genre",
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "which that view does not declare")]
+    fn a_row_may_not_link_by_a_parameter_the_view_does_not_declare() {
+        let _ = Server::new(WithLink(Linked {
+            view: "on-loan",
+            param: "codename",
+        }));
     }
 
     #[test]

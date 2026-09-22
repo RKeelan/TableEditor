@@ -76,6 +76,14 @@ export type Datalist =
   | { options: string[] }
   | { from_rows: { fields: string[]; separator: string } };
 
+/** A link from each row into one of the app's views: `args` pairs each of
+ *  the view's parameters the link answers with the field of the row that
+ *  answers it. */
+export interface RowLink {
+  view: string;
+  args: Record<string, string>;
+}
+
 export interface Schema {
   table: string;
   title: string;
@@ -83,6 +91,7 @@ export interface Schema {
   columns: Column[];
   new_row: NewRowSpec;
   datalists: Record<string, Datalist>;
+  link?: RowLink;
 }
 
 /** A row as the editor handles it: the object the server sent, untouched but
