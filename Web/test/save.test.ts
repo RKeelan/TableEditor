@@ -7,6 +7,7 @@ import {
   type SaveState,
   type Writer,
   hasUnsavedWork,
+  leave,
   retryDelay,
   saveBanner,
   waitingToSave,
@@ -19,6 +20,87 @@ describe("retrying a failed save", () => {
     expect(retryDelay(2)).toBe(4000);
     expect(retryDelay(3)).toBe(8000);
     expect(retryDelay(10)).toBe(30_000);
+  });
+});
+
+describe("leaving a table", () => {
+  const quiet = { waiting: () => false, failing: () => false };
+
+  test("waits for what was typed to be written, then goes", async () => {
+    let written = false;
+    const ok = await leave({
+      ...quiet,
+      flush: async () => {
+        written = true;
+      },
+      waiting: () => !written,
+    });
+    expect(written).toBe(true);
+    expect(ok).toBe(true);
+  });
+
+  test("stays where the write it waited for failed", async () => {
+    expect(
+      await leave({ ...quiet, flush: async () => {}, waiting: () => true }),
+    ).toBe(false);
+  });
+
+  test("stays where the write threw", async () => {
+    const ok = await leave({
+      ...quiet,
+      flush: async () => {
+        throw new Error("down");
+      },
+    });
+    expect(ok).toBe(false);
+  });
+
+  test("goes where nothing is waiting, a refused write included", async () => {
+    expect(await leave({ ...quiet, flush: async () => {} })).toBe(true);
+  });
+
+  test("does not write again while a failed write is being retried", async () => {
+    let flushed = 0;
+    const ok = await leave({
+      flush: async () => {
+        flushed += 1;
+      },
+      waiting: () => true,
+      failing: () => true,
+    });
+    expect(ok).toBe(false);
+    expect(flushed).toBe(0);
+  });
+
+  test("goes once the write it waited for lands, before the page renders", async () => {
+    // The editor's report updates what the shell reads as soon as it is
+    // called rather than at the next render, which is what this stands in
+    // for: the state here is only ever the last one reported.
+    let state = { kind: "idle" } as SaveState;
+    let onScreen: Pending = { rows: [], key: "[]" };
+    let landed: (version: string) => void = () => {};
+    const writes = writer({
+      pending: () => onScreen,
+      put: () =>
+        new Promise<PutResult>((resolve) => {
+          landed = (version) => resolve({ derived: [], errors: [], version });
+        }),
+      report: (next) => {
+        state = next;
+      },
+    });
+    writes.loaded("[]", "v0");
+    onScreen = { rows: [{ title: "Moss" }], key: '[{"title":"Moss"}]' };
+
+    const going = leave({
+      flush: () => writes.save(),
+      waiting: () => waitingToSave(state, writes.written() !== onScreen.key),
+      failing: () => state.kind === "failed",
+    });
+    await settle();
+    landed("v1");
+    expect(await going).toBe(true);
+    expect(state.kind).toBe("saved");
   });
 });
 

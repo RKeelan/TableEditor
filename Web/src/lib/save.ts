@@ -24,6 +24,29 @@ export interface PendingSave {
   flush: () => Promise<void>;
   /** Whether a write the editor is still trying to make is outstanding. */
   waiting: () => boolean;
+  /** Whether the last write failed and the editor is retrying on a timer. */
+  failing: () => boolean;
+}
+
+/** Whether the page may leave the table now, once what was typed in it has
+ *  been written.
+ *
+ *  A write that fails keeps the page where it is, since leaving would throw
+ *  the edit away; the editor is showing why, and it keeps trying. A page
+ *  already retrying a failed write is refused without writing again, since
+ *  another failure would push the next retry further off, and a reader
+ *  clicking a few times at a server that is down would find the page slower
+ *  to recover for it. A write the editor has stopped trying to make is not
+ *  waited for: the editor says why and offers the table as it now is, and the
+ *  browser asks on the way out. */
+export async function leave(pending: PendingSave): Promise<boolean> {
+  if (pending.failing()) return false;
+  try {
+    await pending.flush();
+  } catch {
+    return false;
+  }
+  return !pending.waiting();
 }
 
 export type SaveState =

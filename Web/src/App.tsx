@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { type AppPayload, getApp } from "./lib/api";
 import { describeError } from "./lib/errors";
-import type { PendingSave } from "./lib/save";
+import { type PendingSave, leave } from "./lib/save";
 import {
   type Target,
+  isPageClick,
   parseTarget,
   switcherViews,
   tableHref,
@@ -45,6 +46,7 @@ export function App() {
   const pending = useRef<PendingSave>({
     flush: async () => {},
     waiting: () => false,
+    failing: () => false,
   });
 
   useEffect(() => {
@@ -101,25 +103,13 @@ export function App() {
     document.title = heading ? `${app.name} · ${heading}` : app.name;
   }, [app, heading]);
 
-  /** Leave for another table only once what was typed in this one is written.
-   *
-   *  A write the editor has stopped trying to make is not waited for: the
-   *  editor says why and offers the table as it now is, and the browser asks
-   *  on the way out rather than the switcher quietly doing nothing. */
+  /** Leave a table only once what was typed in it is written, whether through
+   *  the switcher or a row's link. See `leave` for what is waited for and what
+   *  is not. */
   const go = async (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) {
-      return;
-    }
+    if (!isPageClick(event)) return;
     event.preventDefault();
-    try {
-      await pending.current.flush();
-    } catch {
-      // The editor is showing why, and it keeps trying; leaving now would
-      // throw the edit away, so stay put.
-      return;
-    }
-    if (pending.current.waiting()) return;
-    window.location.assign(href);
+    if (await leave(pending.current)) window.location.assign(href);
   };
 
   return (
@@ -183,10 +173,17 @@ export function App() {
             view={target.name}
             args={target.args}
             views={app.views ?? []}
+            tables={app.tables}
             onAsk={ask}
           />
         ) : target?.kind === "table" ? (
-          <TableEditor key={target.name} table={target.name} pending={pending} />
+          <TableEditor
+            key={target.name}
+            table={target.name}
+            views={app.views ?? []}
+            pending={pending}
+            go={go}
+          />
         ) : (
           <Banner message={`${app.name} serves nothing.`} />
         )}

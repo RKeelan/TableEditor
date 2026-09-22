@@ -65,8 +65,8 @@ pub use page::{
 pub use probe::{probe, probe_status};
 #[cfg(feature = "server")]
 pub use schema::{
-    ChipContent, Column, ColumnType, Datalist, FromRows, MapSpec, NewRow, OptionsBy, Schema,
-    SelectOption, Speak,
+    ChipContent, Column, ColumnType, Datalist, FromRows, MapSpec, NewRow, OptionsBy, RowLink,
+    Schema, SelectOption, Speak,
 };
 #[cfg(feature = "server")]
 pub use server::{Server, ServerArgs, ServerCommand};

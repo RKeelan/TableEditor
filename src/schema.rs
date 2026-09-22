@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::error::ApiError;
+
 /// One table's presentation: the columns, how a new row starts, and any
 /// completion lists the columns draw on.
 ///
@@ -30,6 +32,8 @@ pub struct Schema {
     columns: Vec<Column>,
     new_row: NewRow,
     datalists: BTreeMap<String, Datalist>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link: Option<RowLink>,
 }
 
 impl Schema {
@@ -41,6 +45,7 @@ impl Schema {
             columns: columns.into_iter().collect(),
             new_row: NewRow::default(),
             datalists: BTreeMap::new(),
+            link: None,
         }
     }
 
@@ -69,6 +74,74 @@ impl Schema {
         self.table.push_str(table);
         self.title.clear();
         self.title.push_str(title);
+    }
+
+    /// Stamp the schema with the view its rows link into, which the table
+    /// declares through [`crate::TableLogic::link`] rather than here so that
+    /// the view and its parameters can be checked when the server is built.
+    ///
+    /// The fields the link reads are checked here instead, against the
+    /// columns, since the columns are known only once the schema is. A link
+    /// reading a field no column has would find nothing on any row, so every
+    /// link would vanish without a word; it is a failure naming the field
+    /// instead.
+    pub(crate) fn link_rows(&mut self, link: Option<RowLink>) -> Result<(), ApiError> {
+        if let Some(link) = &link {
+            for (param, field) in link.args() {
+                if !self.columns.iter().any(|column| column.field == field) {
+                    return Err(ApiError::server(format!(
+                        "table \"{}\" links its rows to the view \"{}\" with \"{param}\" taken                          from the field \"{field}\", which is none of the table's columns",
+                        self.table,
+                        link.view()
+                    )));
+                }
+            }
+        }
+        self.link = link;
+        Ok(())
+    }
+}
+
+/// A link from each row of a table into one of the app's views, asked about
+/// that row.
+///
+/// The view is named by its route, and each of its parameters that the link
+/// answers is paired with the field of the row that answers it: a table of
+/// stories links into the `story` view with its `codename` parameter taken
+/// from each row's `codename`. A bundle draws the link at the start of the
+/// row, and draws none on a row where any of those fields is empty. Each field
+/// has to be one of the table's columns, which is checked when the table is
+/// read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RowLink {
+    view: String,
+    args: BTreeMap<String, String>,
+}
+
+impl RowLink {
+    /// A link into the view whose route is `view`, answering none of its
+    /// parameters until [`RowLink::arg`] says which field answers each.
+    pub fn new(view: impl Into<String>) -> Self {
+        Self {
+            view: view.into(),
+            args: BTreeMap::new(),
+        }
+    }
+
+    /// Answer the view's parameter `param` with the row's value of `field`.
+    pub fn arg(mut self, param: impl Into<String>, field: impl Into<String>) -> Self {
+        self.args.insert(param.into(), field.into());
+        self
+    }
+
+    /// The view the link opens.
+    pub fn view(&self) -> &str {
+        &self.view
+    }
+
+    /// The parameters the link answers, each with the field it is taken from.
+    pub fn args(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.args.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 }
 
@@ -844,6 +917,34 @@ mod tests {
 
         let sorted = serde_json::to_value(Schema::new([]).sortable()).unwrap();
         assert_eq!(sorted["sortable"], true);
+    }
+
+    #[test]
+    fn a_row_link_names_the_view_and_the_field_behind_each_argument() {
+        let plain = serde_json::to_value(Schema::new([])).unwrap();
+        assert!(plain.get("link").is_none());
+
+        let mut schema = Schema::new([Column::string("codename", "Codename")]);
+        schema
+            .link_rows(Some(RowLink::new("story").arg("codename", "codename")))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(schema).unwrap()["link"],
+            json!({ "view": "story", "args": { "codename": "codename" } })
+        );
+    }
+
+    #[test]
+    fn a_row_link_may_read_only_the_tables_columns() {
+        let mut schema = Schema::new([Column::string("codename", "Codename")]);
+        schema.identify("stories", "Stories");
+        let failure = schema
+            .link_rows(Some(RowLink::new("story").arg("codename", "code_name")))
+            .unwrap_err();
+        assert_eq!(failure.status, 500);
+        for named in ["\"stories\"", "\"story\"", "\"code_name\""] {
+            assert!(failure.message.contains(named), "{}", failure.message);
+        }
     }
 
     #[test]
