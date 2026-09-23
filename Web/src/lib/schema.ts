@@ -88,6 +88,8 @@ export interface Schema {
   table: string;
   title: string;
   sortable?: boolean;
+  /** The field whose value `true` draws a row muted. */
+  muted_by?: string;
   columns: Column[];
   new_row: NewRowSpec;
   datalists: Record<string, Datalist>;

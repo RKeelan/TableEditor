@@ -320,6 +320,17 @@
     background: color-mix(in oklab, var(--bad) 10%, transparent);
   }
 
+  /* A row the schema's `muted_by` field marks: its text is drawn in the muted
+     tone, which is at least 4.5:1 against the page, a card, and a hovered
+     field in both themes, so a muted row is quieter without being hard to
+     read. A field being typed into keeps the ink, since what is typed is what
+     is being read. The rule weighs no more than the marks below and comes
+     before them, so a cell holding something its column does not describe is
+     still marked in a muted row. */
+  .row-muted .field:where(:not(:focus)) {
+    color: var(--muted);
+  }
+
   /* A cell holding something that is not what its column describes. Marked
      rather than hidden, so it can be seen and put right. */
   .cell-mismatch .field {
@@ -622,6 +633,14 @@
     box-shadow: 0 18px 40px color-mix(in oklab, var(--ink) 25%, transparent);
     padding: 0.6rem;
   }
+}
+
+/* A map's chips and a cell's count of further lines set their own colours
+   with utilities, so muting them has to be outside the layers, where it
+   outranks a utility. */
+.row-muted .chip,
+.row-muted .chip > span {
+  color: var(--muted);
 }
 
 /* The page behind an open panel stays where it is. The panel is modal, so

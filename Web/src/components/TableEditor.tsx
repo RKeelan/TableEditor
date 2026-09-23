@@ -26,6 +26,7 @@ import {
   newRow,
   nextSort,
   parseFilter,
+  rowMuted,
   selectOptions,
   withLineBreaksOf,
   writeCell,
@@ -585,6 +586,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
                     .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
                     .join("\n")}
                   reorderable={reorderable}
+                  muted={rowMuted(schema, entry.row)}
                   target={
                     link
                       ? savedRowTarget(link, table, entry.row, savedById.get(entry.id))
@@ -645,6 +647,8 @@ interface RowProps {
   errFields: Set<string>;
   errTitle: string;
   reorderable: boolean;
+  /** Whether the row is drawn muted, which is all it changes. */
+  muted: boolean;
   /** The page this row links to, or nothing. */
   target: RowTarget | null;
   /** The heading of the view the link opens. */
@@ -666,12 +670,14 @@ function TableRow(p: RowProps) {
   return (
     <tr
       data-row={p.position}
+      data-muted={p.muted || undefined}
       title={p.errTitle || undefined}
       onDragOver={(e) => e.preventDefault()}
       onDrop={p.reorderable ? p.onDrop : undefined}
       className={
         "group border-b border-border align-top " +
-        (rowErr ? "bg-bad/[0.06] " : "hover:bg-surface/40 ")
+        (rowErr ? "bg-bad/[0.06] " : "hover:bg-surface/40 ") +
+        (p.muted ? "row-muted " : "")
       }
     >
       <td
