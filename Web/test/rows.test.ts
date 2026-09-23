@@ -25,6 +25,7 @@ import {
   parseFilter,
   removeMapEntry,
   rowMatches,
+  rowMuted,
   selectOptions,
   speakUrl,
   widthChOf,
@@ -33,6 +34,7 @@ import {
   writeMapEntry,
 } from "../src/lib/rows";
 import { apiRoot } from "../src/lib/api";
+import { toEntries, visibleIndices } from "../src/lib/entries";
 
 const title: Column = { field: "title", label: "Title", type: "string" };
 const notes: Column = { field: "notes", label: "Notes", type: "text", wide: true };
@@ -417,6 +419,53 @@ describe("filtering", () => {
       rowMatches(row, { shelf: "QK" }, columns, parseFilter("shelf: qk", columns)),
     ).toBe(true);
     expect(rowMatches(row, null, columns, parseFilter("", columns))).toBe(true);
+  });
+});
+
+describe("muted rows", () => {
+  const muted: Schema = { ...schemaOf(), muted_by: "lent" };
+
+  test("are the rows holding true in the field the schema names", () => {
+    expect(rowMuted(muted, { title: "Moss", lent: true })).toBe(true);
+    expect(rowMuted(muted, { title: "Moss", lent: false })).toBe(false);
+    expect(rowMuted(muted, { title: "Moss" })).toBe(false);
+  });
+
+  test("do not include a row holding something other than a boolean", () => {
+    expect(rowMuted(muted, { lent: "true" })).toBe(false);
+    expect(rowMuted(muted, { lent: 1 })).toBe(false);
+    expect(rowMuted(muted, { lent: null })).toBe(false);
+  });
+
+  test("do not exist where the schema names no field", () => {
+    expect(rowMuted(schemaOf(), { lent: true })).toBe(false);
+  });
+
+  test("follow the cell as it is edited", () => {
+    const row: Row = { title: "Moss", lent: true };
+    expect(rowMuted(muted, writeCell(row, lent, "false", muted))).toBe(false);
+    expect(rowMuted(muted, writeCell(row, lent, "", muted))).toBe(false);
+    expect(rowMuted(muted, writeCell({ title: "Moss" }, lent, "true", muted))).toBe(
+      true,
+    );
+  });
+
+  test("sort and filter like any other row", () => {
+    const entries = toEntries([
+      { title: "Moss", lent: true },
+      { title: "Ferns" },
+      { title: "Lichen", lent: true },
+    ]);
+    const columns = [title, lent];
+    expect(
+      visibleIndices(entries, [], columns, parseFilter("", columns), {
+        field: "title",
+        direction: "asc",
+      }),
+    ).toEqual([1, 2, 0]);
+    expect(visibleIndices(entries, [], columns, parseFilter("moss", columns), null)).toEqual([
+      0,
+    ]);
   });
 });
 

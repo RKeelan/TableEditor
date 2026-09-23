@@ -485,6 +485,20 @@ export function nextSort(current: Sort | null, field: string): Sort | null {
   return null;
 }
 
+// ── Muting ──────────────────────────────────────────────────────────────────
+
+/** Whether a row is drawn muted: the schema names a field, and the row holds
+ *  exactly `true` there. Anything else—absent, `false`, the string `"true"`—
+ *  leaves the row as it is, the same way a boolean cell holding such a value
+ *  is marked rather than read as a yes.
+ *
+ *  It reads the row on screen, so a row mutes and comes back as soon as the
+ *  cell is edited, before the write. It changes nothing else about the row:
+ *  what is written, where it sorts, and whether a filter finds it. */
+export function rowMuted(schema: Schema, row: Row): boolean {
+  return schema.muted_by !== undefined && row[schema.muted_by] === true;
+}
+
 // ── Filtering ───────────────────────────────────────────────────────────────
 
 export interface FilterPlan {

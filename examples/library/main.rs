@@ -52,6 +52,9 @@ struct Book {
     rating: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lent: Option<bool>,
+    /// Taken out of the collection for good, and kept as a record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    withdrawn: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     shelved: BTreeMap<String, String>,
     /// When a lent book is due back, as `YYYY-MM-DD`.
@@ -193,6 +196,7 @@ impl TableLogic for Books {
             Column::number("copies", "Copies").int_only().width_ch(3),
             Column::number("rating", "Rating").width_ch(3),
             Column::boolean("lent", "Lent"),
+            Column::boolean("withdrawn", "Withdrawn"),
             Column::string("publisher", "Publisher")
                 .width_ch(20)
                 .datalist("publishers"),
@@ -225,6 +229,8 @@ impl TableLogic for Books {
             Column::text("notes", "Notes").wide(),
         ])
         .sortable()
+        // A withdrawn book stays in the table as a record, drawn muted.
+        .muted_by("withdrawn")
         .datalist("publishers", Datalist::fixed(publishers))
         .datalist(
             "reader-names",

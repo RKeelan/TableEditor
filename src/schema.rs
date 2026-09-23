@@ -29,6 +29,8 @@ pub struct Schema {
     title: String,
     #[serde(skip_serializing_if = "is_false")]
     sortable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    muted_by: Option<String>,
     columns: Vec<Column>,
     new_row: NewRow,
     datalists: BTreeMap<String, Datalist>,
@@ -42,6 +44,7 @@ impl Schema {
             table: String::new(),
             title: String::new(),
             sortable: false,
+            muted_by: None,
             columns: columns.into_iter().collect(),
             new_row: NewRow::default(),
             datalists: BTreeMap::new(),
@@ -55,6 +58,23 @@ impl Schema {
     /// order is itself meaningful.
     pub fn sortable(mut self) -> Self {
         self.sortable = true;
+        self
+    }
+
+    /// Draw every row whose `field` holds `true` muted: greyed out, but read
+    /// and edited like any other row. It is for rows kept as a record of
+    /// something that no longer needs attention, such as a market that has
+    /// closed for good.
+    ///
+    /// Only a JSON `true` mutes a row, so a row where the field is absent,
+    /// `false`, or anything else is drawn as usual. The field need not be one
+    /// of the table's columns, since a row is muted by what it holds however
+    /// the value got there; where it is one, a boolean column lets the row be
+    /// muted and brought back from the page, and the row changes as soon as
+    /// the cell does. Muting is a view setting only: it does not change what
+    /// is written, how the rows sort, or which of them a filter finds.
+    pub fn muted_by(mut self, field: impl Into<String>) -> Self {
+        self.muted_by = Some(field.into());
         self
     }
 
@@ -917,6 +937,18 @@ mod tests {
 
         let sorted = serde_json::to_value(Schema::new([]).sortable()).unwrap();
         assert_eq!(sorted["sortable"], true);
+    }
+
+    #[test]
+    fn muted_by_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Schema::new([])).unwrap();
+        assert!(plain.get("muted_by").is_none());
+
+        let muted = serde_json::to_value(
+            Schema::new([Column::boolean("closed", "Closed")]).muted_by("closed"),
+        )
+        .unwrap();
+        assert_eq!(muted["muted_by"], "closed");
     }
 
     #[test]
