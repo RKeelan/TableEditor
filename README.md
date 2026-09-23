@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.5.0"
+table-editor = "=0.5.1"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.5.0", default-features = false }
+table-editor = { version = "=0.5.1", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -705,6 +705,8 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 `0.4.0` lets a form open in a side panel over the page, rather than under its row, and ask for text of several lines with a Copy button beside it: a letter generated on the server, read over, edited, copied into another program, and saved. The panel slides out from the side on a wide screen and covers a phone's; what is typed into any form is kept when it is shut without being saved; a multi-line field keeps its default exactly and its line breaks by the rules a `multiline` cell follows; and the Copy button works on a plain `http:` address as well as a secure one. To the Rust API it adds `Form::in_panel`, `Form::heading`, `Field::multiline`, and `Field::copyable`. The kind of field is not public, so a new kind is not a breaking change. It changes nothing else there, so a consumer of `0.3.0` compiles against it unchanged apart from the pin, and a form that uses none of them is posted as before. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 `0.5.0` titles the page with the app's name and lets an app give it an icon, the one a browser shows in the tab, on a home screen and beside a bookmark. To the Rust API it adds `Icon` and the defaulted `App::icon`, and it reserves seven more names, those of the icon's files, which no table or view may take. It changes nothing else there, so a consumer of `0.4.0` compiles against it unchanged apart from the pin, and one without an icon gets the page it had with the app's name for a title. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
+
+`0.5.1` makes the links to the icon's files relative, so an app served under a path prefix finds them, and answers `HEAD` for those files. It changes nothing in the Rust API.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 
