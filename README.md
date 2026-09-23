@@ -587,9 +587,46 @@ Each of the five tones is at least 4.5:1 against both the page and a card, in bo
 
 The faces are named rather than fetched. The page asks nothing of the network, so there are no web fonts: the stacks name broadly available faces, each platform's own interface face first, so the page reads much the same on Windows, macOS and Linux. Prose is set in the sans face; a table, a view's rows and their narrow-width cards are set in the monospaced one at 13px, which is the size the grid and `width_ch` were designed around.
 
+## The title and the icon
+
+The page is titled with the app's name, and an app can give it an icon: the one a browser shows in the tab, on a home screen, and beside a bookmark.
+
+```rust
+const ICON: Icon = Icon {
+    svg: include_bytes!("../assets/icon/icon.svg"),
+    png16: include_bytes!("../assets/icon/favicon-16x16.png"),
+    png32: include_bytes!("../assets/icon/favicon-32x32.png"),
+    png180: include_bytes!("../assets/icon/apple-touch-icon.png"),
+    png192: include_bytes!("../assets/icon/android-chrome-192x192.png"),
+    png512: include_bytes!("../assets/icon/android-chrome-512x512.png"),
+    theme_color: "#12151b",
+};
+
+impl App for Library {
+    // …
+    fn icon(&self) -> Option<Icon> {
+        Some(ICON)
+    }
+}
+```
+
+`App::icon` defaults to `None`, which leaves the browser's default icon. Every field of `Icon` is required: the SVG, with a square `viewBox`, is what a browser that reads SVG favicons shows; Safari reads none, so the tab there takes the 16 and 32 px PNGs; an iOS home screen takes the 180 px one and rounds its corners; and Android takes the 192 and 512 px ones through the manifest. Each is what some browser asks for and does without where it is missing, so a partial set is an icon in one browser and not the next. The PNGs are renders of the SVG, which a script makes once. `theme_color` is a CSS colour that some browsers paint their own chrome in around the page.
+
+An app with an icon serves its files at the root, each with its content type and `Cache-Control: public, max-age=604800`, since they change only with the binary that serves them:
+
+* `/icon.svg`
+* `/favicon-16x16.png` and `/favicon-32x32.png`
+* `/apple-touch-icon.png`
+* `/android-chrome-192x192.png` and `/android-chrome-512x512.png`
+* `/manifest.json`, generated from the app's name, the two Android PNGs and `theme_color`
+
+An app without one answers each of those with a 404. `/favicon.ico` is not served either way: every current browser reads the page's links before it guesses at that path.
+
+The page is one file built before any app is known, so the server writes the app into it once, when it starts. Its `<title>` starts `Table Editor`, and that is replaced with the app's name. Its head carries the comment `<!-- table-editor:head -->`, and that is replaced with the links to the icon's files and a `<meta name="theme-color">`, or with nothing for an app without an icon. The placeholder page carries both as well. Once the page has loaded, the bundle sets `document.title` itself, to the name `GET /api/app` sends followed by the heading of the page it is on, which is also what titles the page when Vite serves it in development.
+
 ## Reserved names
 
-A table or a view may not be named `app`, `derive`, `health`, `shutdown`, `stop`, or `views`. All but `stop` are matched before the table and view routes—`derive` because `/api/<table>/derive` is one, and `views` because `/api/views/<view>` is—and `stop` is the `stop` subcommand, which clap reads before the positional name, so such a table would be unreachable. Building a `Server` over one panics rather than serving it.
+A table or a view may not be named `app`, `derive`, `health`, `shutdown`, `stop`, or `views`, nor after any of the icon's files without its extension: `icon`, `favicon-16x16`, `favicon-32x32`, `apple-touch-icon`, `android-chrome-192x192`, `android-chrome-512x512`, or `manifest`. `app`, `derive`, `health`, `shutdown` and `views` are matched before the table and view routes—`derive` because `/api/<table>/derive` is one, and `views` because `/api/views/<view>` is—and `stop` is the `stop` subcommand, which clap reads before the positional name, so such a table would be unreachable. The icon's names are reserved so that no table or view shares a name with a file the editor serves. Building a `Server` over any of them panics rather than serving it.
 
 ## Launching
 
@@ -603,7 +640,7 @@ That rule is exact, and deliberately so. `{"status":"ok"}` means an object with 
 
 The `Server` builder holds what differs between repositories:
 
-* `index_html` serves a bundle of the repository's own in place of the embedded one. Such a bundle takes on everything the server states but does not enforce: reading the address, and resolving a bare one through `front` to a view, a table, or the first table; the schema, meaning every column type and modifier and what `width_ch` counts; the write rules, meaning what a cleared cell writes, what a `cascades_to` change clears, and stating the version the rows were read at, since a write that states none is written whatever the file holds; and asking nothing of the network.
+* `index_html` serves a bundle of the repository's own in place of the embedded one. It is titled and given the icon's links as the embedded page is, where it carries a title starting `Table Editor` and the `<!-- table-editor:head -->` marker; a page with neither is served as it is. Such a bundle takes on everything the server states but does not enforce: reading the address, and resolving a bare one through `front` to a view, a table, or the first table; the schema, meaning every column type and modifier and what `width_ch` counts; the write rules, meaning what a cleared cell writes, what a `cascades_to` change clears, and stating the version the rows were read at, since a write that states none is written whatever the file holds; and asking nothing of the network.
 * `child_env` names the worker marker. A repository whose server is registered as a system service keeps its own name here, so the service entry does not have to change.
 * `command` names the subcommand that reaches `run`, used when re-invoking the binary as a worker. It defaults to `web`.
 * `default_port` is the port bound when `--port` names none. Each app takes its own, so two editors on one machine do not land on the same port. It defaults to 8787.
@@ -634,7 +671,7 @@ The published crate carries that page, built at release. A consumer therefore ne
 
 A checkout, though, may not have the page at all, and Rust work must not wait on a JavaScript toolchain. So `build.rs` copies whichever page is there into `OUT_DIR` and the crate includes it from there: the built bundle where there is one, and `assets/placeholder.html`—a page that says the bundle has not been built and how to build it—where there is not. The placeholder path prints a `cargo:warning`, so it is never silent. `cargo check`, clippy and the whole test suite pass either way, and the crate's own test holds the embedded page to the standard for whichever of the two it is.
 
-A release never ships the placeholder. `./Release.ps1` builds the bundle, packages the crate, and reads the page out of the package that is about to be uploaded, refusing to go on unless it is the built editor: a doctype, the element the editor mounts on, no dev-server script tag, over 50 KB, no carriage return, and nothing fetched from the network. CI runs that same script on every change, without the switch that uploads, so the release path is exercised continuously rather than once a year.
+A release never ships the placeholder. `./Release.ps1` builds the bundle, packages the crate, and reads the page out of the package that is about to be uploaded, refusing to go on unless it is the built editor: a doctype, the element the editor mounts on, the title and the marker the server writes the app into, no dev-server script tag, over 50 KB, no carriage return, and nothing fetched from the network. CI runs that same script on every change, without the switch that uploads, so the release path is exercised continuously rather than once a year.
 
 ## Developing the bundle
 
@@ -673,7 +710,7 @@ Run from the repository root, on `main`, with a clean tree:
 
 - Bump `version` in `Cargo.toml`, and update the version in this README's dependency examples. Commit that on its own.
 - `./Release.ps1` — builds the bundle, packages, checks that the packaged page is the built editor, and dry-runs the publish. It changes nothing outside `target/`.
-- Read what it packaged: `cargo package --list`, and the size it reports. Two warnings about `tests/api.rs` and `tests/stop.rs` not being included are expected; the integration tests are not published.
+- Read what it packaged: `cargo package --list`, and the size it reports. Three warnings about `tests/api.rs`, `tests/head.rs` and `tests/stop.rs` not being included are expected; the integration tests are not published.
 - `./Release.ps1 -Publish` — the same, and then uploads, tags the commit it published `v<version>`, and pushes the tag. It refuses on a dirty tree, on a packaged page that is the placeholder, and on a version whose tag already exists here or on origin, since that version has been released. This step is irreversible.
 
 The tag is written after the upload, not before, because the upload is the step that cannot be undone: a version that never reached crates.io leaves no tag to delete, and a tag that fails to push is already here, so the push is all that is left to redo.

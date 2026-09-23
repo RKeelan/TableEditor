@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::Context;
 use crate::error::{ApiError, ParseError, ValidationError};
+use crate::head::Icon;
 use crate::jsonl;
 use crate::schema::{RowLink, Schema};
 use crate::view::View;
@@ -48,6 +49,13 @@ pub trait App: Send + Sync + 'static {
     /// What a bare address opens.
     fn front(&self) -> Front {
         Front::FirstTable
+    }
+
+    /// The icon a browser shows for the page: in the tab, on a home screen,
+    /// and in a bookmark. An app with none gets the browser's default, and the
+    /// paths the icon is served at are not found.
+    fn icon(&self) -> Option<Icon> {
+        None
     }
 
     fn table(&self, route: &str) -> Option<&dyn Table> {
