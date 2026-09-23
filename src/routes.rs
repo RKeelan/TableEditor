@@ -112,8 +112,9 @@ pub(crate) fn handle(
         let result = dispatch(&mut request, &method, &route);
         return respond_json(request, result);
     }
-    // The icon's files are answered in every mode, as the API is.
-    if method == Method::Get
+    // The icon's files are answered in every mode, as the API is. A `HEAD` is
+    // answered as a `GET` is, and tiny_http leaves the body out.
+    if (method == Method::Get || method == Method::Head)
         && let Some((content_type, body)) = head::asset(app, &path)
     {
         return respond_with(
