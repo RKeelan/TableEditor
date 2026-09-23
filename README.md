@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.4.0"
+table-editor = "=0.5.0"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.4.0", default-features = false }
+table-editor = { version = "=0.5.0", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -701,6 +701,8 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 `0.3.0` refuses a write of rows read before the file changed: a read carries the version of the file it read, a write states it back, and a write that states an older one is answered with a 409 rather than made. It also puts every way a write can fail ahead of the write itself, so a table whose `derive` or `validate` cannot run is left as it was rather than written and then reported as a failure. It adds the `multiline` column type, declared with `Column::multiline`, for a value of several lines, and edits a one-line cell whose stored value holds a line break as several lines rather than stripping the break. It lets a table link each row to a view's page about that row, and a detail page reached that way goes back to the table. To the Rust API it adds `Context::version`, `Column::multiline`, `ColumnType::Multiline`, and the defaulted `TableLogic::link` with the `RowLink` it returns, and marks `ColumnType` `#[non_exhaustive]`, so the next column type is not a breaking change. A `match` on `ColumnType` outside the crate now needs a wildcard arm, but nothing in the API hands a consumer one to match on. It changes nothing else there, so a consumer of `0.2.0` compiles against it unchanged apart from the pin; a write that states no version is written whatever the file holds, so a repository's scripts keep working as well. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 `0.4.0` lets a form open in a side panel over the page, rather than under its row, and ask for text of several lines with a Copy button beside it: a letter generated on the server, read over, edited, copied into another program, and saved. The panel slides out from the side on a wide screen and covers a phone's; what is typed into any form is kept when it is shut without being saved; a multi-line field keeps its default exactly and its line breaks by the rules a `multiline` cell follows; and the Copy button works on a plain `http:` address as well as a secure one. To the Rust API it adds `Form::in_panel`, `Form::heading`, `Field::multiline`, and `Field::copyable`. The kind of field is not public, so a new kind is not a breaking change. It changes nothing else there, so a consumer of `0.3.0` compiles against it unchanged apart from the pin, and a form that uses none of them is posted as before. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
+
+`0.5.0` titles the page with the app's name and lets an app give it an icon, the one a browser shows in the tab, on a home screen and beside a bookmark. To the Rust API it adds `Icon` and the defaulted `App::icon`, and it reserves seven more names, those of the icon's files, which no table or view may take. It changes nothing else there, so a consumer of `0.4.0` compiles against it unchanged apart from the pin, and one without an icon gets the page it had with the app's name for a title. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 
