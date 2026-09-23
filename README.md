@@ -612,7 +612,7 @@ impl App for Library {
 
 `App::icon` defaults to `None`, which leaves the browser's default icon. Every field of `Icon` is required: the SVG, with a square `viewBox`, is what a browser that reads SVG favicons shows; Safari reads none, so the tab there takes the 16 and 32 px PNGs; an iOS home screen takes the 180 px one and rounds its corners; and Android takes the 192 and 512 px ones through the manifest. Each is what some browser asks for and does without where it is missing, so a partial set is an icon in one browser and not the next. The PNGs are renders of the SVG, which a script makes once. `theme_color` is a CSS colour that some browsers paint their own chrome in around the page.
 
-An app with an icon serves its files at the root, each with its content type and `Cache-Control: public, max-age=604800`, since they change only with the binary that serves them:
+An app with an icon serves its files at the root, answering `GET` and `HEAD`, each with its content type and `Cache-Control: public, max-age=604800`, since they change only with the binary that serves them:
 
 * `/icon.svg`
 * `/favicon-16x16.png` and `/favicon-32x32.png`
@@ -621,6 +621,8 @@ An app with an icon serves its files at the root, each with its content type and
 * `/manifest.json`, generated from the app's name, the two Android PNGs and `theme_color`
 
 An app without one answers each of those with a 404. `/favicon.ico` is not served either way: every current browser reads the page's links before it guesses at that path.
+
+The page's links to those files are relative (`icon.svg`, `manifest.json`), and so are the manifest's icons (`android-chrome-192x192.png`), which resolve against the manifest's address. A repository may be served behind a reverse proxy under a path prefix, where `/icon.svg` would reach the proxy's root rather than the app. Relative links work because the page is served at the root and the bundle never changes its path, only its query string. Under a prefix, the page has to be reached with the closing slash: from `/prefix/` the links resolve to `/prefix/icon.svg`, but from `/prefix` they resolve against the proxy's root.
 
 The page is one file built before any app is known, so the server writes the app into it once, when it starts. Its `<title>` starts `Table Editor`, and that is replaced with the app's name. Its head carries the comment `<!-- table-editor:head -->`, and that is replaced with the links to the icon's files and a `<meta name="theme-color">`, or with nothing for an app without an icon. The placeholder page carries both as well. Once the page has loaded, the bundle sets `document.title` itself, to the name `GET /api/app` sends followed by the heading of the page it is on, which is also what titles the page when Vite serves it in development.
 

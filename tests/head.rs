@@ -128,6 +128,18 @@ fn the_page_is_titled_and_the_icon_served_over_http() {
         );
         assert!(head.contains("cache-control: public, max-age="), "{path}");
         assert_eq!(served, body, "{path}");
+
+        let (status, head, served) = request(with, "HEAD", path);
+        assert_eq!(status, 200, "HEAD {path}");
+        assert!(
+            head.contains(&format!("content-type: {content_type}")),
+            "HEAD {path}: {head}"
+        );
+        assert!(
+            head.contains(&format!("content-length: {}", body.len())),
+            "HEAD {path}: {head}"
+        );
+        assert_eq!(served, "", "HEAD {path}");
     }
 
     let (status, head, manifest) = exchange(with, "/manifest.json");
@@ -139,8 +151,8 @@ fn the_page_is_titled_and_the_icon_served_over_http() {
     assert_eq!(
         manifest["icons"],
         json!([
-            { "src": "/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
-            { "src": "/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
+            { "src": "android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
+            { "src": "android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
         ])
     );
 
@@ -151,8 +163,8 @@ fn the_page_is_titled_and_the_icon_served_over_http() {
     assert_eq!(status, 200);
     assert!(page.contains("<title>Library"), "{page}");
     assert!(!page.contains("<title>Table Editor"), "{page}");
-    assert!(page.contains(r#"<link rel="icon" type="image/svg+xml" href="/icon.svg" />"#));
-    assert!(page.contains(r#"<link rel="manifest" href="/manifest.json" />"#));
+    assert!(page.contains(r#"<link rel="icon" type="image/svg+xml" href="icon.svg" />"#));
+    assert!(page.contains(r#"<link rel="manifest" href="manifest.json" />"#));
     assert!(page.contains(r##"<meta name="theme-color" content="#12151b" />"##));
     assert!(!page.contains("<!-- table-editor:head -->"));
 
@@ -214,9 +226,15 @@ fn wait_until_up(port: u16) {
 /// One `GET` over HTTP/1.0, returning the status code, the headers lower-cased,
 /// and the body.
 fn exchange(port: u16, path: &str) -> (u16, String, String) {
+    request(port, "GET", path)
+}
+
+/// One request with `method` over HTTP/1.0, returning what [`exchange`] does.
+fn request(port: u16, method: &str, path: &str) -> (u16, String, String) {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut stream = TcpStream::connect(addr).unwrap();
-    let request = format!("GET {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    let request =
+        format!("{method} {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).unwrap();
 
     let mut response = String::new();

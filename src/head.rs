@@ -6,6 +6,11 @@
 //! the page already has, with the app's name in place of `Table Editor`; the
 //! icon's links go where the page carries [`MARKER`]. The files the links name
 //! are served from the app's [`Icon`] by [`asset`].
+//!
+//! The files are served at the root, but every link to them is relative, as
+//! are the icons the manifest names: a repository may be served behind a
+//! reverse proxy under a path prefix, where `/icon.svg` would reach the
+//! proxy's root rather than the app.
 
 use serde::Serialize;
 
@@ -80,14 +85,20 @@ pub(crate) fn rewrite(page: &str, app: &dyn App) -> String {
 }
 
 /// The head's links to the icon's files, and the theme colour.
+///
+/// Each link is relative to the page, which is served at the root (`/` or
+/// `/index.html`) and never leaves it: the bundle moves between tables and
+/// views by the query string alone. So under a prefix, a page reached at
+/// `/prefix/` finds its icon at `/prefix/icon.svg`. One reached at `/prefix`,
+/// with no closing slash, resolves the links against the proxy's root instead.
 fn links(icon: &Icon) -> String {
     format!(
         concat!(
-            r#"<link rel="icon" type="image/svg+xml" href="/icon.svg" />"#,
-            r#"<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />"#,
-            r#"<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />"#,
-            r#"<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />"#,
-            r#"<link rel="manifest" href="/manifest.json" />"#,
+            r#"<link rel="icon" type="image/svg+xml" href="icon.svg" />"#,
+            r#"<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />"#,
+            r#"<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />"#,
+            r#"<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />"#,
+            r#"<link rel="manifest" href="manifest.json" />"#,
             r#"<meta name="theme-color" content="{}" />"#,
         ),
         escape(icon.theme_color)
@@ -120,7 +131,8 @@ pub(crate) fn asset(app: &dyn App, path: &str) -> Option<(&'static str, Vec<u8>)
 }
 
 /// The web app manifest, which is where Android finds the icon for a home
-/// screen.
+/// screen. Its icons' `src` values resolve against the manifest's own
+/// address, which is beside the page's.
 #[derive(Serialize)]
 struct Manifest<'a> {
     name: &'a str,
@@ -143,12 +155,12 @@ fn manifest(name: &str, icon: &Icon) -> String {
         short_name: name,
         icons: [
             ManifestIcon {
-                src: "/android-chrome-192x192.png",
+                src: "android-chrome-192x192.png",
                 sizes: "192x192",
                 content_type: PNG,
             },
             ManifestIcon {
-                src: "/android-chrome-512x512.png",
+                src: "android-chrome-512x512.png",
                 sizes: "512x512",
                 content_type: PNG,
             },
@@ -237,9 +249,9 @@ mod tests {
                 "name": "Library",
                 "short_name": "Library",
                 "icons": [
-                    { "src": "/android-chrome-192x192.png", "sizes": "192x192",
+                    { "src": "android-chrome-192x192.png", "sizes": "192x192",
                       "type": "image/png" },
-                    { "src": "/android-chrome-512x512.png", "sizes": "512x512",
+                    { "src": "android-chrome-512x512.png", "sizes": "512x512",
                       "type": "image/png" }
                 ],
                 "theme_color": "#12151b"
@@ -274,16 +286,42 @@ mod tests {
     fn a_page_for_an_app_with_an_icon_links_to_it() {
         let page = rewrite(PAGE, &Iconic(Books));
         for link in [
-            r#"<link rel="icon" type="image/svg+xml" href="/icon.svg" />"#,
-            r#"<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />"#,
-            r#"<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />"#,
-            r#"<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />"#,
-            r#"<link rel="manifest" href="/manifest.json" />"#,
+            r#"<link rel="icon" type="image/svg+xml" href="icon.svg" />"#,
+            r#"<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />"#,
+            r#"<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />"#,
+            r#"<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />"#,
+            r#"<link rel="manifest" href="manifest.json" />"#,
             r##"<meta name="theme-color" content="#12151b" />"##,
         ] {
             assert!(page.contains(link), "{link} is missing from {page}");
         }
         assert!(!page.contains(MARKER));
+    }
+
+    #[test]
+    fn every_link_and_manifest_icon_is_relative() {
+        let page = rewrite(PAGE, &Iconic(Books));
+        let hrefs: Vec<&str> = page
+            .split(r#"href=""#)
+            .skip(1)
+            .map(|rest| rest.split('"').next().unwrap())
+            .collect();
+        assert_eq!(hrefs.len(), 5, "{page}");
+        for href in hrefs {
+            assert!(!href.starts_with('/'), "{href}");
+            assert!(
+                asset(&Iconic(Books), &format!("/{href}")).is_some(),
+                "{href}"
+            );
+        }
+
+        let (_, bytes) = asset(&Iconic(Books), "/manifest.json").unwrap();
+        let manifest: Value = serde_json::from_slice(&bytes).unwrap();
+        for icon in manifest["icons"].as_array().unwrap() {
+            let src = icon["src"].as_str().unwrap();
+            assert!(!src.starts_with('/'), "{src}");
+            assert!(asset(&Iconic(Books), &format!("/{src}")).is_some(), "{src}");
+        }
     }
 
     #[test]
@@ -327,7 +365,7 @@ mod tests {
             page.contains("<title>Library: bundle not built</title>"),
             "{page}"
         );
-        assert!(page.contains(r#"href="/icon.svg""#));
+        assert!(page.contains(r#"href="icon.svg""#));
         assert!(!page.contains(MARKER));
     }
 }
