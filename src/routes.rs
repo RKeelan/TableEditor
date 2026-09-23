@@ -1,7 +1,7 @@
 //! Turning one HTTP request into one response.
 //!
 //! The control endpoints come first, then the views, then the table API, then
-//! the static bundle. `GET /api/health` and `POST /api/shutdown` manage the
+//! the files of the app's icon, then the page. `GET /api/health` and `POST /api/shutdown` manage the
 //! process, `GET /api/app` describes the shell, `/api/views/<view>` reaches a
 //! view and `/api/views/<view>/actions/<name>` reaches what one of its buttons
 //! writes, and `/api/<table>` reaches a table's read, write, and derive
@@ -23,19 +23,38 @@ use tiny_http::{Header, Method, Request, Response};
 
 use crate::context::Context;
 use crate::error::ApiError;
+use crate::head;
 use crate::table::{App, Front, Table};
 
 const JSON: &str = "application/json";
 const HTML: &str = "text/html; charset=utf-8";
 const TEXT: &str = "text/plain; charset=utf-8";
 
+/// An icon's files change only with the binary that serves them, so a browser
+/// may keep them for a week rather than asking on every page load.
+const ICON_CACHE: &str = "public, max-age=604800";
+
 /// The path segments the editor takes for itself, which no table and no view
 /// may use as a name. `app`, `health` and `shutdown` are the control
 /// endpoints; `views` is the prefix a view is reached under; `derive` is the
-/// suffix a table's third endpoint takes; and `stop` is the subcommand clap
-/// reads before the positional name.
-pub(crate) const RESERVED_NAMES: [&str; 6] =
-    ["app", "derive", "health", "shutdown", "stop", "views"];
+/// suffix a table's third endpoint takes; `stop` is the subcommand clap reads
+/// before the positional name; and the rest are the files of an app's icon,
+/// served at the root.
+pub(crate) const RESERVED_NAMES: [&str; 13] = [
+    "android-chrome-192x192",
+    "android-chrome-512x512",
+    "app",
+    "apple-touch-icon",
+    "derive",
+    "favicon-16x16",
+    "favicon-32x32",
+    "health",
+    "icon",
+    "manifest",
+    "shutdown",
+    "stop",
+    "views",
+];
 
 /// Answer one request. An error here is a failure to send a response at all;
 /// a failure to serve the request is reported to the client as a status.
@@ -92,6 +111,20 @@ pub(crate) fn handle(
     if let Some(route) = parse_api_route(app, &path) {
         let result = dispatch(&mut request, &method, &route);
         return respond_json(request, result);
+    }
+    // The icon's files are answered in every mode, as the API is.
+    if method == Method::Get
+        && let Some((content_type, body)) = head::asset(app, &path)
+    {
+        return respond_with(
+            request,
+            200,
+            &[
+                ("Content-Type", content_type),
+                ("Cache-Control", ICON_CACHE),
+            ],
+            &body,
+        );
     }
     if method == Method::Get && (path == "/" || path == "/index.html") {
         if api_only {

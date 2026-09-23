@@ -46,6 +46,13 @@ describe.skipIf(!built)("the built bundle", () => {
     expect(bundle.length).toBeGreaterThan(50_000);
   });
 
+  test("carries the title and the place the server writes the app into", () => {
+    // The server replaces the title with the app's name, and the marker with
+    // the links to the app's icon, when it starts.
+    expect(bundle).toContain("<title>Table Editor</title>");
+    expect(bundle).toContain("<!-- table-editor:head -->");
+  });
+
   test("carries no carriage return, so every platform builds the same page", () => {
     // Vite copies the body of index.html through as it finds it, so a source
     // checked out with CRLF puts a carriage return in the page, and the page a

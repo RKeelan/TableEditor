@@ -124,6 +124,8 @@ $failures = @()
 if (-not $page.StartsWith("<!doctype html>")) { $failures += "it does not start with a doctype" }
 if ($page -notmatch '<div id="root">') { $failures += "it has no root element, so it is not the editor" }
 if ($page -match 'src="/src/main\.tsx"') { $failures += "it is the page the dev server serves, not a build" }
+if (-not $page.Contains("<title>Table Editor</title>")) { $failures += "it has no title for the server to replace with the app's name" }
+if (-not $page.Contains("<!-- table-editor:head -->")) { $failures += "it has no marker for the server to put the icon's links at" }
 if ($bytes.Length -lt 50000) { $failures += "it is $($bytes.Length) bytes, which is the placeholder rather than the editor" }
 if ($bytes -contains 13) { $failures += "it carries a carriage return, so it was built from a CRLF checkout" }
 if ($page -match 'fonts\.(googleapis|gstatic)\.com') { $failures += "it loads a font from the network" }

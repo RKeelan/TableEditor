@@ -3,8 +3,9 @@
 //! A repository describes its tables by implementing [`TableLogic`] once per
 //! table—parse, serialize, validate, derive, siblings, and a column
 //! [`Schema`]—and [`App`] once for the collection. [`Server`] turns that into a
-//! local HTTP server: it serves the embedded browser bundle at `/` and the
-//! editor's API under `/api`.
+//! local HTTP server: it serves the embedded browser bundle at `/`, titled
+//! with the app's name, the app's [`Icon`] where it has one, and the editor's
+//! API under `/api`.
 //!
 //! The API is `GET /api/app` for the shell (the app's name and its tables) and
 //! three endpoints per table: `GET /api/<table>` reads, `PUT /api/<table>`
@@ -33,6 +34,8 @@ pub mod jsonl;
 #[cfg(feature = "server")]
 mod context;
 #[cfg(feature = "server")]
+mod head;
+#[cfg(feature = "server")]
 mod launch;
 #[cfg(feature = "server")]
 mod page;
@@ -56,6 +59,8 @@ pub use error::{ApiError, ParseError, ValidationError};
 
 #[cfg(feature = "server")]
 pub use context::Context;
+#[cfg(feature = "server")]
+pub use head::Icon;
 #[cfg(feature = "server")]
 pub use page::{
     Button, Card, CardGroup, Detail, DetailRow, DetailSection, Field, Form, Section, Status, Tone,

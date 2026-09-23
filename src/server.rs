@@ -9,6 +9,7 @@ use clap::{Args, Subcommand};
 use tiny_http::Server as HttpServer;
 
 use crate::context::Context;
+use crate::head;
 use crate::launch::{self, Occupant};
 use crate::routes;
 use crate::table::{App, Front};
@@ -340,6 +341,10 @@ impl Server {
     }
 
     /// Serve a bundle of the repository's own in place of the embedded one.
+    ///
+    /// It is titled and given the icon's links as the embedded one is: a
+    /// title starting `Table Editor` has that replaced with the app's name,
+    /// and the links go where the page carries `<!-- table-editor:head -->`.
     pub fn index_html(mut self, html: &'static str) -> Self {
         self.index_html = html;
         self
@@ -477,8 +482,10 @@ impl Server {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         let server = bind_with_retry(addr)?;
 
+        // Titled and given the icon's links once, rather than per request.
+        let page = head::rewrite(self.index_html, self.app.as_ref());
         for request in server.incoming_requests() {
-            if let Err(e) = routes::handle(request, self.app.as_ref(), self.index_html, api_only) {
+            if let Err(e) = routes::handle(request, self.app.as_ref(), &page, api_only) {
                 eprintln!("request error: {e}");
             }
         }
@@ -1146,6 +1153,10 @@ mod tests {
     #[test]
     fn the_embedded_page_is_what_it_says_it_is() {
         assert!(DEFAULT_INDEX_HTML.starts_with("<!doctype html>"));
+        // Both carry the title the app's name replaces and the place the
+        // icon's links go.
+        assert!(DEFAULT_INDEX_HTML.contains("<title>Table Editor"));
+        assert!(DEFAULT_INDEX_HTML.contains(head::MARKER));
         match BUNDLE_KIND {
             "built" => {
                 // One self-contained page: the element the editor mounts on,
