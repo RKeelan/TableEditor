@@ -52,6 +52,7 @@ import {
   type SaveState,
   type Writer,
   hasUnsavedWork,
+  noticeAfter,
   retryDelay,
   saveBanner,
   waitingToSave,
@@ -101,6 +102,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const [filterNote, setFilterNote] = useState(false);
   const [sort, setSort] = useState<Sort | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  const [notice, setNotice] = useState<string | null>(null);
   // The rows as they were last written, which is what a row's link may point
   // at: the page it opens reads the file.
   const [saved, setSaved] = useState<RowEntry[]>([]);
@@ -168,6 +170,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
 
   const report = useCallback((state: SaveState) => {
     setSave(state);
+    setNotice((shown) => noticeAfter(shown, state));
     // The shell asks whether a write is outstanding as soon as the write it
     // waited for settles, before the page has rendered what it reported.
     saveRef.current = state;
@@ -479,7 +482,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
               {errors.length} validation error(s)
             </span>
           )}
-          <SaveBadge save={save} />
+          <SaveBadge save={save} notice={notice} />
           <button
             className="btn h-9"
             onClick={() => void flush().then(() => load())}
@@ -1067,15 +1070,32 @@ function NumberField({ value, format, width, label, onWrite }: NumberFieldProps)
 }
 
 // ── Save badge ──────────────────────────────────────────────────────────────
-function SaveBadge({ save }: { save: SaveState }) {
-  if (save.kind === "saving")
-    return <span className="font-mono text-[11px] text-accent">saving…</span>;
-  if (save.kind === "saved")
-    return (
-      <span className="font-mono text-[11px] text-muted">
-        saved {new Date(save.at).toLocaleTimeString()}
+// A failure and a refusal are banners rather than badges: see saveBanner.
+//
+// The notice is a live region of its own, drawn whether or not there is a
+// notice to put in it, so a screen reader reads a notice out as it arrives and
+// does not read out the time of every save with it.
+function SaveBadge({
+  save,
+  notice,
+}: {
+  save: SaveState;
+  notice: string | null;
+}) {
+  return (
+    <span className="min-w-0 font-mono text-[11px]">
+      {save.kind === "saving" && <span className="text-accent">saving…</span>}
+      {save.kind === "saved" && (
+        <span className="text-muted">
+          saved {new Date(save.at).toLocaleTimeString()}
+        </span>
+      )}
+      <span
+        role="status"
+        className={notice === null ? undefined : "ml-2 text-warning"}
+      >
+        {notice}
       </span>
-    );
-  // A failure and a refusal are banners rather than badges: see saveBanner.
-  return null;
+    </span>
+  );
 }

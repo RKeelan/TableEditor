@@ -9,10 +9,15 @@ use serde::de::DeserializeOwned;
 
 use crate::error::ApiError;
 use crate::jsonl;
+use crate::table::{By, Written};
 
 /// What one file held the first time this context looked: its text, or the
 /// error that said it was not there.
 type Cached = Result<String, String>;
+
+/// What a request that writes is to tell once it has written: the app's
+/// [`crate::App::after_write`], put there by the server.
+type AfterWrite = Box<dyn Fn(&Context, &Written<'_>) -> Option<String> + Send + Sync>;
 
 /// The version a file that is not there has. No present file can take it,
 /// since a hash is sixteen hex digits, so a write that states the version of a
@@ -35,9 +40,18 @@ const ABSENT: &str = "absent";
 /// could disagree. A table's file comes from [`crate::TableLogic::file`],
 /// which is one `&'static str` and a bare name, so a table and everything
 /// cross-checking against it name the file the same way by construction.
+///
+/// A context also remembers which files it has written. The server hands a
+/// request that writes a context carrying the app's
+/// [`crate::App::after_write`], and a table's save and a view's action tell it
+/// what they wrote through the context once they have written, so a table or
+/// view a repository wraps in one of its own still tells it, as long as the
+/// wrapper passes the request on.
 pub struct Context {
     data_dir: PathBuf,
     cache: Mutex<HashMap<String, Cached>>,
+    written: Mutex<Vec<String>>,
+    after_write: Option<AfterWrite>,
 }
 
 impl Context {
@@ -46,7 +60,19 @@ impl Context {
         Self {
             data_dir: data_dir.into(),
             cache: Mutex::new(HashMap::new()),
+            written: Mutex::new(Vec::new()),
+            after_write: None,
         }
+    }
+
+    /// The same context, telling `hook` what it has written when
+    /// [`Context::after_write`] is asked.
+    pub(crate) fn telling(
+        mut self,
+        hook: impl Fn(&Context, &Written<'_>) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.after_write = Some(Box::new(hook));
+        self
     }
 
     /// Walk up from the current directory to the nearest ancestor containing a
@@ -152,6 +178,9 @@ impl Context {
     ///
     /// What was written becomes this context's view of the file, so a read
     /// after a write sees the new text rather than whatever was read before.
+    /// The file is added to what this context has written once it has been
+    /// replaced, and not where the write failed, which leaves the file as it
+    /// was.
     pub fn write(&self, file: &str, text: &str) -> Result<(), ApiError> {
         let target = self.data_dir.join(file);
         let temporary = self
@@ -171,7 +200,37 @@ impl Context {
         }
 
         self.cache().insert(file.to_string(), Ok(text.to_string()));
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if !written.iter().any(|w| w == file) {
+            written.push(file.to_string());
+        }
         Ok(())
+    }
+
+    /// The files this context has written, each once, in the order they were
+    /// first written.
+    pub(crate) fn written(&self) -> Vec<String> {
+        self.written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Tell the app what this context has written, and hand back the sentence
+    /// it has for the reader about that, if any.
+    ///
+    /// It is asked once a request that writes has done whatever it was going
+    /// to, whether or not that went through, and before its answer is built.
+    /// A context that has written nothing tells nothing, and so does one the
+    /// server did not build, such as a repository's own tests'. A sentence of
+    /// nothing but whitespace is none.
+    pub(crate) fn after_write(&self, by: By<'_>) -> Option<String> {
+        let hook = self.after_write.as_ref()?;
+        let files = self.written();
+        if files.is_empty() {
+            return None;
+        }
+        hook(self, &Written::new(&files, by)).filter(|sentence| !sentence.trim().is_empty())
     }
 
     /// Read and parse a file the table needs.
@@ -212,6 +271,8 @@ fn hash(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use serde::Deserialize;
 
     use super::*;
@@ -440,6 +501,74 @@ mod tests {
             ctx.version("Rows.jsonl").unwrap(),
             dir.context().version("Rows.jsonl").unwrap()
         );
+    }
+
+    #[test]
+    fn a_context_remembers_the_files_it_wrote() {
+        let dir = fixture::temp_dir();
+        dir.write("Read.jsonl", "{\"name\":\"a\"}");
+        let ctx = Context::new(dir.path());
+        assert!(ctx.written().is_empty());
+
+        // A read is not a write, of a file there or of one that is not.
+        ctx.read("Read.jsonl").unwrap();
+        assert!(ctx.read_optional("Absent.jsonl").unwrap().is_none());
+        assert!(ctx.written().is_empty());
+
+        // Each file once, in the order it was first written.
+        ctx.write("Second.jsonl", "b\n").unwrap();
+        ctx.write("First.jsonl", "a\n").unwrap();
+        ctx.write("Second.jsonl", "c\n").unwrap();
+        assert_eq!(ctx.written(), ["Second.jsonl", "First.jsonl"]);
+
+        // A write that failed left the file as it was, so it is not one.
+        std::fs::create_dir(dir.path().join("Blocked.jsonl")).unwrap();
+        assert!(ctx.write("Blocked.jsonl", "x\n").is_err());
+        assert_eq!(ctx.written(), ["Second.jsonl", "First.jsonl"]);
+    }
+
+    #[test]
+    fn a_context_tells_the_app_what_it_wrote_once_it_has_written_something() {
+        let dir = fixture::temp_dir();
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&told);
+        let ctx = Context::new(dir.path()).telling(move |_, written| {
+            let files: Vec<String> = written.files().map(str::to_string).collect();
+            log.lock()
+                .unwrap()
+                .push((written.table().map(str::to_string), files));
+            Some("The push to origin failed.".to_string())
+        });
+
+        // Nothing written is nothing to tell.
+        assert_eq!(ctx.after_write(By::Table("rows")), None);
+        assert!(told.lock().unwrap().is_empty());
+
+        ctx.write("Rows.jsonl", "a\n").unwrap();
+        assert_eq!(
+            ctx.after_write(By::Table("rows")).as_deref(),
+            Some("The push to origin failed.")
+        );
+        assert_eq!(
+            *told.lock().unwrap(),
+            [(Some("rows".to_string()), vec!["Rows.jsonl".to_string()])]
+        );
+    }
+
+    #[test]
+    fn a_context_the_server_did_not_build_tells_nobody() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path());
+        ctx.write("Rows.jsonl", "a\n").unwrap();
+        assert_eq!(ctx.after_write(By::Table("rows")), None);
+    }
+
+    #[test]
+    fn a_sentence_of_nothing_but_whitespace_is_none() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path()).telling(|_, _| Some(" \n".to_string()));
+        ctx.write("Rows.jsonl", "a\n").unwrap();
+        assert_eq!(ctx.after_write(By::Table("rows")), None);
     }
 
     #[test]

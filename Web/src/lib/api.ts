@@ -33,9 +33,11 @@ export interface DeriveResult {
 }
 
 /** `PUT api/<table>`: the same, and the version the file now has, which the
- *  next write states. */
+ *  next write states. `notice` is a sentence the server had for the reader
+ *  about the write—a push that failed, say—and is absent where it had none. */
 export interface PutResult extends DeriveResult {
   version: string;
+  notice?: string;
 }
 
 /** The API root for a page served at `pathname`.

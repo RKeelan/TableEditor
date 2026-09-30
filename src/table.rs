@@ -58,6 +58,32 @@ pub trait App: Send + Sync + 'static {
         None
     }
 
+    /// Called before a request that writes—a table's save, or an
+    /// action—reads anything, so whatever it changes on disk is what the
+    /// request sees: pulling what was pushed from elsewhere, say. A save
+    /// stating the version it read is then refused where this changed the
+    /// file, as it would be after any other change.
+    fn before_write(&self, _ctx: &Context) {}
+
+    /// Called once a request has written, with the files it wrote: committing
+    /// them, say. It is called whether or not the request went on to fail,
+    /// since what it is told is what is on disk. It runs inside the request,
+    /// which the server answers before any other, and before the request's
+    /// answer is built.
+    ///
+    /// It may return a sentence for the reader, such as a push that failed.
+    /// A save's answer carries it as its `notice`, and an action's puts it
+    /// after the sentence the action answered with, or after the failure that
+    /// stopped it.
+    fn after_write(&self, _ctx: &Context, _written: &Written<'_>) -> Option<String> {
+        None
+    }
+
+    /// Called when the page is opened: on `GET /api/app`, which the page
+    /// asks once as it loads. It is not called where no data directory can be
+    /// found.
+    fn page_opened(&self, _ctx: &Context) {}
+
     fn table(&self, route: &str) -> Option<&dyn Table> {
         self.tables().into_iter().find(|t| t.route() == route)
     }
@@ -65,6 +91,69 @@ pub trait App: Send + Sync + 'static {
     fn view(&self, route: &str) -> Option<&dyn View> {
         self.views().into_iter().find(|v| v.route() == route)
     }
+}
+
+/// What one request wrote, as [`App::after_write`] is told it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Written<'a> {
+    files: &'a [String],
+    by: By<'a>,
+}
+
+/// Which request wrote: a table's save, or an action on a view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum By<'a> {
+    Table(&'a str),
+    Action { view: &'a str, action: &'a str },
+}
+
+impl<'a> Written<'a> {
+    pub(crate) fn new(files: &'a [String], by: By<'a>) -> Self {
+        Self { files, by }
+    }
+
+    /// The files written, each once, in the order they were first written.
+    pub fn files(&self) -> impl Iterator<Item = &'a str> {
+        self.files.iter().map(String::as_str)
+    }
+
+    /// The table whose save this was.
+    pub fn table(&self) -> Option<&'a str> {
+        match self.by {
+            By::Table(table) => Some(table),
+            By::Action { .. } => None,
+        }
+    }
+
+    /// The view and the action, for an action.
+    pub fn action(&self) -> Option<(&'a str, &'a str)> {
+        match self.by {
+            By::Table(_) => None,
+            By::Action { view, action } => Some((view, action)),
+        }
+    }
+}
+
+/// One sentence after another, with a full stop between them where the first
+/// does not end in one, as a failure's message seldom does.
+pub(crate) fn join_sentences(first: &str, second: &str) -> String {
+    let ended = first
+        .trim_end_matches(['"', '\'', '\u{201d}', '\u{2019}', ')'])
+        .ends_with(['.', '!', '?']);
+    match first {
+        "" => second.to_string(),
+        _ if ended => format!("{first} {second}"),
+        _ => format!("{first}. {second}"),
+    }
+}
+
+/// The failure of a request that wrote, with the sentence the app had about
+/// the write, if any, after its own message.
+pub(crate) fn told(mut failure: ApiError, sentence: Option<&str>) -> ApiError {
+    if let Some(sentence) = sentence {
+        failure.message = join_sentences(&failure.message, sentence);
+    }
+    failure
 }
 
 /// One table's per-repository logic.
@@ -185,6 +274,10 @@ pub trait Table: Send + Sync {
     ///
     /// The write is the last thing the request does, so a failure means the
     /// file was left as it was and the request can be made again.
+    ///
+    /// Once the request has done whatever it was going to, the context tells
+    /// the app what was written, and the answer carries what the app said
+    /// about it: as its `notice`, or after the failure.
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError>;
 
     /// `POST /api/<table>/derive`: derive and validate the posted rows without
@@ -235,37 +328,14 @@ impl<T: TableLogic> Table for T {
     }
 
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
-        let file = self.file();
-        let request: RowsRequest<T::Row> = parse_body(body)?;
-
-        // The check and the write are one request, and the server serves one
-        // request at a time, so nothing lands between them: the file compared
-        // against is the file replaced.
-        if let Some(loaded) = request.version.as_deref()
-            && loaded != ctx.version(file)?
-        {
-            return Err(ApiError::new(
-                409,
-                format!("{file} changed on disk after it was loaded; read it again before writing"),
-            ));
-        }
-
-        // The write is last, so a request either answers for a write it made
-        // or leaves the file as it was. A write that landed under an answer
-        // that failed would be retried by a client stating the version that
-        // write moved on from, and the retry would be refused over a write
-        // that had in fact gone through.
-        let text = self
-            .serialize(&request.rows)
-            .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?;
-        let (derived, errors) = self.derivation(ctx, &request.rows)?;
-        ctx.write(file, &text)?;
-
-        to_json(&PutResponse {
-            derived,
-            errors,
-            version: ctx.version(file)?,
-        })
+        let saved = save(self, ctx, body);
+        // The app is told what was written whether or not the save went
+        // through, since what it is told is what is on disk, and before the
+        // answer is built, so that what it says is part of the answer.
+        let notice = ctx.after_write(By::Table(self.name()));
+        let mut answer = saved.map_err(|failure| told(failure, notice.as_deref()))?;
+        answer.notice = notice;
+        to_json(&answer)
     }
 
     fn handle_derive(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
@@ -273,6 +343,43 @@ impl<T: TableLogic> Table for T {
         let (derived, errors) = self.derivation(ctx, &request.rows)?;
         to_json(&DeriveResponse { derived, errors })
     }
+}
+
+/// A save, up to what the app is told of it: the posted rows written, and the
+/// answer that says so, with no notice yet.
+fn save<T: TableLogic>(table: &T, ctx: &Context, body: &str) -> Result<PutResponse, ApiError> {
+    let file = table.file();
+    let request: RowsRequest<T::Row> = parse_body(body)?;
+
+    // The check and the write are one request, and the server serves one
+    // request at a time, so nothing lands between them: the file compared
+    // against is the file replaced.
+    if let Some(loaded) = request.version.as_deref()
+        && loaded != ctx.version(file)?
+    {
+        return Err(ApiError::new(
+            409,
+            format!("{file} changed on disk after it was loaded; read it again before writing"),
+        ));
+    }
+
+    // The write is last, so a request either answers for a write it made or
+    // leaves the file as it was. A write that landed under an answer that
+    // failed would be retried by a client stating the version that write
+    // moved on from, and the retry would be refused over a write that had in
+    // fact gone through.
+    let text = table
+        .serialize(&request.rows)
+        .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?;
+    let (derived, errors) = table.derivation(ctx, &request.rows)?;
+    ctx.write(file, &text)?;
+
+    Ok(PutResponse {
+        derived,
+        errors,
+        version: ctx.version(file)?,
+        notice: None,
+    })
 }
 
 /// The shared tail of a write and a derivation: what the rows in hand derive to,
@@ -320,6 +427,9 @@ struct PutResponse {
     errors: Vec<ValidationError>,
     /// The version the file now has, which the next write states.
     version: String,
+    /// What the app's `after_write` had to say to the reader about the write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<String>,
 }
 
 /// `POST /api/<table>/derive`, which writes nothing and so has no version to
@@ -344,6 +454,8 @@ fn to_json<T: Serialize>(value: &T) -> Result<String, ApiError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use serde_json::Value;
 
     use super::*;
@@ -784,6 +896,89 @@ mod tests {
         // the file's and the request can simply be made again.
         assert!(dir.read(GENRES_FILE).contains("Natural History"));
         assert_eq!(dir.context().version(GENRES_FILE).unwrap(), read_at);
+    }
+
+    /// A context that tells what it wrote to a hook recording each telling and
+    /// answering with `sentence`, and the record.
+    fn telling(
+        dir: &fixture::TempDir,
+        sentence: Option<&'static str>,
+    ) -> (Context, Arc<Mutex<Vec<String>>>) {
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&told);
+        let ctx = dir.context().telling(move |_, written| {
+            let files: Vec<&str> = written.files().collect();
+            log.lock().unwrap().push(format!(
+                "{:?} {:?}: {}",
+                written.table(),
+                written.action(),
+                files.join(", ")
+            ));
+            sentence.map(str::to_string)
+        });
+        (ctx, told)
+    }
+
+    #[test]
+    fn a_save_tells_the_app_what_it_wrote_and_carries_what_it_said_as_the_notice() {
+        let dir = fixture::temp_dir();
+        let (ctx, told) = telling(&dir, Some("The push to origin failed."));
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::MOSS);
+
+        let put: Value = serde_json::from_str(&Books.handle_put(&ctx, &body).unwrap()).unwrap();
+        assert_eq!(put["notice"], "The push to origin failed.");
+        assert_eq!(
+            *told.lock().unwrap(),
+            [r#"Some("books") None: Books.jsonl"#]
+        );
+    }
+
+    #[test]
+    fn a_save_the_app_says_nothing_about_answers_as_it_always_did() {
+        let dir = fixture::temp_dir();
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::MOSS);
+
+        for (ctx, _) in [telling(&dir, None), (dir.context(), Default::default())] {
+            let put: Value = serde_json::from_str(&Books.handle_put(&ctx, &body).unwrap()).unwrap();
+            let keys: Vec<&str> = put
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys, ["derived", "errors", "version"]);
+        }
+    }
+
+    #[test]
+    fn a_save_refused_before_it_wrote_tells_the_app_nothing() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let (ctx, told) = telling(&dir, Some("The push to origin failed."));
+
+        let body = format!(r#"{{"rows":[{}],"version":"stale"}}"#, fixture::MOSS);
+        let refused = Books.handle_put(&ctx, &body).unwrap_err();
+        assert_eq!(refused.status, 409);
+        assert!(!refused.message.contains("push"), "{}", refused.message);
+        assert!(told.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_sentence_follows_another() {
+        assert_eq!(
+            join_sentences("Lent.", "The push failed."),
+            "Lent. The push failed."
+        );
+        assert_eq!(
+            join_sentences("\"Moss\" is out until \"2026-10-12.\"", "The push failed."),
+            "\"Moss\" is out until \"2026-10-12.\" The push failed."
+        );
+        // A failure's message is seldom a sentence of its own.
+        assert_eq!(
+            join_sentences("could not write Loans.jsonl", "The push failed."),
+            "could not write Loans.jsonl. The push failed."
+        );
+        assert_eq!(join_sentences("", "The push failed."), "The push failed.");
     }
 
     #[test]

@@ -8,6 +8,7 @@ import {
   type Writer,
   hasUnsavedWork,
   leave,
+  noticeAfter,
   retryDelay,
   saveBanner,
   waitingToSave,
@@ -141,6 +142,28 @@ describe("the banner a refused save shows", () => {
   });
 });
 
+describe("the notice beside the time of the last save", () => {
+  const notice = "The push to origin failed.";
+
+  test("is the one the last answer carried, or none", () => {
+    expect(noticeAfter(null, { kind: "saved", at: 0, notice })).toBe(notice);
+    expect(noticeAfter("Older.", { kind: "saved", at: 0, notice })).toBe(notice);
+    expect(noticeAfter(notice, { kind: "saved", at: 0 })).toBeNull();
+  });
+
+  test("stays while the next write is in flight", () => {
+    expect(noticeAfter(notice, { kind: "saving" })).toBe(notice);
+  });
+
+  test("goes when a write fails or is refused, and when the table is read again", () => {
+    expect(
+      noticeAfter(notice, { kind: "failed", message: "down", attempt: 1 }),
+    ).toBeNull();
+    expect(noticeAfter(notice, { kind: "stale" })).toBeNull();
+    expect(noticeAfter(notice, { kind: "idle" })).toBeNull();
+  });
+});
+
 describe("work the page would lose if it closed", () => {
   test("is edits not yet written, a write in flight, or a write that failed", () => {
     expect(hasUnsavedWork({ kind: "idle" }, true)).toBe(true);
@@ -189,6 +212,8 @@ interface Asked {
   write: Pending;
   version: string;
   land: (version: string) => void;
+  /** Land it with an answer spelled out, notice and all. */
+  answer: (result: PutResult) => void;
   refuse: (e: unknown) => void;
 }
 
@@ -218,6 +243,7 @@ function driven(): {
           write,
           version,
           land: (next) => resolve({ derived: [], errors: [], version: next }),
+          answer: resolve,
           refuse: reject,
         });
       }),
@@ -494,6 +520,56 @@ describe("the writes of one table", () => {
     await writes.save();
     expect(asked).toHaveLength(1);
     expect(states.at(-1)!.kind).toBe("saved");
+  });
+
+  test("carry the notice an answer brings, until the next answer replaces it", async () => {
+    const { writes, asked, screen, states } = driven();
+    writes.loaded("[]", "v0");
+    const pushFailed = "The push to origin failed.";
+
+    typed(screen, "Moss");
+    const first = writes.save();
+    await settle();
+    asked[0]!.answer({ derived: [], errors: [], version: "v1", notice: pushFailed });
+    await first;
+    expect(states.at(-1)).toMatchObject({ kind: "saved", notice: pushFailed });
+
+    typed(screen, "Moss and lichen");
+    const second = writes.save();
+    await settle();
+    asked[1]!.answer({
+      derived: [],
+      errors: [],
+      version: "v2",
+      notice: "The push to origin failed again.",
+    });
+    await second;
+    expect(states.at(-1)).toMatchObject({
+      kind: "saved",
+      notice: "The push to origin failed again.",
+    });
+
+    typed(screen, "Lichen");
+    const third = writes.save();
+    await settle();
+    asked[2]!.land("v3");
+    await third;
+    expect(states.at(-1)!.kind).toBe("saved");
+    expect((states.at(-1) as { notice?: string }).notice).toBeUndefined();
+
+    // What the page shows, report by report: each notice stays while the
+    // next write is in flight, and goes with an answer that carries none.
+    const shown: (string | null)[] = [];
+    for (const state of states) shown.push(noticeAfter(shown.at(-1) ?? null, state));
+    expect(shown).toEqual([
+      null,
+      null,
+      pushFailed,
+      pushFailed,
+      "The push to origin failed again.",
+      "The push to origin failed again.",
+      null,
+    ]);
   });
 
   test("do not take a refusal that lands after the table has been read again", async () => {

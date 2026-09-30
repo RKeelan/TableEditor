@@ -1,10 +1,12 @@
 //! The server a repository's binary builds and runs.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use tiny_http::Server as HttpServer;
 
@@ -199,13 +201,16 @@ pub enum ServerCommand {
 
 /// The editor's HTTP server, configured for one repository.
 pub struct Server {
-    app: Box<dyn App>,
+    /// Shared, because a request that writes carries a hook into the app on
+    /// its context.
+    app: Arc<dyn App>,
     index_html: &'static str,
     child_env: &'static str,
     command: &'static str,
     default_port: u16,
     worker_args: Vec<String>,
     before_launch: Option<Box<dyn Fn() + Send>>,
+    data_dir: Option<PathBuf>,
 }
 
 impl Server {
@@ -218,7 +223,7 @@ impl Server {
     /// when a table's rows link to a view the app does not serve, or with a
     /// parameter that view does not declare.
     pub fn new(app: impl App) -> Self {
-        let app: Box<dyn App> = Box::new(app);
+        let app: Arc<dyn App> = Arc::new(app);
         for table in app.tables() {
             assert!(
                 !routes::RESERVED_NAMES.contains(&table.route()),
@@ -337,6 +342,7 @@ impl Server {
             default_port: DEFAULT_PORT,
             worker_args: Vec::new(),
             before_launch: None,
+            data_dir: None,
         }
     }
 
@@ -402,12 +408,34 @@ impl Server {
         self
     }
 
+    /// The directory the tables are in, in place of the first `Data/` found
+    /// walking up from the working directory. A relative path is taken
+    /// against the working directory when the server is built.
+    ///
+    /// The detached worker builds its server from the same `main`, so it is
+    /// given the same directory without its being forwarded.
+    pub fn data_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        self.data_dir = Some(std::path::absolute(&dir).unwrap_or(dir));
+        self
+    }
+
     pub fn run(self, args: ServerArgs) -> Result<()> {
         let port = self.port(&args);
         let app = self.app.name();
 
         if let Some(ServerCommand::Stop) = args.command {
             return launch::stop(port, app);
+        }
+
+        // A directory named for the tables is looked at before a server is
+        // started or reused, so a mistake is reported by the command the
+        // reader ran rather than in a worker's log. Stopping a server needs no
+        // tables, so `stop` does not look.
+        if let Some(dir) = &self.data_dir
+            && !dir.is_dir()
+        {
+            bail!("the data directory {} is not a directory", dir.display());
         }
 
         // The detached worker carries the marker; it binds and serves. Handle
@@ -485,7 +513,13 @@ impl Server {
         // Titled and given the icon's links once, rather than per request.
         let page = head::rewrite(self.index_html, self.app.as_ref());
         for request in server.incoming_requests() {
-            if let Err(e) = routes::handle(request, self.app.as_ref(), &page, api_only) {
+            if let Err(e) = routes::handle(
+                request,
+                &self.app,
+                &page,
+                api_only,
+                self.data_dir.as_deref(),
+            ) {
                 eprintln!("request error: {e}");
             }
         }
@@ -763,6 +797,59 @@ mod tests {
         assert_eq!(server.command, "edit");
         assert_eq!(server.default_port, 8790);
         assert_eq!(server.worker_args, ["--no-service"]);
+    }
+
+    #[test]
+    fn a_relative_data_directory_is_taken_against_the_working_directory() {
+        let server = Server::new(Library::new()).data_dir("Tables");
+        assert_eq!(
+            server.data_dir,
+            Some(std::env::current_dir().unwrap().join("Tables"))
+        );
+
+        let absolute = std::env::temp_dir().join("Tables");
+        let server = Server::new(Library::new()).data_dir(absolute.clone());
+        assert_eq!(server.data_dir, Some(absolute));
+    }
+
+    #[test]
+    fn a_data_directory_that_is_not_there_is_refused_before_anything_is_started() {
+        // Something else is listening, so a launch that probed the port first
+        // would complain about the port. The directory is the complaint,
+        // because it is settled before anything is asked of the network, and
+        // before anything the app launches alongside the server.
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let missing = std::env::temp_dir().join("table-editor-no-such-directory");
+        let launched = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&launched);
+
+        let failure = Server::new(Library::new())
+            .data_dir(missing.clone())
+            .before_launch(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })
+            .run(parse(&["library", "web", "--no-open", "--port", &port]))
+            .expect_err("a data directory that is not there");
+
+        assert_eq!(
+            failure.to_string(),
+            format!(
+                "the data directory {} is not a directory",
+                missing.display()
+            )
+        );
+        assert_eq!(launched.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn stop_does_not_look_for_the_data_directory() {
+        let missing = std::env::temp_dir().join("table-editor-no-such-directory");
+        // Port 1 is privileged and never has our server, so the stop is a no-op.
+        Server::new(Library::new())
+            .data_dir(missing)
+            .run(parse(&["library", "web", "stop", "--port", "1"]))
+            .unwrap();
     }
 
     #[test]
