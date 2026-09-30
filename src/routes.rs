@@ -489,6 +489,9 @@ struct AppPayload<'a> {
 struct TableEntry<'a> {
     table: &'a str,
     title: &'a str,
+    /// Written only for a table the switcher does not list, as for a view.
+    #[serde(skip_serializing_if = "is_true")]
+    in_switcher: bool,
 }
 
 #[derive(Serialize)]
@@ -532,6 +535,7 @@ fn app_payload(app: &dyn App) -> Result<String, ApiError> {
             .map(|t| TableEntry {
                 table: t.route(),
                 title: t.heading(),
+                in_switcher: t.listed(),
             })
             .collect(),
         front: match app.front() {
@@ -557,8 +561,10 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::fixture::{Books, Library, Plain};
-    use crate::table::Front;
+    use crate::error::ValidationError;
+    use crate::fixture::{Books, GENRES_FILE, Genre, Library, Plain};
+    use crate::schema::{Column, Schema};
+    use crate::table::{Front, TableLogic};
     use crate::view::{View, ViewArgs, ViewData, ViewLogic};
 
     #[test]
@@ -795,6 +801,56 @@ mod tests {
         assert_eq!(
             library["views"][0],
             json!({ "view": "on-loan", "title": "On loan" })
+        );
+    }
+
+    #[test]
+    fn a_table_the_switcher_does_not_list_says_so() {
+        struct Lookup;
+        impl TableLogic for Lookup {
+            type Row = Genre;
+            fn name(&self) -> &'static str {
+                "genres"
+            }
+            fn file(&self) -> &'static str {
+                GENRES_FILE
+            }
+            fn title(&self) -> &'static str {
+                "Genres"
+            }
+            fn in_switcher(&self) -> bool {
+                false
+            }
+            fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+                Ok(Schema::new([Column::string("genre", "Genre")]))
+            }
+            fn validate(
+                &self,
+                _rows: &[Genre],
+                _ctx: &Context,
+            ) -> Result<Vec<ValidationError>, ApiError> {
+                Ok(Vec::new())
+            }
+        }
+
+        struct Looked(Books, Lookup);
+        impl App for Looked {
+            fn name(&self) -> &str {
+                "Looked"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&self.0, &self.1]
+            }
+        }
+
+        // A table that says nothing is listed, and says nothing about it.
+        let v: Value = serde_json::from_str(&app_payload(&Looked(Books, Lookup)).unwrap()).unwrap();
+        assert_eq!(
+            v["tables"],
+            json!([
+                { "table": "books", "title": "Books" },
+                { "table": "genres", "title": "Genres", "in_switcher": false }
+            ])
         );
     }
 

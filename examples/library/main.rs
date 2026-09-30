@@ -336,6 +336,12 @@ impl TableLogic for Genres {
         "Genres"
     }
 
+    /// A lookup the Books table's genres and subgenres are chosen from, which
+    /// is reached by address rather than from the top bar.
+    fn in_switcher(&self) -> bool {
+        false
+    }
+
     fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
         Ok(Schema::new([
             Column::string("genre", "Genre").width_ch(18),

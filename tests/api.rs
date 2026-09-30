@@ -23,6 +23,7 @@ use table_editor::{
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
+const GENRES_FILE: &str = "Genres.jsonl";
 
 #[derive(Serialize, Deserialize)]
 struct Book {
@@ -69,6 +70,37 @@ impl TableLogic for Books {
             .iter()
             .map(|row| json!({ "caption": format!("{} ({})", row.title, row.year) }))
             .collect())
+    }
+}
+
+/// A lookup table, reached by address rather than offered in the top bar.
+struct Genres;
+
+impl TableLogic for Genres {
+    type Row = Value;
+
+    fn name(&self) -> &'static str {
+        "genres"
+    }
+
+    fn file(&self) -> &'static str {
+        GENRES_FILE
+    }
+
+    fn title(&self) -> &'static str {
+        "Genres"
+    }
+
+    fn in_switcher(&self) -> bool {
+        false
+    }
+
+    fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+        Ok(Schema::new([Column::string("genre", "Genre")]))
+    }
+
+    fn validate(&self, _rows: &[Value], _ctx: &Context) -> Result<Vec<ValidationError>, ApiError> {
+        Ok(Vec::new())
     }
 }
 
@@ -187,6 +219,7 @@ impl ViewLogic for Shelf {
 
 struct Library {
     books: Books,
+    genres: Genres,
     recent: Recent,
     shelf: Shelf,
 }
@@ -201,7 +234,7 @@ impl App for Library {
     }
 
     fn tables(&self) -> Vec<&dyn Table> {
-        vec![&self.books]
+        vec![&self.books, &self.genres]
     }
 
     fn views(&self) -> Vec<&dyn View> {
@@ -222,6 +255,7 @@ fn the_api_answers_over_http() {
     thread::spawn(move || {
         Server::new(Library {
             books: Books,
+            genres: Genres,
             recent: Recent,
             shelf: Shelf,
         })
@@ -248,9 +282,16 @@ fn the_api_answers_over_http() {
         json!({ "name": "Library", "subtitle": "Fixture",
                 "views": [{ "view": "recent", "title": "Recent" },
                           { "view": "shelf", "title": "Shelf", "in_switcher": false }],
-                "tables": [{ "table": "books", "title": "Books" }],
+                "tables": [{ "table": "books", "title": "Books" },
+                           { "table": "genres", "title": "Genres", "in_switcher": false }],
                 "front": { "view": "recent" } })
     );
+
+    // A table the top bar does not offer is served all the same.
+    std::fs::write(data.join(GENRES_FILE), "{\"genre\":\"Reference\"}\n").unwrap();
+    let (status, body) = request(port, "GET", "/api/genres", "");
+    assert_eq!(status, 200);
+    assert_eq!(json(&body)["rows"], json!([{ "genre": "Reference" }]));
 
     // The table file does not exist yet.
     let (status, body) = request(port, "GET", "/api/books", "");

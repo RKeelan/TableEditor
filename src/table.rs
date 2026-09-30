@@ -93,6 +93,13 @@ pub trait TableLogic: Send + Sync + 'static {
     /// The heading the shell shows, such as `Books`.
     fn title(&self) -> &'static str;
 
+    /// Whether the shell's switcher lists this table. A table that says no is
+    /// served, opened by address and by name from the command line, and may
+    /// be the front page; the top bar simply does not offer it.
+    fn in_switcher(&self) -> bool {
+        true
+    }
+
     /// Rebuilt on every read, so sibling-derived options and widths are
     /// current.
     fn schema(&self, ctx: &Context) -> Result<Schema, ApiError>;
@@ -149,6 +156,14 @@ pub trait Table: Send + Sync {
     /// The shell's heading, from [`TableLogic::title`].
     fn heading(&self) -> &'static str;
 
+    /// Whether the switcher lists this table, from
+    /// [`TableLogic::in_switcher`]. The default lists it, so a type that
+    /// implements `Table` itself rather than through `TableLogic`, such as a
+    /// wrapper around another table, is listed unless it forwards this.
+    fn listed(&self) -> bool {
+        true
+    }
+
     /// The file under `Data/`, from [`TableLogic::file`].
     fn data_file(&self) -> &'static str;
 
@@ -184,6 +199,10 @@ impl<T: TableLogic> Table for T {
 
     fn heading(&self) -> &'static str {
         self.title()
+    }
+
+    fn listed(&self) -> bool {
+        self.in_switcher()
     }
 
     fn data_file(&self) -> &'static str {

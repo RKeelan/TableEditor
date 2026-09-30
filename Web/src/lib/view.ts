@@ -46,6 +46,32 @@ export function switcherViews(views: readonly ViewEntry[]): ViewEntry[] {
   return views.filter((entry) => entry.in_switcher !== false);
 }
 
+/** One of the tables an app serves, as `api/app` lists it. `in_switcher` is
+ *  written on the same terms as a view's. */
+export interface TableEntry {
+  table: string;
+  title: string;
+  in_switcher?: boolean;
+}
+
+/** The tables the top bar offers. A table left out of it—a lookup reached by
+ *  address, or the one page an app has—is served all the same. */
+export function switcherTables(tables: readonly TableEntry[]): TableEntry[] {
+  return tables.filter((entry) => entry.in_switcher !== false);
+}
+
+/** What the top bar offers, views first. An app that offers nothing gets no
+ *  switcher at all, which leaves its name and the theme button. */
+export function offered(app: {
+  views?: readonly ViewEntry[];
+  tables: readonly TableEntry[];
+}): { views: ViewEntry[]; tables: TableEntry[] } {
+  return {
+    views: switcherViews(app.views ?? []),
+    tables: switcherTables(app.tables),
+  };
+}
+
 /** How a status reads. The bundle maps these five to colours; nothing outside
  *  it names one. */
 export type Tone = "good" | "warning" | "bad" | "neutral" | "info";
