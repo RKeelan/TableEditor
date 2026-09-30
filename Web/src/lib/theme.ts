@@ -11,6 +11,24 @@
 
 export type ThemeChoice = "system" | "light" | "dark";
 
+/** The three choices, in the order the theme menu offers them: the word its
+ *  tooltip shows, and what a screen reader is told pressing it does. */
+export const THEME_CHOICES: readonly {
+  value: ThemeChoice;
+  title: string;
+  label: string;
+}[] = [
+  { value: "system", title: "System", label: "Use the system theme" },
+  { value: "light", title: "Light", label: "Use the light theme" },
+  { value: "dark", title: "Dark", label: "Use the dark theme" },
+];
+
+/** What the theme button is called, which says the choice in force: the
+ *  button shows it as an icon, which a screen reader cannot read. */
+export function themeLabel(choice: ThemeChoice): string {
+  return `Theme: ${choice}`;
+}
+
 /** The key `index.html` reads before the first paint. The two must agree. */
 export const THEME_KEY = "table-editor-theme";
 

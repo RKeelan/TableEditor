@@ -9,9 +9,9 @@
    The light palette is the default, so a browser that says nothing about what
    it prefers gets it. `prefers-color-scheme: dark` switches, unless the reader
    has chosen light; `data-theme` on the root element is that choice, written by
-   the switch in the top bar and read again before the first paint. The dark
-   values are written twice because the two selectors cannot be one rule: one
-   is inside a media query and one is not.
+   the theme button in the top bar and read again before the first paint. The
+   dark values are written twice because the two selectors cannot be one rule:
+   one is inside a media query and one is not.
 
    The faces are named rather than fetched. This page is served over loopback to
    private tables and asks nothing of the network, so there are no web fonts.
@@ -424,10 +424,9 @@
     color: var(--info);
   }
 
-  /* A few answers, all of them on screen at once: the theme switch and a
-     form's one-of field. The radio itself covers its segment and is
-     transparent, so the whole segment is the target and the keyboard still
-     reaches it. */
+  /* A few answers, all of them on screen at once: a form's one-of field. The
+     radio itself covers its segment and is transparent, so the whole segment
+     is the target and the keyboard still reaches it. */
   .segmented {
     display: flex;
     flex-wrap: wrap;
@@ -469,6 +468,69 @@
   .segment input:focus-visible + span {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
+  }
+
+  /* The theme control: one round button showing the choice in force, and a
+     small popover of the three under its right-hand edge. The hover is the
+     raised tone, and the choice in force is marked as the switcher marks the
+     open page. */
+  .theme-menu {
+    position: relative;
+  }
+  .theme-trigger,
+  .theme-option {
+    display: inline-flex;
+    height: 2.25rem;
+    width: 2.25rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition:
+      background-color 0.12s ease,
+      border-color 0.12s ease,
+      color 0.12s ease;
+  }
+  .theme-trigger {
+    border-color: var(--border);
+  }
+  .theme-trigger:hover,
+  .theme-trigger[aria-expanded="true"],
+  .theme-option:hover {
+    background: var(--raised);
+    color: var(--ink);
+  }
+  .theme-option[aria-pressed="true"] {
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    color: var(--accent);
+  }
+  .theme-options {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    z-index: 50;
+    display: flex;
+    gap: 0.25rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: 0 18px 40px color-mix(in oklab, var(--ink) 25%, transparent);
+    padding: 0.375rem;
+  }
+  .theme-menu svg {
+    width: 20px;
+    height: 20px;
+    overflow: visible;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .theme-menu svg * {
+    vector-effect: non-scaling-stroke;
   }
 
   /* The rows of a detail section. A ranked one counts them, since its order is

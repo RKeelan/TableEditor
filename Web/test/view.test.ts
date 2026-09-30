@@ -18,12 +18,14 @@ import {
   isEmptySection,
   isQuiet,
   linkHref,
+  offered,
   parseTarget,
   rowCardFor,
   isPageClick,
   rowTarget,
   savedRowTarget,
   safeHref,
+  switcherTables,
   switcherViews,
   tableHref,
   viewCellText,
@@ -651,6 +653,67 @@ describe("what the top bar offers", () => {
     };
     expect(isServed(app, { kind: "view", name: "branch", args: {} })).toBe(true);
     expect(switcherViews(app.views ?? [])).toEqual([]);
+  });
+
+  test("is every table but those that asked to be left out", () => {
+    const tables = [
+      { table: "books", title: "Books" },
+      { table: "genres", title: "Genres", in_switcher: false },
+      { table: "branches", title: "Branches", in_switcher: true },
+    ];
+    expect(switcherTables(tables).map((t) => t.table)).toEqual([
+      "books",
+      "branches",
+    ]);
+    expect(switcherTables([])).toEqual([]);
+  });
+
+  test("leaves a table that is not offered served all the same", () => {
+    const app: AppPayload = {
+      name: "Library",
+      tables: [{ table: "genres", title: "Genres", in_switcher: false }],
+    };
+    expect(isServed(app, { kind: "table", name: "genres" })).toBe(true);
+    expect(switcherTables(app.tables)).toEqual([]);
+  });
+
+  test("is the views and then the tables, each as the switcher lists them", () => {
+    const app: AppPayload = {
+      name: "Library",
+      views: [
+        { view: "all-branches", title: "All branches" },
+        { view: "branch", title: "Branch", in_switcher: false },
+      ],
+      tables: [
+        { table: "books", title: "Books" },
+        { table: "genres", title: "Genres", in_switcher: false },
+      ],
+    };
+    expect(offered(app)).toEqual({
+      views: [{ view: "all-branches", title: "All branches" }],
+      tables: [{ table: "books", title: "Books" }],
+    });
+  });
+
+  test("is nothing for an app that lists nothing", () => {
+    const hidden: AppPayload = {
+      name: "Finance",
+      tables: [
+        { table: "assets", title: "Assets", in_switcher: false },
+        { table: "accounts", title: "Accounts", in_switcher: false },
+      ],
+      front: { table: "assets" },
+    };
+    expect(offered(hidden)).toEqual({ views: [], tables: [] });
+    expect(offered({ tables: [] })).toEqual({
+      views: [],
+      tables: [],
+    });
+    // The front page is served though nothing offers it.
+    expect(resolveTarget(hidden, { kind: "none" })).toEqual({
+      kind: "table",
+      name: "assets",
+    });
   });
 });
 

@@ -3,7 +3,7 @@
 // the API and renders whatever the schema describes.
 import { ApiError } from "./errors";
 import type { Row, Schema, ValidationError } from "./schema";
-import type { ActionResult, ViewEntry, ViewPayload } from "./view";
+import type { ActionResult, TableEntry, ViewEntry, ViewPayload } from "./view";
 
 /** `GET api/app`: the shell's name, what it serves, and what a bare address
  *  opens. `views` and `front` are absent from an app that has neither. */
@@ -11,7 +11,7 @@ export interface AppPayload {
   name: string;
   subtitle?: string;
   views?: ViewEntry[];
-  tables: { table: string; title: string }[];
+  tables: TableEntry[];
   front?: { view: string } | { table: string };
 }
 

@@ -5,13 +5,13 @@ import { type PendingSave, leave } from "./lib/save";
 import {
   type Target,
   isPageClick,
+  offered,
   parseTarget,
-  switcherViews,
   tableHref,
   viewHref,
 } from "./lib/view";
 import { TableEditor } from "./components/TableEditor";
-import { ThemeSwitch } from "./components/ThemeSwitch";
+import { ThemeMenu } from "./components/ThemeMenu";
 import { ViewPage } from "./components/ViewPage";
 
 /** What to open: what the address asks for, or, where it asks for nothing,
@@ -84,9 +84,10 @@ export function App() {
 
   const asked = parseTarget(search);
   const target = app ? resolveTarget(app, asked) : null;
-  // What the switcher offers, which is not every view the app serves: a page
-  // about one thing is reached from the card that says which one.
-  const offered = switcherViews(app?.views ?? []);
+  // What the switcher offers, which is not everything the app serves: a page
+  // about one thing is reached from the card that says which one, and a
+  // lookup table by its address.
+  const offer = offered(app ?? { tables: [] });
   // Something nobody serves is said so, rather than quietly showing something
   // else: a bookmark that has gone stale should say it has.
   const missing = app !== null && target !== null && !isServed(app, target);
@@ -97,6 +98,12 @@ export function App() {
       : app && target && target.kind === "table"
         ? app.tables.find((t) => t.table === target.name)?.title
         : undefined;
+  // A table the top bar does not offer is headed with its title, since with
+  // nothing lit in the top bar nothing else says which page this is. A view
+  // heads its own page either way.
+  const unlisted =
+    target?.kind === "table" &&
+    !offer.tables.some((t) => t.table === target.name);
 
   useEffect(() => {
     if (!app) return;
@@ -123,14 +130,14 @@ export function App() {
             <span className="text-sm text-muted">{app.subtitle}</span>
           )}
           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-            {app && (app.tables.length > 0 || offered.length > 0) && (
+            {offer.views.length + offer.tables.length > 0 && (
               <nav
                 aria-label="Views and tables"
                 className="-mx-1 flex max-w-full items-center gap-1 overflow-x-auto px-1"
               >
                 {/* Views first: they are where the reading happens, and the
                     tables are where the typing happens. */}
-                {offered.map((v) => (
+                {offer.views.map((v) => (
                   <Switch
                     key={`view-${v.view}`}
                     href={viewHref(v.view, {})}
@@ -139,7 +146,7 @@ export function App() {
                     go={go}
                   />
                 ))}
-                {app.tables.map((t) => (
+                {offer.tables.map((t) => (
                   <Switch
                     key={`table-${t.table}`}
                     href={tableHref(t.table)}
@@ -150,7 +157,7 @@ export function App() {
                 ))}
               </nav>
             )}
-            <ThemeSwitch />
+            <ThemeMenu />
           </div>
         </div>
       </header>
@@ -177,13 +184,18 @@ export function App() {
             onAsk={ask}
           />
         ) : target?.kind === "table" ? (
-          <TableEditor
-            key={target.name}
-            table={target.name}
-            views={app.views ?? []}
-            pending={pending}
-            go={go}
-          />
+          <>
+            {unlisted && heading && (
+              <h2 className="mb-3 flex-none break-words text-xl">{heading}</h2>
+            )}
+            <TableEditor
+              key={target.name}
+              table={target.name}
+              views={app.views ?? []}
+              pending={pending}
+              go={go}
+            />
+          </>
         ) : (
           <Banner message={`${app.name} serves nothing.`} />
         )}
