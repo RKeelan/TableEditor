@@ -261,6 +261,22 @@
     white-space: nowrap;
     vertical-align: top;
   }
+  /* A figure is read beside number boxes, so its text sits on their line: a
+     box is 2rem tall, and its border and padding take the rest. */
+  .readout.figure {
+    line-height: calc(2rem - 2px - 0.5rem);
+  }
+
+  /* The word after a formatted number—a currency, "days"—smaller and muted,
+     so the figure is what is read first. */
+  .unit {
+    margin-left: 0.35em;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-weight: 400;
+    white-space: nowrap;
+  }
 
   /* A cell of several lines: one line tall at rest, showing the first line,
      and open over the rows beneath it while it is focused. The open box sits
@@ -326,8 +342,10 @@
      read. A field being typed into keeps the ink, since what is typed is what
      is being read. The rule weighs no more than the marks below and comes
      before them, so a cell holding something its column does not describe is
-     still marked in a muted row. */
-  .row-muted .field:where(:not(:focus)) {
+     still marked in a muted row. A computed figure, which is drawn in the ink
+     elsewhere, is muted with the rest of its row. */
+  .row-muted .field:where(:not(:focus)),
+  .row-muted .readout {
     color: var(--muted);
   }
 

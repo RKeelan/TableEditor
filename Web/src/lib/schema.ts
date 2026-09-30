@@ -21,6 +21,16 @@ export interface Speak {
   storage_key: string;
 }
 
+/** How a number reads: `decimals` places always shown, the thousands grouped,
+ *  a fraction shown as a percentage, and a word drawn after it. It changes
+ *  what a cell shows and never what it stores. */
+export interface NumberFormat {
+  decimals: number;
+  grouped?: boolean;
+  percent?: boolean;
+  unit?: string;
+}
+
 export type ColumnType =
   | "string"
   | "text"
@@ -48,6 +58,9 @@ export interface Column {
   int_only?: boolean;
   datalist?: string;
   from?: string;
+  /** How the column's numbers read. Honoured on a `number` and a `computed`
+   *  column, and ignored on every other type. */
+  format?: NumberFormat;
   speak?: Speak;
   /** The field of the same row holding this cell's link target. Honoured where
    *  a cell is read rather than edited: a computed column, and every column of

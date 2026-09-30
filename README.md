@@ -308,6 +308,8 @@ The schema is data, not code: it carries everything the editor needs to render a
       "options_by": { "field": "genre",
                       "options": { "Reference": [{ "value": "Natural History" }] } } },
     { "field": "copies", "label": "Copies", "type": "number", "int_only": true },
+    { "field": "price", "label": "Price", "type": "number",
+      "format": { "decimals": 2, "grouped": true } },
     { "field": "lent", "label": "Lent", "type": "boolean" },
     { "field": "withdrawn", "label": "Withdrawn", "type": "boolean" },
     { "field": "shelved", "label": "Shelved", "type": "map",
@@ -330,6 +332,7 @@ The sentences below say what a bundle does with each. They are the contract a bu
 
 * `string`, `text` and `spaced-string` are one line, and `multiline` is several, whose line breaks and spacing a bundle stores exactly as typed. A bundle never strips a line break from a stored value of these four types: a one-line cell that holds one is edited as several lines. A map entry is edited in one line and does lose a line break when it is edited.
 * A `number` column stores a number rather than a string. Under `int_only`, a bundle rounds what the cell is given to a whole number and steps it by one.
+* `format` says how the numbers of a `number` or `computed` column read. `decimals` is how many places are always shown; `grouped` puts a comma between each group of three digits; `percent` shows a fraction as a percentage, so 0.123 reads 12.3%; and `unit` is a word drawn after the number, smaller and muted. A bundle writes every number the same way whatever the browser's language—a comma to group, a point for the decimals, a minus sign rather than a hyphen—and shows a value that is not a number as it is stored. A format changes what a cell shows and never what it stores.
 * A `boolean` column stores a JSON boolean. A bundle gives the cell an unset state beside true and false, and writes unset as an absent field rather than as `false`, so a row nobody has answered is told apart from one answered no.
 * A `select` carries either a fixed `options` list or an `options_by` map keyed on another column's value. An option is `{ "value": …, "label": … }`, and the label is omitted where it would repeat the value; a bundle shows the label and stores the value.
 * A `computed` column is read-only and takes its value from the row's derivation by `from`.
@@ -350,6 +353,7 @@ A cell shows the first three entries and then a chip reading `+N` for however ma
 * A text or number box adds its padding and border. Number boxes have no spinner arrows: they take two characters out of a narrow box, change the value on a stray click, and are no use in a grid that is typed into.
 * A box that completes from a `datalist` adds the room a browser gives its dropdown arrow, as does a `select`, where n is about the longest option label rather than the stored value.
 * A `computed` column is sized the same way and cuts longer text short with the full value in its tooltip, since a wrapped line in a dense grid pushes every other column's row apart.
+* A formatted number counts as the characters it reads as, commas included. Its unit is outside the count, and a bundle adds room for it as it does for a select's arrow.
 * A `boolean` and a `map` ignore `width_ch`: the first is three fixed choices, and the second is chips whose width is the bundle's business.
 
 A column that names no width gets 16 characters, or 40 where it is `wide`. Nothing about this is a browser measuring anything: the width is arithmetic on the schema, which is why a server can compute a column's width from its data and have it mean what it says.
@@ -401,6 +405,7 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 * Opening a table reads it from the server rather than from the browser's cache, so the rows the editor holds, and the version it saves against, are the file as it is.
 * Deleting a row offers an undo rather than asking first. The row comes back where it was, with everything it held, and because editing saves, the restoration saves too. The offer lasts about ten seconds or until the next edit.
 * A cell holding something that is not what its column describes — a number column holding `"1994"`, a boolean holding `"true"`, a null — shows that value, marked, rather than appearing empty. Editing another cell of the row leaves it exactly as it was.
+* A number cell with a `format` shows the formatted number until it is focused, and then the number as it is stored, without commas and all of it selected, so a new figure is typed straight over the old. What is typed may carry commas, and a percentage is typed as a percentage and stored as the fraction. Text that reads as no number writes nothing: the cell is marked until it reads as one or is left, when it shows the stored number again. A formatted column's figures are right-aligned, a computed one's included.
 * A cell of several lines is one line tall until it is focused, like every other cell, and shows the first line with a count of the lines after it. Focused, it opens over the rows beneath it, or over those above it where its text does not fit beneath and there is more room above, rather than pushing those rows aside under the pointer. It is as tall as its text up to about a dozen lines and the room on its side of the table, and scrolls beyond that, so the whole box is on screen. Enter is a line break, and Tab leaves it as it leaves any other cell; like every other cell, it is saved as it is typed.
 * A cell of a one-line column holding a line break—typed into the JSONL by hand, or written by a script—is edited as several lines, and marked, since a one-line box would strip the break on the first keystroke and the save would write that. It stays a box of several lines until it is left, even if the last break is taken out.
 * Dragging a row onto another puts it where that row was, the same rule in both directions. Sorting or filtering turns dragging off, since a view that is not the stored order has no order to rearrange.
@@ -446,7 +451,7 @@ A select's answer has to be one of the options it offered. One that is not falls
 
 `Section::rows` takes anything that serialises, so a view hands over its own row type rather than building `serde_json::Value` by hand. A row that cannot be serialised is an error naming the section it was going into.
 
-Sections carry their own columns, so two sections can differ: one listing what is overdue wants a column of how late, and one listing what is merely out does not. Sections that should line up are given the same columns.
+Sections carry their own columns, so two sections can differ: one listing what is overdue wants a column of how late, and one listing what is merely out does not. Sections that should line up are given the same columns. A view's `number` and `computed` columns take a `format` as a table's do.
 
 A view does not edit, autosave, undo, drag, sort, or filter. Nothing in the editor's write machinery is reached; the one thing a view writes is an action, below.
 

@@ -8,7 +8,7 @@
 // the write does, are the server's.
 
 import type { Column, Row, RowLink, SelectOption } from "./schema";
-import { cellText } from "./rows";
+import { cellText, unitChars } from "./rows";
 
 export interface ViewParam {
   key: string;
@@ -485,9 +485,12 @@ export function rowCardFor(columns: readonly Column[], row: Row): RowCard {
  *  The number is the text alone. A table's cell holds an input, whose border,
  *  padding and dropdown arrow eat into the room the text has, so a table adds
  *  an allowance for them; a view's cell holds text, so `width_ch` characters
- *  of it are exactly what fits. */
+ *  of it are exactly what fits. A formatted number's unit is outside the
+ *  count in a view as in a table, and the room for it is added. */
 export function controlWidthOfColumn(column: Column): string | undefined {
-  return column.width_ch === undefined ? undefined : `${column.width_ch}ch`;
+  return column.width_ch === undefined
+    ? undefined
+    : `${column.width_ch + unitChars(column)}ch`;
 }
 
 /** Whether a section has anything in it. An empty one is still shown, with its

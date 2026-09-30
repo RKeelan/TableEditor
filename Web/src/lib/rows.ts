@@ -3,10 +3,12 @@
 // cell reads as text, how a column sorts, and how the filter matches.
 
 import type { CSSProperties } from "react";
+import { formattedText } from "./format";
 import {
   type Column,
   type Datalist,
   type Derived,
+  type NumberFormat,
   type Row,
   type Schema,
   type SelectOption,
@@ -324,6 +326,30 @@ export function derivedValue(derived: unknown, from: string): unknown {
   return (derived as Record<string, unknown>)[from];
 }
 
+/** The value a cell shows: a computed column's derived value, and any other
+ *  column's own field. */
+export function cellValue(column: Column, row: Row, derived: Derived): unknown {
+  return column.type === "computed"
+    ? derivedValue(derived, column.from ?? "")
+    : row[column.field];
+}
+
+/** The format a column's numbers read by: its own, on a `number` or a
+ *  `computed` column, and none on any other type, which ignores one. */
+export function formatOf(column: Column): NumberFormat | undefined {
+  return column.type === "number" || column.type === "computed"
+    ? column.format
+    : undefined;
+}
+
+/** Whether a column is a figure: a `number` or a `computed` column with a
+ *  format. A figure is right-aligned and drawn in ink, a computed one
+ *  included, rather than as the muted read-out a computed column otherwise
+ *  gets. */
+export function isFigure(column: Column): boolean {
+  return formatOf(column) !== undefined;
+}
+
 /** Whether a cell holds something that is not what its column describes: a
  *  number column holding `"1994"`, a boolean holding `"true"`, a null where
  *  the editor writes an absent field.
@@ -352,31 +378,31 @@ export function cellMismatch(column: Column, row: Row): boolean {
 }
 
 /** The text a cell shows: a computed column's derived value, a select's label,
- *  a boolean's word, a map's entries, and anything else as it is stored. A
- *  value that does not match its column shows as it is stored. */
+ *  a boolean's word, a map's entries, a number as its column's format reads
+ *  it, and anything else as it is stored. A value that does not match its
+ *  column shows as it is stored, and so does a derived value that is not a
+ *  number, format or no format. */
 export function cellText(column: Column, row: Row, derived: Derived): string {
   if (column.type !== "computed" && cellMismatch(column, row)) {
     const value = row[column.field];
     return value === null ? "null" : asText(value);
   }
 
+  const format = formatOf(column);
+  const value = cellValue(column, row, derived);
+  if (format && typeof value === "number") return formattedText(value, format);
+
   switch (column.type) {
-    case "computed": {
-      const value = derivedValue(derived, column.from ?? "");
-      return value == null ? "" : String(value);
-    }
     case "select": {
-      const value = row[column.field];
       if (value == null || value === "") return "";
       return optionLabel(optionsForRow(column, row), String(value));
     }
     case "boolean": {
-      const value = row[column.field];
       if (typeof value !== "boolean") return "";
       return value ? "Yes" : "No";
     }
     case "map": {
-      return mapEntries(row[column.field])
+      return mapEntries(value)
         .map(
           (e) =>
             `${optionLabel(column.key_options, e.key)}: ${optionLabel(
@@ -387,14 +413,15 @@ export function cellText(column: Column, row: Row, derived: Derived): string {
         .join(", ");
     }
     default: {
-      const value = row[column.field];
       return value == null ? "" : String(value);
     }
   }
 }
 
 /** The lowercased text a cell contributes to filtering. A select contributes
- *  what it stores as well as what it shows, so either can be searched for. */
+ *  what it stores as well as what it shows, and a formatted number its plain
+ *  number as well as its formatted one, so either can be searched for: "1234"
+ *  finds 1,234.50. */
 export function cellSearchText(
   column: Column,
   row: Row,
@@ -405,6 +432,10 @@ export function cellSearchText(
     const stored = row[column.field];
     const storedText = stored == null ? "" : String(stored);
     return `${storedText} ${shown}`.toLowerCase();
+  }
+  const value = cellValue(column, row, derived);
+  if (isFigure(column) && typeof value === "number") {
+    return `${String(value)} ${shown}`.toLowerCase();
   }
   return shown.toLowerCase();
 }
@@ -445,9 +476,12 @@ export function isBlankCell(
 
 /** Compare two rows by one column, ascending, with blanks last.
  *
- *  Two genuine numbers compare numerically and two booleans false before true.
- *  Everything else compares by the text the cell shows, which is what keeps a
- *  value that does not match its column sorting where it appears. */
+ *  What is compared is the value the cell shows, which for a computed column
+ *  is the derived value. Two genuine numbers compare numerically, so a
+ *  computed column of numbers puts 987 before 1234, and two booleans false
+ *  before true. Everything else compares by the text the cell shows, which is
+ *  what keeps a value that does not match its column sorting where it
+ *  appears. */
 export function compareByColumn(
   column: Column,
   a: { row: Row; derived: Derived },
@@ -457,8 +491,8 @@ export function compareByColumn(
   const blankB = isBlankCell(column, b.row, b.derived);
   if (blankA || blankB) return blankA === blankB ? 0 : blankA ? 1 : -1;
 
-  const left = a.row[column.field];
-  const right = b.row[column.field];
+  const left = cellValue(column, a.row, a.derived);
+  const right = cellValue(column, b.row, b.derived);
   if (typeof left === "number" && typeof right === "number") {
     return left - right;
   }
@@ -673,14 +707,23 @@ export function chipValueStyle(): CSSProperties {
  *  exactly `n` characters would therefore fit two or three fewer than it says,
  *  which is how a ten-character date column clips every date in it. The
  *  padding and border are one custom property so this and the stylesheet
- *  cannot drift apart; a select adds the room its arrow takes.
+ *  cannot drift apart; a select adds the room its arrow takes, and a
+ *  formatted number the room its unit takes.
  *
  *  `undefined` means the column named no width and the control keeps whatever
  *  width its own class gives it. */
 export function controlWidth(column: Column): string | undefined {
   const n = widthChOf(column);
   if (n === undefined) return undefined;
-  return `calc(${n}ch + var(--field-chrome)${hasArrow(column) ? " + var(--field-arrow)" : ""})`;
+  return `calc(${n + unitChars(column)}ch + var(--field-chrome)${hasArrow(column) ? " + var(--field-arrow)" : ""})`;
+}
+
+/** The characters a formatted number's unit takes beside it: the unit and the
+ *  space before it, or none. `width_ch` counts the number alone, commas
+ *  included, so a column's width does not change with the word after it. */
+export function unitChars(column: Column): number {
+  const unit = formatOf(column)?.unit;
+  return unit ? unit.length + 1 : 0;
 }
 
 /** Whether a control draws a dropdown arrow inside its own box: a select

@@ -8,9 +8,11 @@ import {
 } from "react";
 import { type DeriveResult, deriveTable, getTable, putTable } from "../lib/api";
 import { describeError } from "../lib/errors";
+import { editText, formatNumber, numberParts, parseEditText } from "../lib/format";
 import {
   type Column,
   type Derived,
+  type NumberFormat,
   type Schema,
   type ValidationError,
 } from "../lib/schema";
@@ -19,9 +21,11 @@ import {
   type Sort,
   cellMismatch,
   cellText,
+  cellValue,
   controlWidth,
   datalistOptions,
   editsAsLines,
+  formatOf,
   linesText,
   newRow,
   nextSort,
@@ -785,8 +789,31 @@ function Cell({
   const label = `${column.label}, row ${position + 1}`;
   const oddTitle = `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
 
+  const format = formatOf(column);
+
   if (column.type === "computed") {
     const text = cellText(column, row, derived);
+    // A figure reads in ink at the grid's size, right-aligned, with its unit
+    // after it; any other computed value is a quieter read-out.
+    if (format) {
+      const shown = cellValue(column, row, derived);
+      const parts =
+        typeof shown === "number"
+          ? numberParts(shown, format)
+          : { number: text, unit: null };
+      return (
+        <td className={tdCls}>
+          <span
+            className="readout figure text-right tabular-nums"
+            style={{ width: controlWidth(column) }}
+            title={text || undefined}
+          >
+            {parts.number}
+            {parts.unit && <span className="unit">{parts.unit}</span>}
+          </span>
+        </td>
+      );
+    }
     return (
       <td className={tdCls}>
         <span
@@ -865,10 +892,25 @@ function Cell({
     );
   }
 
+  if (column.type === "number" && format && !mismatched) {
+    return (
+      <td className={tdCls}>
+        <NumberField
+          value={typeof value === "number" ? value : null}
+          format={format}
+          width={controlWidth(column)}
+          label={label}
+          onWrite={(raw) => onCell(entry.id, column, raw)}
+        />
+      </td>
+    );
+  }
+
   if (column.type === "number") {
     // A cell holding something that is not a number shows it as it is, in a
     // text box: a number box would show nothing and invite an edit that
-    // overwrote it.
+    // overwrote it. A formatted column's is the same box, since a format
+    // never applies to what is not a number.
     const shown = mismatched
       ? cellText(column, row, derived)
       : typeof value === "number"
@@ -961,6 +1003,66 @@ function Cell({
         )}
       </span>
     </td>
+  );
+}
+
+// ── Formatted number ────────────────────────────────────────────────────────
+interface NumberFieldProps {
+  /** The stored number, or null where the cell holds none. */
+  value: number | null;
+  format: NumberFormat;
+  width: string | undefined;
+  label: string;
+  onWrite: (raw: string) => void;
+}
+
+/** A number cell whose column has a format. At rest it shows the number as
+ *  the format reads it. Focused, it shows the number as it is stored, without
+ *  commas and all of it selected, so a new figure is typed straight over the
+ *  old. Each keystroke writes what the box reads as; text that reads as no
+ *  number writes nothing, and the box is marked until it reads as one or is
+ *  left, when it shows the stored number again. */
+function NumberField({ value, format, width, label, onWrite }: NumberFieldProps) {
+  // What is being typed, shown in place of the stored number until the box is
+  // left; null at rest.
+  const [typed, setTyped] = useState<string | null>(null);
+  const invalid = typed !== null && parseEditText(typed, format).kind === "invalid";
+  const shown = typed ?? (value === null ? "" : formatNumber(value, format));
+  return (
+    <span className="inline-flex items-baseline" style={{ width }}>
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        spellCheck={false}
+        value={shown}
+        onFocus={(e) => {
+          setTyped(value === null ? "" : editText(value, format));
+          // On the next tick, so the click that focused the box does not put
+          // the caret where it landed and undo the selection.
+          const box = e.currentTarget;
+          setTimeout(() => {
+            if (document.activeElement === box) box.select();
+          }, 0);
+        }}
+        onChange={(e) => {
+          setTyped(e.target.value);
+          const read = parseEditText(e.target.value, format);
+          if (read.kind === "clear") onWrite("");
+          else if (read.kind === "number") onWrite(String(read.value));
+        }}
+        onBlur={() => setTyped(null)}
+        aria-label={label}
+        aria-invalid={invalid || undefined}
+        title={invalid ? "Reads as no number, so nothing is written" : undefined}
+        className={
+          "field h-8 text-right tabular-nums" +
+          (width === undefined ? " w-20" : " min-w-0 flex-1") +
+          (invalid ? " cell-error" : "")
+        }
+      />
+      {format.unit && <span className="unit">{format.unit}</span>}
+    </span>
   );
 }
 

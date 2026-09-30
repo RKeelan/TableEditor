@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
     ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
-    DetailSection, Field, Fields, Form, Front, MapSpec, NewRow, OptionsBy, Param, RowLink, Schema,
-    Section, SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone,
+    DetailSection, Field, Fields, Form, Format, Front, MapSpec, NewRow, OptionsBy, Param, RowLink,
+    Schema, Section, SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone,
     ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic,
 };
 
@@ -83,6 +83,9 @@ struct Branch {
     librarian_last: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     staff: Option<u32>,
+    /// What the branch may spend on books in a year.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    budget: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     open: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -191,10 +194,13 @@ impl TableLogic for Books {
             .allow_empty()
             .numeric_value(),
             // A year is a whole number; a rating is not, which is what the
-            // absence of int_only means.
+            // absence of int_only means, and it reads to one place, so 3
+            // reads 3.0 beside 4.5.
             Column::number("year", "Year").int_only().width_ch(4),
             Column::number("copies", "Copies").int_only().width_ch(3),
-            Column::number("rating", "Rating").width_ch(3),
+            Column::number("rating", "Rating")
+                .format(Format::fixed(1))
+                .width_ch(3),
             Column::boolean("lent", "Lent"),
             Column::boolean("withdrawn", "Withdrawn"),
             Column::string("publisher", "Publisher")
@@ -409,6 +415,15 @@ impl TableLogic for Branches {
                 .width_ch(8)
                 .datalist("librarian-names"),
             Column::number("staff", "Staff").int_only().width_ch(2),
+            // Money, with its currency drawn after it, and each branch's
+            // share of the whole as a percentage, which the derivation holds
+            // as a fraction.
+            Column::number("budget", "Budget")
+                .format(Format::money().unit("CAD"))
+                .width_ch(9),
+            Column::computed("share", "Share", "share")
+                .format(Format::percent(1))
+                .width_ch(6),
             Column::boolean("open", "Open"),
             Column::map(
                 "hours",
@@ -454,6 +469,19 @@ impl TableLogic for Branches {
             }
         }
         Ok(errors)
+    }
+
+    /// Each branch's budget as a fraction of every branch's together, left
+    /// out where a branch has none.
+    fn derive(&self, rows: &[Branch], _ctx: &Context) -> Result<Vec<Value>, ApiError> {
+        let total: f64 = rows.iter().filter_map(|b| b.budget).sum();
+        Ok(rows
+            .iter()
+            .map(|b| match b.budget {
+                Some(budget) if total > 0.0 => json!({ "share": budget / total }),
+                _ => json!({}),
+            })
+            .collect())
     }
 }
 
@@ -525,7 +553,9 @@ impl OnLoan {
             Column::string("title", "Title").width_ch(30).href("link"),
             Column::string("author", "Author").width_ch(18),
             Column::string("due", "Due").width_ch(10),
-            Column::number("days", "Days").width_ch(4),
+            Column::number("days", "Days")
+                .format(Format::fixed(0).unit("days"))
+                .width_ch(4),
         ]
     }
 
