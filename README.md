@@ -157,13 +157,13 @@ The consumer brings its own `anyhow`, `clap`, `serde`, and `serde_json`; the cra
 
 ## Files
 
-All file I/O goes through `Context`, which resolves the `Data/` directory by walking up from the process's working directory. `read` treats a missing file as a failure and `read_optional` treats it as absent, which is what a sibling table wants: a cross-check against a table that is not there is skipped rather than fatal.
+All file I/O goes through `Context`, which resolves the `Data/` directory by walking up from the process's working directory, or takes the directory `Server::data_dir` names. `read` treats a missing file as a failure and `read_optional` treats it as absent, which is what a sibling table wants: a cross-check against a table that is not there is skipped rather than fatal.
 
 A context reads each file from disk once and answers later asks for it from what it read. A context is built per request, so this is a per-request view rather than a cache that outlives one: a table whose `schema`, `validate`, `derive`, and `siblings` all consult the same sibling pay for one read and see one version of it, however the file changes underneath them, and the next request reads it afresh. The view holds even when the context is shared between threads, since a second reader waits on a read already in flight rather than starting one of its own. Parsing still happens per call, since the rows are handed out by value. A `write` replaces what the context has read, so a read after a write sees what was written.
 
 What was read is remembered under the file name as it was spelled rather than the path it resolves to, so two spellings of one file would be read twice. A table's file comes from `TableLogic::file`, which is one string and a bare name, so a table and everything cross-checking against it name the file the same way by construction.
 
-A table's file is a bare name: no directory separators, nothing absolute, and not `.` or `..`. Every file is resolved against the one `Data/` directory, and building a `Server` over a table that names anything else panics rather than serving it.
+A table's file is a bare name: no directory separators, nothing absolute, and not `.` or `..`. Every file is resolved against the one data directory, and building a `Server` over a table that names anything else panics rather than serving it.
 
 A table's own file must exist before the editor can open the table. The editor edits a table, it does not create one, so `GET /api/<table>` on a table whose file is missing is a 500 naming the file. A sibling table that is absent only costs the checks that consult it.
 
@@ -188,7 +188,7 @@ A `subtitle` is included when the app supplies one, and omitted otherwise. So ar
 Three endpoints serve each table:
 
 * `GET /api/<table>` returns `{ "schema": …, "rows": [ … ], "derived": [ … ], "errors": [ … ], "siblings": …, "version": "…" }`. `rows` is the stored table, `derived` parallels it index for index, `errors` is the validation, `siblings` is whatever cross-table data the table supplies, and `version` is the file the rows were read from, as it was when they were read.
-* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…" }`, writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`. A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
+* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…" }`, writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`, with a `"notice": "…"` after them where the app's `after_write` had a sentence for the reader about the write (see Hooks). A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
 * `POST /api/<table>/derive` takes the same rows and answers with the derivation and the errors alone. It writes nothing, so it states no version and is answered with none; a version in its body is ignored.
 
 A write states the version of the file the rows it is writing were read from. The server compares it against the file as it is now and refuses the write with a 409 where the two differ, so a client holding a whole table cannot write its older rows over a change made since—by an action on a detail page, by a second tab, or by the owner editing the JSONL by hand. The comparison and the write are one request, and the server serves one request at a time, so nothing lands between them: the file compared against is the file replaced. A write that goes through answers with the version it left behind, which the next write states. A write that states no version is written whatever the file holds, which is what a repository's scripts and a client that does not read the version send.
@@ -399,6 +399,7 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 ## What the editor does with the table
 
 * Editing saves. There is no save button: a change is written a moment after it is made, and the page says when it last was.
+* A save's answer may carry a notice, which is shown beside the time of the save, in the warning tone, and read out as it arrives. It stays until the next save answers, with a notice of its own or none, and goes when a save fails or the table is read again.
 * One write is in flight at a time. A write states the version the file had when its rows were read, and the version it leaves behind is what the next write states, so two at once would state the same version and the server would refuse the second—a page refusing its own work and reporting it as somebody else's change. Edits made while a write is in flight are written by the one after it, which sends what is on screen by then rather than what was typed when it was asked for, so a burst of typing during one slow write is one write after it rather than one write per keystroke.
 * A save that fails is a banner that stays, naming what the server said, with the edits still on screen. It is retried on a lengthening timer as well as on the next edit, so a server that was restarted underneath the page catches up on its own. Closing the page while anything is unwritten asks first, and switching tables waits for the write before it navigates.
 * A save the server refuses because the table changed on disk stops the saving rather than retrying it: the rows on screen came from a version of the file that is gone, and writing them again would put them over whatever changed it. The banner says that is what happened and offers to read the table again, which throws away what has been typed since. Nothing is merged, and nothing is written behind the reader's back. Switching tables is not held up, since waiting cannot make that write go through, and leaving the page still asks first.
@@ -553,7 +554,7 @@ The write goes through the same `Context` a table's save goes through, and a con
 
 What that guarantees is one request at a time: the server serves them in turn, so `ctx.rows` and the `ctx.write` after it see one snapshot of the file and no other request lands between them. A tab left open on the table an action wrote is holding an older copy of it, and the version its next save states is the one it read: that write is refused, and the tab stops saving and offers to read the table again. So an action and an open editor cannot write over each other, and the editor that was open says what happened rather than quietly undoing the action.
 
-The sentence `act` returns is shown to the reader, and the page is then fetched again, so an action says what it did and never what the page should now show. A view with no buttons that write implements none of this: the server renders the page before it writes and refuses anything no button on that page offers, so `act` is never reached on a view that has none.
+The sentence `act` returns is shown to the reader, and the page is then fetched again, so an action says what it did and never what the page should now show. Where the app's `after_write` has a sentence about the write, it follows the action's own in `confirmation`, or follows what went wrong where the action wrote and then failed. A view with no buttons that write implements none of this: the server renders the page before it writes and refuses anything no button on that page offers, so `act` is never reached on a view that has none.
 
 `Param::hidden` is for a parameter that arrives through a link rather than through the page—which branch a detail page is about. The page draws no control for it; it is declared all the same, so it still takes a default and is still handed to the view. A select that is hidden still checks what it is given, which is what makes a stale link fall back to the default rather than open a page about nothing.
 
@@ -664,8 +665,27 @@ The `Server` builder holds what differs between repositories:
 * `child_env` names the worker marker. A repository whose server is registered as a system service keeps its own name here, so the service entry does not have to change.
 * `command` names the subcommand that reaches `run`, used when re-invoking the binary as a worker. It defaults to `web`.
 * `default_port` is the port bound when `--port` names none. Each app takes its own, so two editors on one machine do not land on the same port. It defaults to 8787.
+* `data_dir` names the directory the tables are in, in place of the first `Data/` found walking up from the working directory. A relative path is taken against the working directory when the server is built, and a directory that is not there is an error before a server is started or reused. `stop` does not look, since stopping a server needs no tables.
 * `worker_args` are arguments forwarded to the detached worker after the table and the port. The worker is a fresh invocation of the binary and is given only those two, so a flag the user passed the parent does not reach it; a flag the serving process needs goes here. The worker inherits the environment regardless, so a setting that already lives in a variable needs no forwarding. Each forwarded argument has to be one the editor's subcommand declares, has to be a flag rather than a positional—the table is the only positional that command line has, and a forwarded positional is refused outright—and must not repeat `--port` or the table. An argument that breaks the last two rules leaves the worker unable to parse its own command line; the launch then fails at once with what the worker wrote to stderr, rather than waiting out the start-up window.
 * `before_launch` runs once in the process the user invoked, before a server is started or reused—bringing up a companion service, say. It does not run in the worker.
+
+## Hooks
+
+Three `App` methods are called around the requests that matter to a repository keeping its tables in git. `before_write` is called before a save or an action reads anything, so whatever it changes on disk—a pull—is what the request sees, and a save of rows read before the pull is refused as it would be after any other change. `after_write` is called once a request has written, with the files it wrote, each once and in the order it first wrote them, and whether a table's save or an action wrote them, so a repository can commit exactly those; it is called whether or not the request then failed, since it is told what is on disk. `page_opened` is called when the page loads, on `GET /api/app`, and not where no data directory can be found.
+
+```rust
+fn before_write(&self, ctx: &Context) {
+    self.repository.pull(ctx.data_dir());
+}
+
+fn after_write(&self, ctx: &Context, written: &Written<'_>) -> Option<String> {
+    self.repository.record(ctx.data_dir(), &written.files().collect::<Vec<_>>())
+}
+```
+
+`after_write` may return a sentence for the reader: that the push failed, say, which would otherwise be in a log nobody is reading. A save's answer carries it as `notice`, which the page shows beside the time of the save; an action's carries it after the action's own sentence, or after what went wrong where the action wrote and then failed.
+
+`before_write` and `page_opened` are called by the server around a request. `after_write` is called by the table's save or the view's action itself, through the context the server hands it, once the save or the action has done whatever it was going to and before its answer is built, which is how what the hook says becomes part of the answer. A table or a view a repository wraps in one of its own therefore still calls it, once, so long as the wrapper passes the request to the one inside; a context a repository builds for itself, as its tests do, calls nothing. None of the hooks can fail a request, and each runs inside the request it belongs to: the server answers one request at a time, so a hook that waits on the network holds up the requests behind it.
 
 ## Probing a local server
 
@@ -710,6 +730,8 @@ Vite serves the UI with hot reloading and proxies `/api` to the example, so the 
 
 The example writes to its own `Data/*.jsonl`, so edits made while developing show up as changes to those files. They are committed, and reverting them is how to get back to the data the example ships with.
 
+Each of the example's hooks says on its standard error when it is called—`library: wrote Books.jsonl`—which a server run with `--api-only` shows. Where `LIBRARY_NOTICE` is set, every write answers with it as the sentence `after_write` has for the reader, so the notice beside the time of the last save, and after an action's own sentence, can be looked at.
+
 ## Versions
 
 The crate is published to [crates.io](https://crates.io/crates/table-editor). Versions are semver, with one thing worth saying plainly: the JSON the server sends—the column schema, the view payload, the write format—is a contract between the crate and the page it ships, and the two always ship together. A consumer cannot mix a schema from one version with a page from another, so a change to that JSON is not a breaking change for a consumer the way a change to the Rust API is. What breaks a consumer is the Rust they compile against: the traits, their method signatures, the builder, the types re-exported from `lib.rs`.
@@ -736,7 +758,7 @@ Run from the repository root, on `main`, with a clean tree:
 
 - Bump `version` in `Cargo.toml`, and update the version in this README's dependency examples. Commit that on its own.
 - `./Release.ps1` — builds the bundle, packages, checks that the packaged page is the built editor, and dry-runs the publish. It changes nothing outside `target/`.
-- Read what it packaged: `cargo package --list`, and the size it reports. Three warnings about `tests/api.rs`, `tests/head.rs` and `tests/stop.rs` not being included are expected; the integration tests are not published.
+- Read what it packaged: `cargo package --list`, and the size it reports. Four warnings about `tests/api.rs`, `tests/head.rs`, `tests/hooks.rs` and `tests/stop.rs` not being included are expected; the integration tests are not published.
 - `./Release.ps1 -Publish` — the same, and then uploads, tags the commit it published `v<version>`, and pushes the tag. It refuses on a dirty tree, on a packaged page that is the placeholder, and on a version whose tag already exists here or on origin, since that version has been released. This step is irreversible.
 
 The tag is written after the upload, not before, because the upload is the step that cannot be undone: a version that never reached crates.io leaves no tag to delete, and a tag that fails to push is already here, so the push is all that is left to redo.

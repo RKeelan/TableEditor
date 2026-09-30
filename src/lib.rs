@@ -13,8 +13,11 @@
 //! writing. A view is `GET /api/views/<view>`, and what one of its buttons
 //! writes is `POST /api/views/<view>/actions/<name>`. `GET /api/health` and
 //! `POST /api/shutdown` control the process. All file I/O runs here, through
-//! the [`Context`] that resolves the `Data/` directory; the browser is a thin
-//! UI that renders whatever the schema in the GET payload describes.
+//! the [`Context`] that resolves the `Data/` directory, or takes the one
+//! [`Server::data_dir`] names; the browser is a thin UI that renders whatever
+//! the schema in the GET payload describes. [`App::before_write`] and
+//! [`App::after_write`] are called around a table's save and an action, and
+//! [`App::page_opened`] when the page loads.
 //!
 //! Launching reuses an already-running server on the same port (it just opens a
 //! browser at it); `--restart` shuts the old one down first and starts fresh.
@@ -76,6 +79,6 @@ pub use schema::{
 #[cfg(feature = "server")]
 pub use server::{Server, ServerArgs, ServerCommand};
 #[cfg(feature = "server")]
-pub use table::{App, Front, Table, TableLogic};
+pub use table::{App, Front, Table, TableLogic, Written};
 #[cfg(feature = "server")]
 pub use view::{Fields, Param, View, ViewArgs, ViewData, ViewLogic};

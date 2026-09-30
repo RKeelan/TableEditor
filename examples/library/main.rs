@@ -17,7 +17,7 @@ use table_editor::{
     ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
     DetailSection, Field, Fields, Form, Format, Front, MapSpec, NewRow, OptionsBy, Param, RowLink,
     Schema, Section, SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone,
-    ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic,
+    ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic, Written,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -1202,6 +1202,30 @@ impl App for Library {
     /// opens; the tables are where the typing happens.
     fn front(&self) -> Front {
         Front::View("all-branches")
+    }
+
+    /// A repository keeping its tables in git would pull here, commit after a
+    /// write, and pull when the page is opened. The example keeps no history,
+    /// so each hook says on stderr that it was called, which is how someone
+    /// running it with `--api-only` sees them fire.
+    fn before_write(&self, _ctx: &Context) {
+        eprintln!("library: about to write");
+    }
+
+    /// Every write answers with `LIBRARY_NOTICE`, where it is set, so the
+    /// sentence a failed push would put beside the time of the last save can
+    /// be looked at without a push to fail.
+    fn after_write(&self, _ctx: &Context, written: &Written<'_>) -> Option<String> {
+        let files = written.files().collect::<Vec<_>>().join(", ");
+        match written.action() {
+            Some((view, action)) => eprintln!("library: {view}/{action} wrote {files}"),
+            None => eprintln!("library: wrote {files}"),
+        }
+        std::env::var("LIBRARY_NOTICE").ok()
+    }
+
+    fn page_opened(&self, _ctx: &Context) {
+        eprintln!("library: the page was opened");
     }
 }
 

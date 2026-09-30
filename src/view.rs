@@ -26,6 +26,7 @@ use crate::context::Context;
 use crate::error::ApiError;
 use crate::page::{CardGroup, Detail, Section};
 use crate::schema::SelectOption;
+use crate::table::{By, join_sentences, told};
 
 /// One control at the top of a view.
 #[derive(Debug, Clone, Serialize)]
@@ -500,6 +501,10 @@ pub trait View: Send + Sync {
 
     /// `POST /api/views/<view>/actions/<name>`: write what the form asks for,
     /// and answer with the sentence saying so.
+    ///
+    /// Once the action has done whatever it was going to, the context tells
+    /// the app what was written, and what the app said about it follows the
+    /// action's own sentence, or the failure.
     fn handle_action(
         &self,
         name: &str,
@@ -563,36 +568,59 @@ impl<V: ViewLogic> View for V {
         body: &str,
         ctx: &Context,
     ) -> Result<String, ApiError> {
-        let request: ActionRequest = serde_json::from_str(body)
-            .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))?;
-
-        let params = self.params(ctx, &ViewArgs::from_query(query))?;
-        let args = ViewArgs::resolve(query, &params);
-
-        // What the page offers is what may be written. The page is rendered
-        // from the arguments the action was asked with, through the context the
-        // write will go through, so what is checked is the page the reader was
-        // looking at: a button that is disabled, or that belongs to some other
-        // row, offers nothing.
-        let page = self.render(&args, ctx)?;
-        page.one_body(self.name())?;
-        page.no_form_answers_a_parameter(self.name(), &params)?;
-        if !page.offers(name, &args) {
-            return Err(ApiError::new(
-                404,
-                format!(
-                    "the view \"{}\" offers no action called \"{name}\" about what was asked",
-                    self.name()
-                ),
-            ));
+        let acted = act_on(self, name, query, body, ctx);
+        // The app is told what was written whether or not the action went
+        // through, since what it is told is what is on disk, and before the
+        // answer is built, so that what it says is part of the answer.
+        let sentence = ctx.after_write(By::Action {
+            view: self.name(),
+            action: name,
+        });
+        let mut confirmation = acted.map_err(|failure| told(failure, sentence.as_deref()))?;
+        if let Some(sentence) = &sentence {
+            confirmation = join_sentences(&confirmation, sentence);
         }
-
-        let confirmation = self.act(name, &Fields(request.fields), &args, ctx)?;
         serde_json::to_string(&ActionReply {
             confirmation: &confirmation,
         })
         .map_err(|e| ApiError::server(e.to_string()))
     }
+}
+
+/// An action, up to what the app is told of it: the post checked against the
+/// page, and the sentence `act` answered with.
+fn act_on<V: ViewLogic>(
+    view: &V,
+    name: &str,
+    query: &BTreeMap<String, String>,
+    body: &str,
+    ctx: &Context,
+) -> Result<String, ApiError> {
+    let request: ActionRequest = serde_json::from_str(body)
+        .map_err(|e| ApiError::bad_request(format!("invalid request body: {e}")))?;
+
+    let params = view.params(ctx, &ViewArgs::from_query(query))?;
+    let args = ViewArgs::resolve(query, &params);
+
+    // What the page offers is what may be written. The page is rendered from
+    // the arguments the action was asked with, through the context the write
+    // will go through, so what is checked is the page the reader was looking
+    // at: a button that is disabled, or that belongs to some other row, offers
+    // nothing.
+    let page = view.render(&args, ctx)?;
+    page.one_body(view.name())?;
+    page.no_form_answers_a_parameter(view.name(), &params)?;
+    if !page.offers(name, &args) {
+        return Err(ApiError::new(
+            404,
+            format!(
+                "the view \"{}\" offers no action called \"{name}\" about what was asked",
+                view.name()
+            ),
+        ));
+    }
+
+    view.act(name, &Fields(request.fields), &args, ctx)
 }
 
 /// `GET /api/views/<view>`. The parameters travel with every answer rather

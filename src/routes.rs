@@ -13,9 +13,16 @@
 //!
 //! Every endpoint that writes is held to two further rules; see
 //! [`refuse_write`].
+//!
+//! `before_write` and `page_opened` are called here, around the requests they
+//! belong to. `after_write` is called by a table's save and a view's action
+//! once they have written, so that what the app says about the write is part
+//! of their answer; what this module does is hand them a context carrying it.
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use serde::Serialize;
@@ -58,12 +65,18 @@ pub(crate) const RESERVED_NAMES: [&str; 13] = [
 
 /// Answer one request. An error here is a failure to send a response at all;
 /// a failure to serve the request is reported to the client as a status.
+///
+/// `shared` is the app, held so that a request that writes can carry a hook
+/// into it on its context; see [`writing`]. `named` is the directory the
+/// server was told the tables are in, if it was told one; see [`context`].
 pub(crate) fn handle(
     mut request: Request,
-    app: &dyn App,
+    shared: &Arc<dyn App>,
     index_html: &str,
     api_only: bool,
+    named: Option<&Path>,
 ) -> Result<()> {
+    let app: &dyn App = shared.as_ref();
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
 
@@ -75,6 +88,13 @@ pub(crate) fn handle(
         std::process::exit(0);
     }
     if method == Method::Get && path == "/api/app" {
+        // The page asks this once as it loads, which is what makes it the
+        // moment the page is opened. The shell is described whether or not
+        // there are tables to be found, so the hook is skipped rather than
+        // the answer failed where there are none.
+        if let Ok(ctx) = context(named) {
+            app.page_opened(&ctx);
+        }
         return respond_json(request, app_payload(app));
     }
     if let Some((view, action)) = parse_action_route(app, &path) {
@@ -88,9 +108,9 @@ pub(crate) fn handle(
         let result = match refuse_write(&request) {
             Some(refusal) => Err(refusal),
             None => read_body(&mut request).and_then(|body| {
-                Context::find()
-                    .map_err(|e| ApiError::server(e.to_string()))
-                    .and_then(|ctx| view.handle_action(&action, &args, &body, &ctx))
+                let ctx = writing(context(named)?, shared);
+                app.before_write(&ctx);
+                view.handle_action(&action, &args, &body, &ctx)
             }),
         };
         return respond_json(request, result);
@@ -103,13 +123,11 @@ pub(crate) fn handle(
             );
         }
         let args = parse_query(request.url());
-        let result = Context::find()
-            .map_err(|e| ApiError::server(e.to_string()))
-            .and_then(|ctx| view.handle_get(&args, &ctx));
+        let result = context(named).and_then(|ctx| view.handle_get(&args, &ctx));
         return respond_json(request, result);
     }
     if let Some(route) = parse_api_route(app, &path) {
-        let result = dispatch(&mut request, &method, &route);
+        let result = dispatch(&mut request, &method, &route, shared, named);
         return respond_json(request, result);
     }
     // The icon's files are answered in every mode, as the API is. A `HEAD` is
@@ -315,7 +333,15 @@ fn action(method: &Method, derive: bool) -> Option<Action> {
 /// request body where one is expected. The method is checked before the
 /// `Data/` directory is resolved, so a wrong method is a 405 whether or not
 /// there is a data directory to serve from.
-fn dispatch(request: &mut Request, method: &Method, route: &ApiRoute) -> Result<String, ApiError> {
+///
+/// A write is the one of the three the app's hooks are called around.
+fn dispatch(
+    request: &mut Request,
+    method: &Method,
+    route: &ApiRoute,
+    app: &Arc<dyn App>,
+    named: Option<&Path>,
+) -> Result<String, ApiError> {
     let Some(action) = action(method, route.derive) else {
         return Err(ApiError::new(405, "method not allowed for this endpoint"));
     };
@@ -329,13 +355,34 @@ fn dispatch(request: &mut Request, method: &Method, route: &ApiRoute) -> Result<
             read_body(request)?
         }
     };
-    let ctx = Context::find().map_err(|e| ApiError::server(e.to_string()))?;
+    let ctx = context(named)?;
 
     match action {
         Action::Get => route.table.handle_get(&ctx),
-        Action::Put => route.table.handle_put(&ctx, &body),
+        Action::Put => {
+            let ctx = writing(ctx, app);
+            app.before_write(&ctx);
+            route.table.handle_put(&ctx, &body)
+        }
         Action::Derive => route.table.handle_derive(&ctx, &body),
     }
+}
+
+/// The context a request reads and writes through: rooted at the directory
+/// the server was told the tables are in, or, where it was told none, at the
+/// first `Data/` found walking up from the working directory.
+fn context(named: Option<&Path>) -> Result<Context, ApiError> {
+    match named {
+        Some(dir) => Ok(Context::new(dir)),
+        None => Context::find().map_err(|e| ApiError::server(e.to_string())),
+    }
+}
+
+/// The context of a request that writes, which tells the app's `after_write`
+/// what was written when the table's save or the view's action asks it to.
+fn writing(ctx: Context, app: &Arc<dyn App>) -> Context {
+    let app = Arc::clone(app);
+    ctx.telling(move |ctx, written| app.after_write(ctx, written))
 }
 
 /// The most a request body may be: generous for a table of rows, and far short
@@ -898,6 +945,12 @@ mod tests {
 
         let v: Value = serde_json::from_str(&app_payload(&Bare).unwrap()).unwrap();
         assert_eq!(v, json!({ "name": "Bare", "tables": [] }));
+    }
+
+    #[test]
+    fn a_named_directory_is_what_a_request_reads_and_writes_through() {
+        let named = Path::new("/nowhere/Tables");
+        assert_eq!(context(Some(named)).unwrap().data_dir(), named);
     }
 
     #[test]

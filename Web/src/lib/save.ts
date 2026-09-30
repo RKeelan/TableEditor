@@ -49,12 +49,31 @@ export async function leave(pending: PendingSave): Promise<boolean> {
   return !pending.waiting();
 }
 
+/** What the editor is doing with the rows. A `saved` state carries the notice
+ *  the write's answer did, where it carried one. */
 export type SaveState =
   | { kind: "idle" }
   | { kind: "saving" }
-  | { kind: "saved"; at: number }
+  | { kind: "saved"; at: number; notice?: string }
   | { kind: "failed"; message: string; attempt: number }
   | { kind: "stale" };
+
+/** The notice shown beside the time of the last save once `state` has been
+ *  reported, where `shown` is the one showing before.
+ *
+ *  A write's answer replaces it: with the sentence the answer carried, or with
+ *  nothing where it carried none. So it stays while the next write is in
+ *  flight, rather than going and coming back with every save. It goes when a
+ *  write fails, whose banner is then what the page has to say, and when the
+ *  table is read again. */
+export function noticeAfter(
+  shown: string | null,
+  state: SaveState,
+): string | null {
+  if (state.kind === "saving") return shown;
+  if (state.kind === "saved") return state.notice ?? null;
+  return null;
+}
 
 /** How long to wait before trying a failed save again: a couple of seconds,
  *  doubling, and never more than half a minute, so a server that is down for a
@@ -213,7 +232,7 @@ export function writer(parts: WriterParts): Writer {
       written = write.key;
       stated = result.version;
       failures = 0;
-      parts.report({ kind: "saved", at: Date.now() });
+      parts.report({ kind: "saved", at: Date.now(), notice: result.notice });
     } catch (e) {
       if (of !== reading) return;
       if (changedOnDisk(e)) {
