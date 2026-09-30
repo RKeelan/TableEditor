@@ -17,6 +17,7 @@ import {
   editsAsLines,
   firstLine,
   hasLineBreak,
+  isFigure,
   linesText,
   mapEntries,
   newRow,
@@ -658,6 +659,90 @@ describe("a column's width", () => {
 
   test("takes the width a column names over any default", () => {
     expect(widthChOf({ ...notes, width_ch: 24 })).toBe(24);
+  });
+});
+
+describe("formatted numbers", () => {
+  const MINUS = "−";
+  const price: Column = {
+    field: "price",
+    label: "Price",
+    type: "number",
+    format: { decimals: 2, grouped: true },
+  };
+  const total: Column = {
+    field: "total",
+    label: "Total",
+    type: "computed",
+    from: "total",
+    format: { decimals: 2, grouped: true, unit: "CAD" },
+  };
+  const plainTotal: Column = { field: "total", label: "Total", type: "computed", from: "total" };
+
+  test("read as their format says, a computed one included", () => {
+    expect(cellText(price, { price: 1234.5 }, null)).toBe("1,234.50");
+    expect(cellText(price, { price: -2 }, null)).toBe(`${MINUS}2.00`);
+    expect(cellText(price, {}, null)).toBe("");
+    expect(cellText(total, {}, { total: 1234.5 })).toBe("1,234.50 CAD");
+    expect(cellText(total, {}, {})).toBe("");
+  });
+
+  test("leave a computed value that is not a number as it was sent", () => {
+    expect(cellText(total, {}, { total: "pending" })).toBe("pending");
+  });
+
+  test("never apply to a value that does not match its column", () => {
+    expect(cellText(price, { price: "1994" }, null)).toBe("1994");
+    expect(cellText(price, { price: null }, null)).toBe("null");
+    expect(cellMismatch(price, { price: "1994" })).toBe(true);
+  });
+
+  test("are found by their formatted text and by their plain number", () => {
+    const text = cellSearchText(price, { price: 1234.5 }, null);
+    expect(text).toContain("1,234.50");
+    expect(text).toContain("1234.5");
+    expect(cellSearchText(total, {}, { total: 1234.5 })).toContain("1234.5");
+    expect(rowMatches({ price: 1234.5 }, null, [price], parseFilter("1234", [price]))).toBe(
+      true,
+    );
+  });
+
+  test("are figures only on a number or a computed column", () => {
+    expect(isFigure(price)).toBe(true);
+    expect(isFigure(total)).toBe(true);
+    expect(isFigure(year)).toBe(false);
+    expect(isFigure(plainTotal)).toBe(false);
+    // A format on any other type is ignored.
+    const odd: Column = { ...title, format: { decimals: 2 } };
+    expect(isFigure(odd)).toBe(false);
+    expect(cellText(odd, { title: "Moss" }, null)).toBe("Moss");
+  });
+
+  test("add their unit's room to the width, which counts the number alone", () => {
+    expect(controlWidth({ ...total, width_ch: 12 })).toBe("calc(16ch + var(--field-chrome))");
+    expect(controlWidth({ ...price, width_ch: 8 })).toBe("calc(8ch + var(--field-chrome))");
+    expect(controlWidth(total)).toBeUndefined();
+  });
+
+  test("sort a computed column by its numbers, formatted or not", () => {
+    const derived = [{ total: 1234 }, { total: 987 }, {}, { total: 5 }];
+    const by = (column: Column) =>
+      [0, 1, 2, 3].sort((i, j) =>
+        compareByColumn(
+          column,
+          { row: {}, derived: derived[i] },
+          { row: {}, derived: derived[j] },
+        ),
+      );
+    expect(by(total)).toEqual([3, 1, 0, 2]);
+    expect(by(plainTotal)).toEqual([3, 1, 0, 2]);
+  });
+
+  test("leave an unformatted column reading, sorting and sized as before", () => {
+    expect(cellText(year, { year: 1234.5 }, null)).toBe("1234.5");
+    expect(cellSearchText(year, { year: 1234.5 }, null)).toBe("1234.5");
+    expect(cellText(plainTotal, {}, { total: 0.5 })).toBe("0.5");
+    expect(controlWidth({ ...year, width_ch: 4 })).toBe("calc(4ch + var(--field-chrome))");
   });
 });
 

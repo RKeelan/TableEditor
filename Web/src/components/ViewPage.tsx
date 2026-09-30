@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getView } from "../lib/api";
 import { describeError } from "../lib/errors";
+import { numberParts } from "../lib/format";
+import { cellValue, formatOf, isFigure } from "../lib/rows";
 import type { Column, Row } from "../lib/schema";
 import {
   type ViewParam,
@@ -361,7 +363,21 @@ function RowCard({ columns, row }: { columns: readonly Column[]; row: Row }) {
 function ViewCell({ column, row }: { column: Column; row: Row }) {
   const text = viewCellText(column, row);
   const href = hrefFor(column, row);
-  const numeric = column.type === "number";
+  const numeric = isFigure(column) || column.type === "number";
+  // A formatted number draws its unit in a span of its own; anything else,
+  // formatted column or not, reads as its text.
+  const format = formatOf(column);
+  const value = cellValue(column, row, row);
+  const parts =
+    format && typeof value === "number"
+      ? numberParts(value, format)
+      : { number: text, unit: null };
+  const shown = (
+    <>
+      {parts.number}
+      {parts.unit && <span className="unit">{parts.unit}</span>}
+    </>
+  );
   return (
     <td
       className={
@@ -375,7 +391,7 @@ function ViewCell({ column, row }: { column: Column; row: Row }) {
         style={{ width: controlWidthOfColumn(column) }}
         title={text || undefined}
       >
-        {href ? <OutsideLink href={href}>{text}</OutsideLink> : text}
+        {href ? <OutsideLink href={href}>{shown}</OutsideLink> : shown}
       </span>
     </td>
   );

@@ -206,6 +206,25 @@ describe("a view's cells", () => {
       controlWidthOfColumn({ ...due, type: "select", width_ch: 8 }),
     ).toBe("8ch");
   });
+
+  test("read a number as its column's format says, a computed one included", () => {
+    const counted: Column = { ...days, format: { decimals: 0, unit: "days" } };
+    expect(viewCellText(counted, { days: 12 })).toBe("12 days");
+    const share: Column = {
+      field: "share",
+      label: "Share",
+      type: "computed",
+      from: "share",
+      format: { decimals: 1, percent: true },
+    };
+    expect(viewCellText(share, { share: 0.4521 })).toBe("45.2%");
+  });
+
+  test("make room for a unit beside the characters a column asks for", () => {
+    const counted: Column = { ...days, width_ch: 4, format: { decimals: 0, unit: "days" } };
+    expect(controlWidthOfColumn(counted)).toBe("9ch");
+    expect(controlWidthOfColumn({ ...days, width_ch: 4 })).toBe("4ch");
+  });
 });
 
 describe("a row as a card at a narrow width", () => {

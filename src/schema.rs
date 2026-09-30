@@ -226,6 +226,8 @@ pub struct Column {
     #[serde(skip_serializing_if = "Option::is_none")]
     from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<Format>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     speak: Option<Speak>,
     #[serde(skip_serializing_if = "Option::is_none")]
     href: Option<String>,
@@ -249,6 +251,7 @@ impl Column {
             int_only: false,
             datalist: None,
             from: None,
+            format: None,
             speak: None,
             href: None,
             map: None,
@@ -351,6 +354,13 @@ impl Column {
         self
     }
 
+    /// How the column's numbers read. Honoured on `number` and `computed`
+    /// columns, in a table and in a view, and ignored on every other type.
+    pub fn format(mut self, format: Format) -> Self {
+        self.format = Some(format);
+        self
+    }
+
     /// A fixed width in characters, for a column whose content the browser
     /// cannot measure.
     pub fn width_ch(mut self, width_ch: u16) -> Self {
@@ -388,6 +398,65 @@ impl Column {
     /// something else in that field is text rather than a way to run it.
     pub fn href(mut self, field: impl Into<String>) -> Self {
         self.href = Some(field.into());
+        self
+    }
+}
+
+/// How a number reads. It changes what a cell shows and never what it
+/// stores.
+///
+/// A bundle writes every number the same way whatever the browser's
+/// language: a comma to group, a point for the decimals, and a minus sign
+/// rather than a hyphen. `decimals` is always written; the rest only where
+/// they are set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Format {
+    decimals: u8,
+    #[serde(skip_serializing_if = "is_false")]
+    grouped: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    percent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unit: Option<String>,
+}
+
+impl Format {
+    /// Exactly `decimals` places, always shown: 1.5 at two places reads
+    /// 1.50.
+    pub fn fixed(decimals: u8) -> Self {
+        Self {
+            decimals,
+            grouped: false,
+            percent: false,
+            unit: None,
+        }
+    }
+
+    /// Two places with the thousands grouped: 1234.5 reads 1,234.50. It
+    /// names no currency; a table that wants one shown says so with
+    /// [`Format::unit`].
+    pub fn money() -> Self {
+        Self::fixed(2).grouped()
+    }
+
+    /// A fraction shown as a percentage to `decimals` places: 0.1234 at one
+    /// place reads 12.3%.
+    pub fn percent(decimals: u8) -> Self {
+        Self {
+            percent: true,
+            ..Self::fixed(decimals)
+        }
+    }
+
+    /// A comma between each group of three digits.
+    pub fn grouped(mut self) -> Self {
+        self.grouped = true;
+        self
+    }
+
+    /// A word drawn after the number, smaller and muted: "CAD", "days".
+    pub fn unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = Some(unit.into());
         self
     }
 }
@@ -842,6 +911,48 @@ mod tests {
 
         let whole = serde_json::to_value(Column::number("copies", "Copies").int_only()).unwrap();
         assert_eq!(whole["int_only"], true);
+    }
+
+    #[test]
+    fn a_format_serializes_to_the_documented_shape() {
+        for (format, shape) in [
+            (Format::fixed(1), json!({ "decimals": 1 })),
+            (Format::money(), json!({ "decimals": 2, "grouped": true })),
+            (
+                Format::percent(1),
+                json!({ "decimals": 1, "percent": true }),
+            ),
+            (
+                Format::money().unit("CAD"),
+                json!({ "decimals": 2, "grouped": true, "unit": "CAD" }),
+            ),
+            (
+                Format::fixed(0).unit("days"),
+                json!({ "decimals": 0, "unit": "days" }),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(format).unwrap(), shape);
+        }
+
+        let column = Column::computed("cad", "CAD", "cad").format(Format::money().unit("CAD"));
+        assert_eq!(
+            serde_json::to_value(column).unwrap(),
+            json!({ "field": "cad", "label": "CAD", "type": "computed", "from": "cad",
+                    "format": { "decimals": 2, "grouped": true, "unit": "CAD" } })
+        );
+    }
+
+    #[test]
+    fn format_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Column::number("price", "Price")).unwrap();
+        assert!(plain.get("format").is_none());
+
+        let formatted =
+            serde_json::to_value(Column::number("price", "Price").format(Format::money())).unwrap();
+        assert_eq!(
+            formatted["format"],
+            json!({ "decimals": 2, "grouped": true })
+        );
     }
 
     #[test]

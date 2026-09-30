@@ -717,6 +717,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::schema::Format;
 
     #[test]
     fn a_section_omits_what_it_was_not_given() {
@@ -757,6 +758,25 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&section).unwrap()["rows"],
             json!([{ "title": "Nine Doors", "days": 25 }])
+        );
+    }
+
+    #[test]
+    fn a_sections_columns_carry_their_format() {
+        let section = Section::new([
+            Column::string("title", "Title"),
+            Column::number("days", "Days").format(Format::fixed(0).unit("days")),
+            Column::number("share", "Share").format(Format::percent(1)),
+        ]);
+        let columns = &serde_json::to_value(&section).unwrap()["columns"];
+        assert!(columns[0].get("format").is_none());
+        assert_eq!(
+            columns[1]["format"],
+            json!({ "decimals": 0, "unit": "days" })
+        );
+        assert_eq!(
+            columns[2]["format"],
+            json!({ "decimals": 1, "percent": true })
         );
     }
 
