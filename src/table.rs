@@ -7,6 +7,8 @@
 //! `TableLogic`'s so that a type implementing both can call either without
 //! disambiguation.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -218,6 +220,32 @@ pub trait TableLogic: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
+    /// Set the fields that follow from what the reader typed: the day a value
+    /// was checked, the rate it was converted at.
+    ///
+    /// It is called on a derive and on a write whose body lists edits, before
+    /// the rows are derived, validated or written, and it changes the rows in
+    /// place. `edits` says which fields of which rows were typed into since
+    /// each row was last written. A derive stamps with [`Stamping::Preview`],
+    /// so the page can show a stamp as it is typed, and a write with
+    /// [`Stamping::Write`], whose stamp is what the file will hold.
+    ///
+    /// It may return a sentence for the reader, which a write's answer carries
+    /// as its notice, before whatever [`App::after_write`] says: for a stamp
+    /// that is not what it should be, such as a rate that could not be
+    /// fetched and was taken from the file instead. A preview's sentence is
+    /// not shown. A stamp that fails fails the request, and a write's leaves
+    /// the file as it was.
+    fn stamp(
+        &self,
+        _rows: &mut [Self::Row],
+        _edits: &Edits,
+        _stamping: Stamping,
+        _ctx: &Context,
+    ) -> Result<Option<String>, ApiError> {
+        Ok(None)
+    }
+
     /// Cross-table data a bespoke editor needs. The schema-driven editor
     /// ignores it.
     fn siblings(&self, _ctx: &Context) -> Result<serde_json::Value, ApiError> {
@@ -234,6 +262,75 @@ pub trait TableLogic: Send + Sync + 'static {
     fn link(&self) -> Option<RowLink> {
         None
     }
+}
+
+/// Which fields of which rows the reader typed into since each row was last
+/// written, by the row's zero-based index into the rows at hand.
+///
+/// A request names the rows by their one-based line, as validation errors do,
+/// and the crate turns each line into the index of the row in the slice
+/// [`TableLogic::stamp`] is handed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Edits {
+    rows: BTreeMap<usize, BTreeSet<String>>,
+}
+
+impl Edits {
+    /// No edits. With [`Edits::with`], it is how a repository's own tests
+    /// build the edits a stamp is asked about.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The same edits, with `fields` of the row at `index` typed into as
+    /// well. A row with no fields is no edit.
+    pub fn with(
+        mut self,
+        index: usize,
+        fields: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let fields: BTreeSet<String> = fields.into_iter().map(Into::into).collect();
+        if !fields.is_empty() {
+            self.rows.entry(index).or_default().extend(fields);
+        }
+        self
+    }
+
+    /// Whether nothing was typed into.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Each edited row's index and the fields typed into, in row order.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &BTreeSet<String>)> {
+        self.rows.iter().map(|(index, fields)| (*index, fields))
+    }
+
+    /// Whether `field` of the row at `index` was typed into.
+    pub fn touched(&self, index: usize, field: &str) -> bool {
+        self.rows
+            .get(&index)
+            .is_some_and(|fields| fields.contains(field))
+    }
+
+    /// The rows where any of `fields` was typed into, in row order.
+    pub fn rows_touching<'a>(&'a self, fields: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
+        self.rows
+            .iter()
+            .filter(|(_, typed)| fields.iter().any(|field| typed.contains(*field)))
+            .map(|(index, _)| *index)
+    }
+}
+
+/// Why rows are being stamped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stamping {
+    /// A derive: the page is showing what a write would store. Nothing is
+    /// written, so a stamp here should be quick and ask nothing of the
+    /// network.
+    Preview,
+    /// A write: what is stamped is what the file will hold.
+    Write,
 }
 
 /// The object-safe façade the router holds. Each method returns the JSON body
@@ -264,8 +361,9 @@ pub trait Table: Send + Sync {
     /// rows were read from.
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError>;
 
-    /// `PUT /api/<table>`: write the posted rows, and return their derivation
-    /// and the version the file now has.
+    /// `PUT /api/<table>`: write the posted rows, stamped where the body lists
+    /// edits, and return their derivation, the version the file now has, and
+    /// the rows the stamp changed.
     ///
     /// A body that states the version its rows were read at is refused with a
     /// 409 where the file now holds something else, so a client holding a whole
@@ -277,11 +375,11 @@ pub trait Table: Send + Sync {
     ///
     /// Once the request has done whatever it was going to, the context tells
     /// the app what was written, and the answer carries what the app said
-    /// about it: as its `notice`, or after the failure.
+    /// about it: as its `notice`, after the stamp's, or after the failure.
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError>;
 
-    /// `POST /api/<table>/derive`: derive and validate the posted rows without
-    /// writing.
+    /// `POST /api/<table>/derive`: stamp the posted rows as a preview where
+    /// the body lists edits, then derive and validate them without writing.
     fn handle_derive(&self, ctx: &Context, body: &str) -> Result<String, ApiError>;
 }
 
@@ -332,28 +430,46 @@ impl<T: TableLogic> Table for T {
         // The app is told what was written whether or not the save went
         // through, since what it is told is what is on disk, and before the
         // answer is built, so that what it says is part of the answer.
-        let notice = ctx.after_write(By::Table(self.name()));
-        let mut answer = saved.map_err(|failure| told(failure, notice.as_deref()))?;
-        answer.notice = notice;
+        let told_app = ctx.after_write(By::Table(self.name()));
+        let mut answer = saved.map_err(|failure| told(failure, told_app.as_deref()))?;
+        // The stamp's sentence is about the rows, and the app's about what
+        // became of the write, so the stamp's comes first.
+        answer.notice = match (answer.notice.take(), told_app) {
+            (Some(stamp), Some(app)) => Some(join_sentences(&stamp, &app)),
+            (stamp, app) => stamp.or(app),
+        };
         to_json(&answer)
     }
 
     fn handle_derive(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
         let request: RowsRequest<T::Row> = parse_body(body)?;
-        let (derived, errors) = self.derivation(ctx, &request.rows)?;
-        to_json(&DeriveResponse { derived, errors })
+        let mut rows = request.rows;
+        let edits = edits_of(&request.edited, rows.len())?;
+        // A preview's sentence is not shown: the write says what it has to.
+        let (stamped, _) = self.stamping(ctx, &mut rows, &edits, Stamping::Preview)?;
+        let (derived, errors) = self.derivation(ctx, &rows)?;
+        to_json(&DeriveResponse {
+            derived,
+            errors,
+            stamped,
+        })
     }
 }
 
-/// A save, up to what the app is told of it: the posted rows written, and the
-/// answer that says so, with no notice yet.
+/// A save, up to what the app is told of it: the posted rows stamped and
+/// written, and the answer that says so, with the stamp's notice and not yet
+/// the app's.
 fn save<T: TableLogic>(table: &T, ctx: &Context, body: &str) -> Result<PutResponse, ApiError> {
     let file = table.file();
     let request: RowsRequest<T::Row> = parse_body(body)?;
+    let mut rows = request.rows;
+    let edits = edits_of(&request.edited, rows.len())?;
 
     // The check and the write are one request, and the server serves one
     // request at a time, so nothing lands between them: the file compared
-    // against is the file replaced.
+    // against is the file replaced. A refused write is refused before it is
+    // stamped, so a stamp that fetches something is not asked to for a write
+    // that will not happen.
     if let Some(loaded) = request.version.as_deref()
         && loaded != ctx.version(file)?
     {
@@ -368,22 +484,45 @@ fn save<T: TableLogic>(table: &T, ctx: &Context, body: &str) -> Result<PutRespon
     // failed would be retried by a client stating the version that write
     // moved on from, and the retry would be refused over a write that had in
     // fact gone through.
+    let (stamped, notice) = table.stamping(ctx, &mut rows, &edits, Stamping::Write)?;
     let text = table
-        .serialize(&request.rows)
+        .serialize(&rows)
         .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?;
-    let (derived, errors) = table.derivation(ctx, &request.rows)?;
+    let (derived, errors) = table.derivation(ctx, &rows)?;
     ctx.write(file, &text)?;
 
     Ok(PutResponse {
         derived,
         errors,
         version: ctx.version(file)?,
-        notice: None,
+        stamped,
+        notice,
     })
 }
 
+/// The edits a body lists, by the index of each row in the body. A line the
+/// body does not have is a 400, since a stamp handed it would index past the
+/// rows.
+fn edits_of(edited: &[EditedLine], rows: usize) -> Result<Edits, ApiError> {
+    let mut edits = Edits::new();
+    for line in edited {
+        if line.line == 0 || line.line > rows {
+            let count = match rows {
+                1 => "1 row".to_string(),
+                n => format!("{n} rows"),
+            };
+            return Err(ApiError::bad_request(format!(
+                "edited names line {}, and the body has {count}",
+                line.line
+            )));
+        }
+        edits = edits.with(line.line - 1, line.fields.iter().cloned());
+    }
+    Ok(edits)
+}
+
 /// The shared tail of a write and a derivation: what the rows in hand derive to,
-/// and what is wrong with them.
+/// and what is wrong with them, and before that, what they are stamped with.
 trait Derivation: TableLogic {
     fn derivation(
         &self,
@@ -392,12 +531,61 @@ trait Derivation: TableLogic {
     ) -> Result<(Vec<serde_json::Value>, Vec<ValidationError>), ApiError> {
         Ok((self.derive(rows, ctx)?, self.validate(rows, ctx)?))
     }
+
+    /// Stamp the rows, and say which the stamp changed, each whole under its
+    /// line, with the sentence the stamp had for the reader.
+    ///
+    /// Rows no edit is listed for are not stamped at all, so a body from a
+    /// script that lists none is written as it was sent. What changed is found
+    /// by comparing each row's JSON before and after, rather than by asking
+    /// the stamp, so a stamp that sets a field to what it already held reports
+    /// nothing.
+    fn stamping(
+        &self,
+        ctx: &Context,
+        rows: &mut [Self::Row],
+        edits: &Edits,
+        stamping: Stamping,
+    ) -> Result<(Vec<Stamped>, Option<String>), ApiError> {
+        if edits.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        let before = self.as_values(rows)?;
+        let notice = self.stamp(rows, edits, stamping, ctx)?;
+        let after = self.as_values(rows)?;
+        let stamped = before
+            .into_iter()
+            .zip(after)
+            .enumerate()
+            .filter(|(_, (was, now))| was != now)
+            .map(|(index, (_, row))| Stamped {
+                line: index + 1,
+                row,
+            })
+            .collect();
+        Ok((
+            stamped,
+            notice.filter(|sentence| !sentence.trim().is_empty()),
+        ))
+    }
+
+    /// Each row as the JSON it serializes to.
+    fn as_values(&self, rows: &[Self::Row]) -> Result<Vec<serde_json::Value>, ApiError> {
+        rows.iter()
+            .map(|row| {
+                serde_json::to_value(row).map_err(|e| {
+                    ApiError::server(format!("could not serialize a row of {}: {e}", self.file()))
+                })
+            })
+            .collect()
+    }
 }
 
 impl<T: TableLogic> Derivation for T {}
 
-/// The body of a PUT or derive request: the full set of rows for a table, and,
-/// for a write, the version those rows were read at.
+/// The body of a PUT or derive request: the full set of rows for a table,
+/// for a write the version those rows were read at, and the fields the reader
+/// typed into.
 #[derive(Deserialize)]
 struct RowsRequest<T> {
     rows: Vec<T>,
@@ -405,6 +593,25 @@ struct RowsRequest<T> {
     /// whatever the file holds, and from a derive, which writes nothing.
     #[serde(default)]
     version: Option<String>,
+    /// Absent where nothing was typed into, and from a script's body, which
+    /// is then not stamped.
+    #[serde(default)]
+    edited: Vec<EditedLine>,
+}
+
+/// The fields of one row the reader typed into since it was last written,
+/// by the row's one-based line.
+#[derive(Deserialize)]
+struct EditedLine {
+    line: usize,
+    fields: Vec<String>,
+}
+
+/// A row the stamp changed, whole, under its one-based line.
+#[derive(Serialize)]
+struct Stamped {
+    line: usize,
+    row: serde_json::Value,
 }
 
 /// `GET /api/<table>`. `rows` is borrowed to avoid a clone.
@@ -427,7 +634,11 @@ struct PutResponse {
     errors: Vec<ValidationError>,
     /// The version the file now has, which the next write states.
     version: String,
-    /// What the app's `after_write` had to say to the reader about the write.
+    /// The rows the stamp changed, as they were written.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stamped: Vec<Stamped>,
+    /// What the stamp and the app's `after_write` had to say to the reader
+    /// about the write.
     #[serde(skip_serializing_if = "Option::is_none")]
     notice: Option<String>,
 }
@@ -438,6 +649,9 @@ struct PutResponse {
 struct DeriveResponse {
     derived: Vec<serde_json::Value>,
     errors: Vec<ValidationError>,
+    /// The rows the preview's stamp changed, as it left them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stamped: Vec<Stamped>,
 }
 
 /// Read the posted rows and the version they were read at, mapping a malformed
@@ -992,6 +1206,381 @@ mod tests {
         // A version in a derive body is ignored, since nothing is written.
         let stated = format!(r#"{{"rows":[{}],"version":"nonsense"}}"#, fixture::MOSS);
         assert!(Books.handle_derive(&dir.context(), &stated).is_ok());
+    }
+
+    // ── Stamps ─────────────────────────────────────────────────────────────
+
+    const READINGS_FILE: &str = "Readings.jsonl";
+
+    /// A value, and the day it was last checked, which a stamp sets.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Reading {
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<String>,
+    }
+
+    /// How a stamp was called: why, and each edited row's index and fields.
+    type Call = (Stamping, Vec<(usize, Vec<String>)>);
+
+    /// A table whose stamp records how it was called and sets `checked` on
+    /// each row whose `value` was typed into: to one day for a preview and
+    /// another for a write, so that the two can be told apart. It fails, or
+    /// has a sentence for the reader, where it is made to.
+    #[derive(Default)]
+    struct Readings {
+        calls: Mutex<Vec<Call>>,
+        fails: bool,
+        notice: Option<&'static str>,
+    }
+
+    const PREVIEW_DAY: &str = "2026-09-29";
+    const WRITE_DAY: &str = "2026-09-30";
+
+    impl Readings {
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl TableLogic for Readings {
+        type Row = Reading;
+
+        fn name(&self) -> &'static str {
+            "readings"
+        }
+
+        fn file(&self) -> &'static str {
+            READINGS_FILE
+        }
+
+        fn title(&self) -> &'static str {
+            "Readings"
+        }
+
+        fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+            Ok(Schema::new([
+                Column::string("title", "Title"),
+                Column::number("value", "Value"),
+                Column::date("checked", "Checked").read_only(),
+            ]))
+        }
+
+        fn validate(
+            &self,
+            _rows: &[Reading],
+            _ctx: &Context,
+        ) -> Result<Vec<ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+
+        fn derive(&self, rows: &[Reading], _ctx: &Context) -> Result<Vec<Value>, ApiError> {
+            Ok(rows
+                .iter()
+                .map(|row| serde_json::json!({ "checked": row.checked }))
+                .collect())
+        }
+
+        fn stamp(
+            &self,
+            rows: &mut [Reading],
+            edits: &Edits,
+            stamping: Stamping,
+            _ctx: &Context,
+        ) -> Result<Option<String>, ApiError> {
+            let edited = edits
+                .iter()
+                .map(|(index, fields)| (index, fields.iter().cloned().collect()))
+                .collect();
+            self.calls.lock().unwrap().push((stamping, edited));
+            if self.fails {
+                return Err(ApiError::server("the rate could not be had"));
+            }
+            let day = match stamping {
+                Stamping::Preview => PREVIEW_DAY,
+                Stamping::Write => WRITE_DAY,
+            };
+            for index in edits.rows_touching(&["value"]) {
+                rows[index].checked = Some(day.to_string());
+            }
+            Ok(self.notice.map(str::to_string))
+        }
+    }
+
+    const MOSS_READING: &str = r#"{"title":"Moss","value":12.5,"checked":"2026-08-01"}"#;
+    const FERN_READING: &str = r#"{"title":"Fern","value":3.5,"checked":"2026-08-01"}"#;
+
+    /// A body of the two readings, with `rest` after the rows.
+    fn readings_body(rest: &str) -> String {
+        format!(r#"{{"rows":[{MOSS_READING},{FERN_READING}]{rest}}}"#)
+    }
+
+    #[test]
+    fn a_derive_stamps_the_rows_it_was_told_were_edited() {
+        let dir = fixture::temp_dir();
+        let table = Readings {
+            notice: Some("Rates are from the file."),
+            ..Default::default()
+        };
+        let body = readings_body(r#","edited":[{"line":2,"fields":["value"]}]"#);
+
+        let v: Value =
+            serde_json::from_str(&table.handle_derive(&dir.context(), &body).unwrap()).unwrap();
+        assert_eq!(
+            v["stamped"],
+            serde_json::json!([{ "line": 2,
+                                 "row": { "title": "Fern", "value": 3.5, "checked": PREVIEW_DAY } }])
+        );
+        // The derivation is of the rows as stamped.
+        assert_eq!(v["derived"][0]["checked"], "2026-08-01");
+        assert_eq!(v["derived"][1]["checked"], PREVIEW_DAY);
+        // A preview's sentence is not shown.
+        assert!(v.get("notice").is_none());
+        assert_eq!(
+            table.calls(),
+            [(Stamping::Preview, vec![(1, vec!["value".to_string()])])]
+        );
+        assert!(!dir.path().join(READINGS_FILE).exists());
+    }
+
+    #[test]
+    fn a_write_stamps_with_write_and_writes_what_it_stamped() {
+        let dir = fixture::temp_dir();
+        dir.write(READINGS_FILE, MOSS_READING);
+        let read_at = dir.context().version(READINGS_FILE).unwrap();
+        let table = Readings {
+            notice: Some("Rates are from the file."),
+            ..Default::default()
+        };
+        let body = readings_body(&format!(
+            r#","version":"{read_at}","edited":[{{"line":1,"fields":["title","value"]}}]"#
+        ));
+
+        let v: Value =
+            serde_json::from_str(&table.handle_put(&dir.context(), &body).unwrap()).unwrap();
+        assert_eq!(
+            v["stamped"],
+            serde_json::json!([{ "line": 1,
+                                 "row": { "title": "Moss", "value": 12.5, "checked": WRITE_DAY } }])
+        );
+        assert_eq!(v["derived"][0]["checked"], WRITE_DAY);
+        assert_eq!(v["notice"], "Rates are from the file.");
+        assert_eq!(
+            dir.read(READINGS_FILE),
+            format!(
+                "{{\"title\":\"Moss\",\"value\":12.5,\"checked\":\"{WRITE_DAY}\"}}\n{FERN_READING}\n"
+            )
+        );
+        assert_eq!(
+            v["version"],
+            dir.context().version(READINGS_FILE).unwrap().as_str()
+        );
+        assert_eq!(
+            table.calls(),
+            [(
+                Stamping::Write,
+                vec![(0, vec!["title".to_string(), "value".to_string()])]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_write_says_what_the_stamp_said_and_then_what_the_app_said() {
+        let dir = fixture::temp_dir();
+        let (ctx, _) = telling(&dir, Some("The push to origin failed."));
+        let table = Readings {
+            notice: Some("Rates are from the file."),
+            ..Default::default()
+        };
+        let body = readings_body(r#","edited":[{"line":1,"fields":["value"]}]"#);
+
+        let v: Value = serde_json::from_str(&table.handle_put(&ctx, &body).unwrap()).unwrap();
+        assert_eq!(
+            v["notice"],
+            "Rates are from the file. The push to origin failed."
+        );
+    }
+
+    #[test]
+    fn a_body_that_lists_no_edits_is_not_stamped() {
+        let dir = fixture::temp_dir();
+        // A stamp that fails proves it was not called by the request not
+        // failing.
+        let table = Readings {
+            fails: true,
+            ..Default::default()
+        };
+
+        for rest in [
+            "",
+            r#","edited":[]"#,
+            r#","edited":[{"line":1,"fields":[]}]"#,
+        ] {
+            let body = readings_body(rest);
+            let derived: Value =
+                serde_json::from_str(&table.handle_derive(&dir.context(), &body).unwrap()).unwrap();
+            assert!(derived.get("stamped").is_none(), "{rest}");
+            let put: Value =
+                serde_json::from_str(&table.handle_put(&dir.context(), &body).unwrap()).unwrap();
+            assert!(put.get("stamped").is_none(), "{rest}");
+            assert_eq!(
+                dir.read(READINGS_FILE),
+                format!("{MOSS_READING}\n{FERN_READING}\n"),
+                "{rest}"
+            );
+        }
+        assert!(table.calls().is_empty());
+    }
+
+    #[test]
+    fn a_stamp_that_changes_nothing_reports_nothing() {
+        let dir = fixture::temp_dir();
+        let table = Readings::default();
+        // The title was typed into, which this stamp does nothing about.
+        let body = readings_body(r#","edited":[{"line":1,"fields":["title"]}]"#);
+
+        let derived: Value =
+            serde_json::from_str(&table.handle_derive(&dir.context(), &body).unwrap()).unwrap();
+        assert!(derived.get("stamped").is_none());
+        let put: Value =
+            serde_json::from_str(&table.handle_put(&dir.context(), &body).unwrap()).unwrap();
+        let keys: Vec<&str> = put
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["derived", "errors", "version"]);
+        assert_eq!(table.calls().len(), 2);
+
+        // Nor does one that sets a field to what it already held.
+        let checked = format!(
+            r#"{{"rows":[{{"title":"Moss","value":1,"checked":"{WRITE_DAY}"}}],"edited":[{{"line":1,"fields":["value"]}}]}}"#
+        );
+        let put: Value =
+            serde_json::from_str(&table.handle_put(&dir.context(), &checked).unwrap()).unwrap();
+        assert!(put.get("stamped").is_none());
+    }
+
+    #[test]
+    fn an_edit_on_a_line_the_body_does_not_have_is_a_bad_request() {
+        let dir = fixture::temp_dir();
+        dir.write(READINGS_FILE, MOSS_READING);
+        let table = Readings::default();
+
+        for line in [0, 3] {
+            let body = readings_body(&format!(
+                r#","edited":[{{"line":1,"fields":["value"]}},{{"line":{line},"fields":["value"]}}]"#
+            ));
+            let refused = table.handle_derive(&dir.context(), &body).unwrap_err();
+            assert_eq!(refused.status, 400);
+            assert_eq!(
+                refused.message,
+                format!("edited names line {line}, and the body has 2 rows")
+            );
+            let refused = table.handle_put(&dir.context(), &body).unwrap_err();
+            assert_eq!(refused.status, 400);
+        }
+        assert!(table.calls().is_empty());
+        assert_eq!(dir.read(READINGS_FILE), format!("{MOSS_READING}\n"));
+
+        let one =
+            format!(r#"{{"rows":[{MOSS_READING}],"edited":[{{"line":2,"fields":["value"]}}]}}"#);
+        assert_eq!(
+            table
+                .handle_derive(&dir.context(), &one)
+                .unwrap_err()
+                .message,
+            "edited names line 2, and the body has 1 row"
+        );
+    }
+
+    #[test]
+    fn a_stamp_that_fails_leaves_the_file_as_it_was() {
+        let dir = fixture::temp_dir();
+        dir.write(READINGS_FILE, MOSS_READING);
+        let read_at = dir.context().version(READINGS_FILE).unwrap();
+        let (ctx, told) = telling(&dir, Some("The push to origin failed."));
+        let table = Readings {
+            fails: true,
+            ..Default::default()
+        };
+
+        let body = readings_body(&format!(
+            r#","version":"{read_at}","edited":[{{"line":2,"fields":["value"]}}]"#
+        ));
+        let failed = table.handle_put(&ctx, &body).unwrap_err();
+        assert_eq!(failed.status, 500);
+        assert!(failed.message.contains("rate"), "{}", failed.message);
+
+        // Nothing was written, so the app was told nothing, and the version
+        // the client holds is still the file's.
+        assert!(told.lock().unwrap().is_empty());
+        assert_eq!(dir.read(READINGS_FILE), format!("{MOSS_READING}\n"));
+        assert_eq!(dir.context().version(READINGS_FILE).unwrap(), read_at);
+    }
+
+    #[test]
+    fn a_refused_write_is_not_stamped() {
+        let dir = fixture::temp_dir();
+        dir.write(READINGS_FILE, MOSS_READING);
+        let table = Readings::default();
+
+        let body = readings_body(r#","version":"stale","edited":[{"line":1,"fields":["value"]}]"#);
+        assert_eq!(
+            table.handle_put(&dir.context(), &body).unwrap_err().status,
+            409
+        );
+        assert!(table.calls().is_empty());
+    }
+
+    #[test]
+    fn edits_say_which_fields_of_which_rows_were_typed_into() {
+        let edits = Edits::new()
+            .with(4, ["value"])
+            .with(1, ["currency", "value"])
+            .with(4, ["title"])
+            .with(2, Vec::<String>::new());
+
+        assert!(!edits.is_empty());
+        assert!(Edits::new().is_empty());
+        let rows: Vec<(usize, Vec<&str>)> = edits
+            .iter()
+            .map(|(index, fields)| (index, fields.iter().map(String::as_str).collect()))
+            .collect();
+        assert_eq!(
+            rows,
+            [(1, vec!["currency", "value"]), (4, vec!["title", "value"])]
+        );
+
+        assert!(edits.touched(1, "currency"));
+        assert!(!edits.touched(1, "title"));
+        assert!(!edits.touched(2, "value"));
+        assert_eq!(edits.rows_touching(&["value"]).collect::<Vec<_>>(), [1, 4]);
+        assert_eq!(edits.rows_touching(&["title"]).collect::<Vec<_>>(), [4]);
+        assert_eq!(
+            edits
+                .rows_touching(&["currency", "title"])
+                .collect::<Vec<_>>(),
+            [1, 4]
+        );
+        assert_eq!(edits.rows_touching(&["fx"]).count(), 0);
+    }
+
+    #[test]
+    fn edits_built_by_hand_are_what_a_request_would_build() {
+        let request: RowsRequest<Reading> = parse_body(&format!(
+            r#"{{"rows":[{MOSS_READING},{FERN_READING}],
+                "edited":[{{"line":2,"fields":["value"]}},{{"line":1,"fields":["title"]}},
+                          {{"line":2,"fields":["title"]}}]}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            edits_of(&request.edited, request.rows.len()).unwrap(),
+            Edits::new().with(0, ["title"]).with(1, ["title", "value"])
+        );
     }
 
     #[test]

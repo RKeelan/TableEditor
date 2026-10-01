@@ -14,9 +14,10 @@
 // write goes first is part of what a write means. `writer` below is where that
 // ordering lives.
 
-import type { PutResult } from "./api";
+import type { EditedLine, PutResult } from "./api";
 import { changedOnDisk, describeError } from "./errors";
 import type { Row } from "./schema";
+import { rowsAsWritten } from "./stamp";
 
 /** The handle the shell holds on the editor's pending write, so that leaving a
  *  table can wait for what was typed in it to reach the disk. */
@@ -131,10 +132,13 @@ export function waitingToSave(state: SaveState, dirty: boolean): boolean {
   return state.kind !== "stale" && hasUnsavedWork(state, dirty);
 }
 
-/** The rows to write, and the text they compare as. */
+/** The rows to write, the text they compare as, and the fields of each that
+ *  the reader typed into since it was last written, which the server stamps
+ *  from. */
 export interface Pending {
   rows: readonly Row[];
   key: string;
+  edited: readonly EditedLine[];
 }
 
 /** What a writer needs of the page around it. */
@@ -162,7 +166,8 @@ export interface Writer {
    *  dropped, so a caller leaving the table can wait for it. */
   save: () => Promise<void>;
   /** The text the rows last written compare as, or nothing before the table
-   *  has been read. */
+   *  has been read. Where the server stamped a write, it is the rows as they
+   *  were written, stamp and all. */
   written: () => string | null;
   /** Whether a write has been refused because the file changed, which holds
    *  until the table is read again. */
@@ -178,9 +183,10 @@ export interface Writer {
  *  somebody else's change. So the writes queue, and each one reads the
  *  version, the rows and the refusal the write before it left behind.
  *
- *  A write with nothing new to send is dropped rather than made, which is what
- *  turns a burst of edits during one slow write into one write after it rather
- *  than one write per edit.
+ *  A write with nothing new to send—rows that read as the last write left
+ *  them, and no field typed into since—is dropped rather than made, which is
+ *  what turns a burst of edits during one slow write into one write after it
+ *  rather than one write per edit.
  *
  *  Nothing is written before the table has been read, because there are no
  *  rows of it to write: a write then would put an empty editor over the stored
@@ -207,7 +213,10 @@ export function writer(parts: WriterParts): Writer {
   const attempt = async (): Promise<void> => {
     if (stated === null || stale) return;
     const write = parts.pending();
-    if (write.key === written) {
+    // A field typed into is something to send even where the rows read as
+    // they were written, since retyping a value is how a reader says it
+    // still stands, and the server stamps it.
+    if (write.key === written && write.edited.length === 0) {
       // There is nothing to write. Where a write had failed, what it was
       // trying to write is what the file already holds — the reader has typed
       // back to it, or an edit was undone — so the failure is over and the
@@ -229,7 +238,14 @@ export function writer(parts: WriterParts): Writer {
       // version it hands over is the one the next write has to state, and a
       // table read again in the meantime has a version of its own.
       if (stale || of !== reading) return;
-      written = write.key;
+      // What the file now holds is what was sent with the stamp taken in,
+      // which is what the page's rows become once it takes the stamp in too.
+      // Counting that as written is what keeps the page from writing its own
+      // adoption of the stamp back.
+      written =
+        result.stamped && result.stamped.length > 0
+          ? JSON.stringify(rowsAsWritten(write.rows, result.stamped))
+          : write.key;
       stated = result.version;
       failures = 0;
       parts.report({ kind: "saved", at: Date.now(), notice: result.notice });

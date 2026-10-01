@@ -31,6 +31,8 @@ pub struct Schema {
     sortable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     muted_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    muted_by_derived: Option<String>,
     columns: Vec<Column>,
     new_row: NewRow,
     datalists: BTreeMap<String, Datalist>,
@@ -45,6 +47,7 @@ impl Schema {
             title: String::new(),
             sortable: false,
             muted_by: None,
+            muted_by_derived: None,
             columns: columns.into_iter().collect(),
             new_row: NewRow::default(),
             datalists: BTreeMap::new(),
@@ -75,6 +78,18 @@ impl Schema {
     /// is written, how the rows sort, or which of them a filter finds.
     pub fn muted_by(mut self, field: impl Into<String>) -> Self {
         self.muted_by = Some(field.into());
+        self
+    }
+
+    /// Draw every row whose derivation holds `true` under `key` muted, as
+    /// [`Schema::muted_by`] does for a stored field: for a row muted by
+    /// something worked out rather than stored, such as a value older than the
+    /// newest in the table. A row is muted where either says so.
+    ///
+    /// It follows the derivation, so a row changes when the next derive
+    /// answers rather than on the keystroke.
+    pub fn muted_by_derived(mut self, key: impl Into<String>) -> Self {
+        self.muted_by_derived = Some(key.into());
         self
     }
 
@@ -196,6 +211,8 @@ pub enum ColumnType {
     Computed,
     /// A key-to-value object, rendered as one chip per entry.
     Map,
+    /// A day, stored as a `YYYY-MM-DD` string.
+    Date,
 }
 
 /// One column of a table.
@@ -209,6 +226,8 @@ pub struct Column {
     allow_empty: bool,
     #[serde(skip_serializing_if = "is_false")]
     wide: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    read_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     width_ch: Option<u16>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -243,6 +262,7 @@ impl Column {
             kind,
             allow_empty: false,
             wide: false,
+            read_only: false,
             width_ch: None,
             options: Vec::new(),
             options_by: None,
@@ -329,6 +349,11 @@ impl Column {
         }
     }
 
+    /// A day, stored as a `YYYY-MM-DD` string.
+    pub fn date(field: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::base(field, label, ColumnType::Date)
+    }
+
     /// Offer a blank choice on a select whose value may legitimately be unset.
     pub fn allow_empty(mut self) -> Self {
         self.allow_empty = true;
@@ -338,6 +363,16 @@ impl Column {
     /// Let the column take the remaining width of the row.
     pub fn wide(mut self) -> Self {
         self.wide = true;
+        self
+    }
+
+    /// Draw the column's value without a control. It is for a value the
+    /// server sets—by a stamp or an action—or that is edited in the file
+    /// rather than on the page. It is written back exactly as it was read,
+    /// like any other field the page does not touch. A `computed` column is
+    /// read-only already and ignores it.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
         self
     }
 
@@ -899,9 +934,36 @@ mod tests {
             (Column::select_by("f", "F", OptionsBy::new("g")), "select"),
             (Column::computed("f", "F", "k"), "computed"),
             (Column::map("f", "F", MapSpec::new("K", "V")), "map"),
+            (Column::date("f", "F"), "date"),
         ] {
             assert_eq!(serde_json::to_value(column).unwrap()["type"], name);
         }
+    }
+
+    #[test]
+    fn a_date_column_serializes_to_the_documented_shape() {
+        assert_eq!(
+            serde_json::to_value(Column::date("checked", "Checked")).unwrap(),
+            json!({ "field": "checked", "label": "Checked", "type": "date" })
+        );
+        assert_eq!(
+            serde_json::to_value(Column::date("checked", "Checked").read_only()).unwrap(),
+            json!({ "field": "checked", "label": "Checked", "type": "date", "read_only": true })
+        );
+    }
+
+    #[test]
+    fn read_only_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Column::number("fx", "FX")).unwrap();
+        assert!(plain.get("read_only").is_none());
+
+        let read = serde_json::to_value(
+            Column::number("fx", "FX")
+                .format(Format::fixed(4))
+                .read_only(),
+        )
+        .unwrap();
+        assert_eq!(read["read_only"], true);
     }
 
     #[test]
@@ -1060,6 +1122,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(muted["muted_by"], "closed");
+    }
+
+    #[test]
+    fn muted_by_derived_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Schema::new([])).unwrap();
+        assert!(plain.get("muted_by_derived").is_none());
+
+        let muted = serde_json::to_value(Schema::new([]).muted_by_derived("stale")).unwrap();
+        assert_eq!(muted["muted_by_derived"], "stale");
+        assert!(muted.get("muted_by").is_none());
     }
 
     #[test]

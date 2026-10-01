@@ -88,6 +88,9 @@ export function MultilineField({
           value={value}
           wrap={open ? "soft" : "off"}
           onChange={(e) => onChange(e.target.value)}
+          // A value typed over itself in one keystroke fires no change event,
+          // and still counts as an edit; see typedInto in TableEditor.
+          onInput={(e) => onChange(e.currentTarget.value)}
           onFocus={() => {
             setOpen(true);
             onEditing?.(true);

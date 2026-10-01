@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
     ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
-    DetailSection, Field, Fields, Form, Format, Front, MapSpec, NewRow, OptionsBy, Param, RowLink,
-    Schema, Section, SelectOption, Server, ServerArgs, Speak, Status, Table, TableLogic, Tone,
-    ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic, Written,
+    DetailSection, Edits, Field, Fields, Form, Format, Front, MapSpec, NewRow, OptionsBy, Param,
+    RowLink, Schema, Section, SelectOption, Server, ServerArgs, Speak, Stamping, Status, Table,
+    TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic, Written,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -46,8 +46,16 @@ struct Book {
     edition: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     year: Option<u32>,
+    /// The day the library came by the book, as `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    acquired: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     copies: Option<u32>,
+    /// The day the copies were last counted, as `YYYY-MM-DD`. Typing into
+    /// Copies or Lent is counting them, so the stamp sets it; it is never
+    /// typed itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    checked: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rating: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,11 +205,14 @@ impl TableLogic for Books {
             // absence of int_only means, and it reads to one place, so 3
             // reads 3.0 beside 4.5.
             Column::number("year", "Year").int_only().width_ch(4),
+            Column::date("acquired", "Acquired"),
             Column::number("copies", "Copies").int_only().width_ch(3),
             Column::number("rating", "Rating")
                 .format(Format::fixed(1))
                 .width_ch(3),
             Column::boolean("lent", "Lent"),
+            // Set by the stamp rather than typed.
+            Column::date("checked", "Checked").read_only(),
             Column::boolean("withdrawn", "Withdrawn"),
             Column::string("publisher", "Publisher")
                 .width_ch(20)
@@ -235,8 +246,11 @@ impl TableLogic for Books {
             Column::text("notes", "Notes").wide(),
         ])
         .sortable()
-        // A withdrawn book stays in the table as a record, drawn muted.
+        // A withdrawn book stays in the table as a record, drawn muted, and
+        // so does a book counted before the latest count, until it is
+        // counted again.
         .muted_by("withdrawn")
+        .muted_by_derived("stale")
         .datalist("publishers", Datalist::fixed(publishers))
         .datalist(
             "reader-names",
@@ -306,11 +320,41 @@ impl TableLogic for Books {
         Ok(errors)
     }
 
+    /// The shelf mark, and whether the book was counted before the latest
+    /// count in the table, which is what mutes it. A book never counted is
+    /// not stale, so a row just added is not muted.
     fn derive(&self, rows: &[Book], _ctx: &Context) -> Result<Vec<Value>, ApiError> {
+        let newest = rows
+            .iter()
+            .filter_map(|row| days_from_civil(&row.checked))
+            .max();
         Ok(rows
             .iter()
-            .map(|row| json!({ "shelf": Self::shelf_mark(row) }))
+            .map(|row| {
+                let stale = matches!(
+                    (days_from_civil(&row.checked), newest),
+                    (Some(day), Some(newest)) if day < newest
+                );
+                json!({ "shelf": Self::shelf_mark(row), "stale": stale })
+            })
             .collect())
+    }
+
+    /// Typing into Copies or Lent is counting the book, so it stamps the day
+    /// it was counted: today, on the preview and on the write alike, since
+    /// today asks nothing of the network.
+    fn stamp(
+        &self,
+        rows: &mut [Book],
+        edits: &Edits,
+        _stamping: Stamping,
+        _ctx: &Context,
+    ) -> Result<Option<String>, ApiError> {
+        let counted = civil_from_days(today());
+        for index in edits.rows_touching(&["copies", "lent"]) {
+            rows[index].checked = counted.clone();
+        }
+        Ok(None)
     }
 
     fn siblings(&self, ctx: &Context) -> Result<Value, ApiError> {

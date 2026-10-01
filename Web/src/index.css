@@ -97,6 +97,9 @@
   --field-chrome: calc(2 * var(--field-pad-x) + 2px);
   /* The room a select's own arrow takes out of its box. */
   --field-arrow: 1.1rem;
+  /* The room a date box's picker button and the space around it take, which
+     is more than an arrow's. */
+  --field-picker: 1.6rem;
 }
 
 /* Inline, so a utility resolves the token where it is used rather than the
@@ -249,8 +252,9 @@
     margin: 0;
   }
 
-  /* A computed column is read, not edited, but it sits in a column with the
-     same width as any other and lines up with the fields above and below. */
+  /* A computed or read-only column is read, not edited, but it sits in a
+     column with the same width as any other and lines up with the fields
+     above and below. */
   .readout {
     display: inline-block;
     max-width: 100%;
@@ -261,10 +265,19 @@
     white-space: nowrap;
     vertical-align: top;
   }
-  /* A figure is read beside number boxes, so its text sits on their line: a
-     box is 2rem tall, and its border and padding take the rest. */
-  .readout.figure {
+  /* A figure, and a stored value drawn without a control, are read beside
+     the boxes of their row, so their text sits on the boxes' line: a box is
+     2rem tall, and its border and padding take the rest. */
+  .readout.figure,
+  .readout.stored {
     line-height: calc(2rem - 2px - 0.5rem);
+  }
+  /* A stored value the reader cannot edit, other than a figure, is quieter
+     than the boxes around it that can be typed into. It is a rule rather than
+     a utility so that the mark on a value its column does not describe,
+     below, can take its colour. */
+  .readout.stored:where(:not(.figure)) {
+    color: var(--muted);
   }
 
   /* The word after a formatted number—a currency, "days"—smaller and muted,
@@ -336,14 +349,15 @@
     background: color-mix(in oklab, var(--bad) 10%, transparent);
   }
 
-  /* A row the schema's `muted_by` field marks: its text is drawn in the muted
-     tone, which is at least 4.5:1 against the page, a card, and a hovered
-     field in both themes, so a muted row is quieter without being hard to
-     read. A field being typed into keeps the ink, since what is typed is what
-     is being read. The rule weighs no more than the marks below and comes
-     before them, so a cell holding something its column does not describe is
-     still marked in a muted row. A computed figure, which is drawn in the ink
-     elsewhere, is muted with the rest of its row. */
+  /* A row the schema's `muted_by` field or `muted_by_derived` key marks: its
+     text is drawn in the muted tone, which is at least 4.5:1 against the
+     page, a card, and a hovered field in both themes, so a muted row is
+     quieter without being hard to read. A field being typed into keeps the
+     ink, since what is typed is what is being read. The rule weighs no more
+     than the marks below and comes before them, so a cell holding something
+     its column does not describe is still marked in a muted row. A figure,
+     computed or read-only, which is drawn in the ink elsewhere, is muted with
+     the rest of its row, and its unit is muted already. */
   .row-muted .field:where(:not(:focus)),
   .row-muted .readout {
     color: var(--muted);
@@ -351,7 +365,8 @@
 
   /* A cell holding something that is not what its column describes. Marked
      rather than hidden, so it can be seen and put right. */
-  .cell-mismatch .field {
+  .cell-mismatch .field,
+  .cell-mismatch .readout {
     border-color: var(--warning) !important;
     border-style: dashed;
     color: var(--warning);

@@ -151,7 +151,7 @@ fn main() -> anyhow::Result<()> {
 
 The consumer brings its own `anyhow`, `clap`, `serde`, and `serde_json`; the crate re-exports none of them.
 
-`parse` and `serialize` default to plain JSONL, so a table whose row type serializes the way it is stored implements neither. `derive` and `siblings` default to nothing.
+`parse` and `serialize` default to plain JSONL, so a table whose row type serializes the way it is stored implements neither. `derive`, `stamp` and `siblings` default to nothing.
 
 `Table` is the object-safe façade the router dispatches through. A blanket implementation covers every `TableLogic`, so nothing outside the crate implements `Table` directly—doing so would collide with the blanket implementation.
 
@@ -188,18 +188,18 @@ A `subtitle` is included when the app supplies one, and omitted otherwise. So ar
 Three endpoints serve each table:
 
 * `GET /api/<table>` returns `{ "schema": …, "rows": [ … ], "derived": [ … ], "errors": [ … ], "siblings": …, "version": "…" }`. `rows` is the stored table, `derived` parallels it index for index, `errors` is the validation, `siblings` is whatever cross-table data the table supplies, and `version` is the file the rows were read from, as it was when they were read.
-* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…" }`, writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`, with a `"notice": "…"` after them where the app's `after_write` had a sentence for the reader about the write (see Hooks). A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
-* `POST /api/<table>/derive` takes the same rows and answers with the derivation and the errors alone. It writes nothing, so it states no version and is answered with none; a version in its body is ignored.
+* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…", "edited": [ { "line": 2, "fields": ["year"] } ] }`, stamps and writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`. `edited` says which fields of which rows the reader typed into, and a body without it is not stamped (see Stamps). The answer carries `"stamped": [ … ]` after the version where the stamp changed any row, and a `"notice": "…"` after that where the stamp or the app's `after_write` had a sentence for the reader about the write (see Hooks). A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `stamp`, `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
+* `POST /api/<table>/derive` takes the same rows and `edited`, stamps the rows as a preview, and answers with the derivation and the errors alone, and `stamped` where the stamp changed a row. It writes nothing, so it states no version and is answered with none; a version in its body is ignored.
 
 A write states the version of the file the rows it is writing were read from. The server compares it against the file as it is now and refuses the write with a 409 where the two differ, so a client holding a whole table cannot write its older rows over a change made since—by an action on a detail page, by a second tab, or by the owner editing the JSONL by hand. The comparison and the write are one request, and the server serves one request at a time, so nothing lands between them: the file compared against is the file replaced. A write that goes through answers with the version it left behind, which the next write states. A write that states no version is written whatever the file holds, which is what a repository's scripts and a client that does not read the version send.
 
-The write is the last thing a write request does. Everything that can fail—reading the body, comparing the version, serializing the rows, deriving and validating them—happens first, so a failure means the file was left as it was and the same request can simply be made again. A write that landed under an answer that failed would be worse than one that never happened: the client would retry, stating the version that write moved on from, and be refused over work that had in fact gone through. A `derive` or `validate` that reads the table's own file through the context therefore reads it as it stood before the write, which is what it reads under `POST /api/<table>/derive` as well: both hooks are handed the rows to judge and see the file the rows are not yet in.
+The write is the last thing a write request does. Everything that can fail—reading the body, comparing the version, stamping the rows, serializing them, deriving and validating them—happens first, so a failure means the file was left as it was and the same request can simply be made again. A write that landed under an answer that failed would be worse than one that never happened: the client would retry, stating the version that write moved on from, and be refused over work that had in fact gone through. A `derive` or `validate` that reads the table's own file through the context therefore reads it as it stood before the write, which is what it reads under `POST /api/<table>/derive` as well: both hooks are handed the rows to judge and see the file the rows are not yet in.
 
 Every answer under `/api/` is sent `Cache-Control: no-store`. Each is a live read of a file, and a read of a table carries the version a later write is checked against, so an answer out of a cache would leave a client holding a version the file does not have and every write it made refused.
 
 A validation error is `{ "line": 3, "field": "title", "message": "title is required" }`, where `line` is the row's one-based position in the set being validated and `field` is null for a whole-row check.
 
-A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, 403 and 415 for a write that does not come from a page this server served (below), 404 for a path under `/api/` that is no endpoint, 405 for a method the endpoint does not take, 409 for a write of rows read before the file changed, 413 for a body over 16 MiB, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
+A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializable body, or one whose `edited` names a line it does not have, 403 and 415 for a write that does not come from a page this server served (below), 404 for a path under `/api/` that is no endpoint, 405 for a method the endpoint does not take, 409 for a write of rows read before the file changed, 413 for a body over 16 MiB, and 500 for file and serialization trouble. A 404 elsewhere is the page that was not found and answers in plain text, since nothing under `/api/` is asking.
 
 `GET /api/views/<view>` answers a view, taking its parameters as the query string:
 
@@ -299,6 +299,7 @@ The schema is data, not code: it carries everything the editor needs to render a
   "title": "Books",
   "sortable": true,
   "muted_by": "withdrawn",
+  "muted_by_derived": "stale",
   "columns": [
     { "field": "title", "label": "Title", "type": "string" },
     { "field": "genre", "label": "Genre", "type": "select", "allow_empty": true,
@@ -311,6 +312,8 @@ The schema is data, not code: it carries everything the editor needs to render a
     { "field": "price", "label": "Price", "type": "number",
       "format": { "decimals": 2, "grouped": true } },
     { "field": "lent", "label": "Lent", "type": "boolean" },
+    { "field": "acquired", "label": "Acquired", "type": "date" },
+    { "field": "checked", "label": "Checked", "type": "date", "read_only": true },
     { "field": "withdrawn", "label": "Withdrawn", "type": "boolean" },
     { "field": "shelved", "label": "Shelved", "type": "map",
       "key_label": "Branch", "value_label": "Count",
@@ -326,7 +329,7 @@ The schema is data, not code: it carries everything the editor needs to render a
 }
 ```
 
-The column types are `string`, `text`, `spaced-string`, `multiline`, `number`, `boolean`, `select`, `computed`, and `map`.
+The column types are `string`, `text`, `spaced-string`, `multiline`, `number`, `boolean`, `select`, `computed`, `map`, and `date`.
 
 The sentences below say what a bundle does with each. They are the contract a bundle honours, not a description of one: a repository serving a bundle of its own through `index_html` is taking these on.
 
@@ -335,7 +338,9 @@ The sentences below say what a bundle does with each. They are the contract a bu
 * `format` says how the numbers of a `number` or `computed` column read. `decimals` is how many places are always shown; `grouped` puts a comma between each group of three digits; `percent` shows a fraction as a percentage, so 0.123 reads 12.3%; and `unit` is a word drawn after the number, smaller and muted. A bundle writes every number the same way whatever the browser's language—a comma to group, a point for the decimals, a minus sign rather than a hyphen—and shows a value that is not a number as it is stored. A format changes what a cell shows and never what it stores.
 * A `boolean` column stores a JSON boolean. A bundle gives the cell an unset state beside true and false, and writes unset as an absent field rather than as `false`, so a row nobody has answered is told apart from one answered no.
 * A `select` carries either a fixed `options` list or an `options_by` map keyed on another column's value. An option is `{ "value": …, "label": … }`, and the label is omitted where it would repeat the value; a bundle shows the label and stores the value.
+* A `date` column stores a day as a `YYYY-MM-DD` string. A bundle edits it with the browser's own date box, which shows the day however the reader's browser writes dates and hands back ISO. A cleared box writes a cleared cell—one emptied a part at a time when it is left, since a browser says nothing until then—and a half-typed one writes nothing. A stored value that is not a real day in that form is shown as it is and marked, since a date box handed one would show it empty; an empty string is not marked, since it is what a cleared cell holds in a table whose `new_row.defaults` give the field one.
 * A `computed` column is read-only and takes its value from the row's derivation by `from`.
+* `read_only` draws a column's value without a control: a value the server sets—by a stamp, or an action—or one that is changed in the file rather than on the page. A bundle draws it as text at the size of the cells around it, a formatted number in the ink and right-aligned as a formatted column's figures are, and anything else in the muted tone, and writes it back exactly as it was read. A `computed` column ignores it, being read-only already.
 * `href` names another field of the same row holding a URL, and a bundle shows the cell as a link to it. It is honoured where a cell is read rather than edited—a `computed` column of a table, and every column of a view—and ignored elsewhere, since a cell being typed into cannot also be a link. The link opens in a tab of its own, carries `rel="noopener noreferrer"`, and is followed only when it is an absolute `http:` or `https:` URL: a field holding `javascript:` or `data:`, or a relative path, is shown as text. Relative paths are not followed because the same one would mean different things at the root and behind a reverse proxy.
 * A `map` column stores a key-to-value object, and a bundle renders one chip per entry, drops an entry whose value is cleared, and writes a map that empties as an absent field. Beside the common fields it carries `key_label`, `value_label`, `key_options`, `value_options`, `allow_new_keys`, `allow_new_values`, and `chip`. Both option lists take the same `{ "value", "label"? }` shape a select's do, so a key can show a title beside the code that is stored. Under `allow_new_keys` a bundle lets a key be typed that the list does not offer, and under `allow_new_values` the value is free text with `value_options`, if any, as suggestions.
 * `"chip": "key"` puts the stored key on the chip rather than the key's label, for a table whose keys are short codes standing for long titles: six chips of `Code—Long Title` make a row several lines tall, and the label is in the panel either way. It is omitted when a chip shows the label, which is what it does unless a table says otherwise.
@@ -351,12 +356,12 @@ A cell shows the first three entries and then a chip reading `+N` for however ma
 `width_ch: n` means that n characters of the value fit without being cut off. A bundle adds whatever the control puts around them, so a table counts characters and nothing else:
 
 * A text or number box adds its padding and border. Number boxes have no spinner arrows: they take two characters out of a narrow box, change the value on a stray click, and are no use in a grid that is typed into.
-* A box that completes from a `datalist` adds the room a browser gives its dropdown arrow, as does a `select`, where n is about the longest option label rather than the stored value.
-* A `computed` column is sized the same way and cuts longer text short with the full value in its tooltip, since a wrapped line in a dense grid pushes every other column's row apart.
+* A box that completes from a `datalist` adds the room a browser gives its dropdown arrow, as does a `select`, where n is about the longest option label rather than the stored value. A `date` box adds the room its picker button takes, which is more than an arrow's.
+* A `computed` column is sized the same way and cuts longer text short with the full value in its tooltip, since a wrapped line in a dense grid pushes every other column's row apart. So is a `read_only` column, which draws no control and so adds no room for an arrow or a picker.
 * A formatted number counts as the characters it reads as, commas included. Its unit is outside the count, and a bundle adds room for it as it does for a select's arrow.
 * A `boolean` and a `map` ignore `width_ch`: the first is three fixed choices, and the second is chips whose width is the bundle's business.
 
-A column that names no width gets 16 characters, or 40 where it is `wide`. Nothing about this is a browser measuring anything: the width is arithmetic on the schema, which is why a server can compute a column's width from its data and have it mean what it says.
+A text column that names no width gets 16 characters, or 40 where it is `wide`, and a `date` column gets 11, which fits a day however a browser writes it: 2026-09-30 and 09/30/2026 are 10 characters, and 30-Sep-2026 is 11. Nothing about this is a browser measuring anything: the width is arithmetic on the schema, which is why a server can compute a column's width from its data and have it mean what it says.
 
 `sortable` is a view setting only: a bundle sorts what is on screen, ascending then descending then not at all, leaves a blank cell last whichever way the column is pointed, turns row dragging off while a sort is on, and writes rows in their stored order regardless. Absent fields are omitted rather than sent as null, and `table` and `title` are stamped in by the server from the table's own `name` and `title`, so the two cannot disagree.
 
@@ -367,6 +372,12 @@ Schema::new(columns).sortable().muted_by("permanently_closed")
 ```
 
 Only a JSON `true` mutes a row: an absent field, `false`, and anything that is not a boolean leave it as it is, the same way a boolean cell holding `"true"` is marked rather than read as a yes. The field need not be one of the table's columns, since a row is muted by what it holds however the value got there—an action, a script, or the JSONL edited by hand—but where it is a `boolean` column, a row can be muted and brought back from the page. Muting is a view setting only, like `sortable`: it changes nothing a write sends, where a row sorts, or whether a filter finds it.
+
+`muted_by_derived` names a key of each row's derivation instead, for a row muted by something worked out rather than stored: a value older than the newest in the table. Only `true` mutes, as with `muted_by`, and a row is muted where either says so. It follows the derivation, so it changes when the next derive answers rather than on the keystroke. A table sets it with `Schema::muted_by_derived`:
+
+```rust
+Schema::new(columns).muted_by_derived("stale")
+```
 
 `new_row` says what the editor adds: the fields in `defaults`, then each field named in `carry_forward` taken from the last row that has a value for it, so a run of rows sharing a genre is typed once. `datalists` are the completion lists columns draw on: `{ "options": [ … ] }` is a list the server computed, and `{ "from_rows": { "fields": [ … ], "separator": " " } }` is built from the rows on screen by trimming each named field, dropping the row when the first is blank, joining the rest, then deduping and sorting. A `speak` column gets a button that fetches its URL with the cell's URL-encoded value in place of `{value}` and plays what comes back, so the service it names has to answer with audio a browser can play. A `localStorage` entry under `storage_key` replaces that URL's origin — scheme, host and port together — so the same bundle can be pointed at a service somewhere else without being rebuilt.
 
@@ -396,6 +407,31 @@ A browser hands back every line break typed into a box of several lines as `\n`,
 
 A map entry the edit did not touch is written back exactly as it was read, so a value the editor shows as text but the file stores as a number stays a number. An entry that is edited follows the map it is in: where the entry's own previous value was a number, or every other value is, what is typed is stored as a number when it reads as one.
 
+## Stamps
+
+Some fields are set by an edit rather than typed: the day a value was last checked, the rate it was converted at. `TableLogic::stamp` sets them. It is handed the rows, which fields of which rows the reader typed into, and whether the rows are about to be written or only shown, and it changes the rows in place:
+
+```rust
+fn stamp(&self, rows: &mut [Reading], edits: &Edits, _stamping: Stamping, _ctx: &Context)
+    -> Result<Option<String>, ApiError>
+{
+    for i in edits.rows_touching(&["value"]) {
+        rows[i].checked = Some(today());
+    }
+    Ok(None)
+}
+```
+
+A page tells the server what was typed with every derive and every write: `edited` lists, by line, the fields of each row the reader typed into since the row was last written. Typing counts even where what was typed is what the cell held, a value typed over itself in one keystroke included, since retyping a figure is how a reader says it still stands. A row whose only change is such an edit is unwritten work all the same: the page derives it, writes it, and asks before it is closed. A field the server stamped is not an edit, and nor is a row added, moved, deleted, or put back. A body that lists no edits is not stamped, so a script writing the file stamps what it changes itself. A line the body does not have is a 400.
+
+`Edits` names each row by its zero-based index into the rows `stamp` is handed. `touched` asks after one field of one row, `rows_touching` gives the rows where any of some fields was typed into, in row order, and `Edits::new().with(…)` builds the edits a repository's own tests ask a stamp about.
+
+A derive stamps with `Stamping::Preview` and a write with `Stamping::Write`, so the page can show a stamp as it is typed while the value that is stored is decided when it is stored: a preview should be quick and ask nothing of the network, and a write may do either. Each row the stamp changed comes back in `stamped`, whole, under its line. The server finds them by comparing each row's JSON before and after the stamp, so a stamp that sets a field to what it already held reports nothing. The derivation and the validation are of the stamped rows, and a write writes them. A write refused because the file changed is refused before it is stamped, so a stamp that fetches something is not asked to for a write that will not happen, and a stamp that fails is a 500 with nothing written.
+
+The page takes a preview's stamps into the rows on screen when the derive answers, together with the derivation worked out from them, and they read like any other value. It takes a write's field by field, and only where the reader has not changed that field since the write was sent, so a stamp never lands on something being typed; the rows as stamped are then what the page counts as written, so taking the stamp in does not write again.
+
+`stamp` may return a sentence, which a write's answer carries in its `notice`, before whatever `after_write` has to say (see Hooks). It is for a stamp that is not what it should be—a rate that could not be fetched, taken from the file instead. A preview's sentence is not shown.
+
 ## What the editor does with the table
 
 * Editing saves. There is no save button: a change is written a moment after it is made, and the page says when it last was.
@@ -411,7 +447,7 @@ A map entry the edit did not touch is written back exactly as it was read, so a 
 * A cell of a one-line column holding a line break—typed into the JSONL by hand, or written by a script—is edited as several lines, and marked, since a one-line box would strip the break on the first keystroke and the save would write that. It stays a box of several lines until it is left, even if the last break is taken out.
 * Dragging a row onto another puts it where that row was, the same rule in both directions. Sorting or filtering turns dragging off, since a view that is not the stored order has no order to rearrange.
 * Adding a row while a filter is on clears the filter, so the new row cannot be added somewhere invisible.
-* A row the schema's `muted_by` marks is drawn with its text in the theme's muted tone, its map chips included. Its cells are edited exactly as any other row's, and a field being typed into is drawn in the ink, since what is typed is what is being read. A cell holding something its column does not describe is still marked, and a row with validation errors still shows them. The row follows what is on screen rather than what was last written, so setting its cell to anything but true brings it back at once, and setting it to true mutes it at once, before the write. It keeps its place in a sort and in a filter, since a row that moved when it was muted would move out from under the reader.
+* A row the schema's `muted_by` marks is drawn with its text in the theme's muted tone, its map chips included. Its cells are edited exactly as any other row's, and a field being typed into is drawn in the ink, since what is typed is what is being read. A cell holding something its column does not describe is still marked, and a row with validation errors still shows them. The row follows what is on screen rather than what was last written, so setting its cell to anything but true brings it back at once, and setting it to true mutes it at once, before the write. A row `muted_by_derived` marks is drawn the same way and follows its derivation instead, so it changes when the derive answers. It keeps its place in a sort and in a filter, since a row that moved when it was muted would move out from under the reader.
 * A table with a `link` puts a link at the start of each row, after the row's drag handle and delete button and set apart from the second, to the view's page about that row: the view's address with each argument taken from the row, plus `table=<this table>`. A screen reader names it by the values it carries, since those are what a reader knows the row by. It is a real address, so a middle click or a held modifier opens it in a tab and it can be copied. A plain click leaves the way the switcher does: once what was typed has been written, and not at all while a save is failing, in which case the click writes nothing either, so clicking again does not push the next retry further off. A row where any of the fields the link reads is empty, or holds something other than text, a number, or a boolean, has no link, since the page would be about nothing. Nor does a row whose linked fields hold an edit not yet written, since the page reads the file: a new or renamed row gets its link once the write lands.
 * The page is served from a repository's own machine and asks nothing of the network: no fonts, no analytics, nothing from a CDN. A build that introduced such a request fails the test that reads the committed page.
 
@@ -683,7 +719,7 @@ fn after_write(&self, ctx: &Context, written: &Written<'_>) -> Option<String> {
 }
 ```
 
-`after_write` may return a sentence for the reader: that the push failed, say, which would otherwise be in a log nobody is reading. A save's answer carries it as `notice`, which the page shows beside the time of the save; an action's carries it after the action's own sentence, or after what went wrong where the action wrote and then failed.
+`after_write` may return a sentence for the reader: that the push failed, say, which would otherwise be in a log nobody is reading. A save's answer carries it as `notice`, after the stamp's sentence where there is one (see Stamps), and the page shows it beside the time of the save; an action's carries it after the action's own sentence, or after what went wrong where the action wrote and then failed.
 
 `before_write` and `page_opened` are called by the server around a request. `after_write` is called by the table's save or the view's action itself, through the context the server hands it, once the save or the action has done whatever it was going to and before its answer is built, which is how what the hook says becomes part of the answer. A table or a view a repository wraps in one of its own therefore still calls it, once, so long as the wrapper passes the request to the one inside; a context a repository builds for itself, as its tests do, calls nothing. None of the hooks can fail a request, and each runs inside the request it belongs to: the server answers one request at a time, so a hook that waits on the network holds up the requests behind it.
 

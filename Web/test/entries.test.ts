@@ -3,11 +3,14 @@ import type { Column, Row } from "../src/lib/schema";
 import {
   appendEntry,
   editEntry,
+  editedLines,
   entryRows,
+  markEdited,
   moveEntry,
   nextEntryId,
   removeEntry,
   restoreEntry,
+  settleEdits,
   toEntries,
   visibleIndices,
 } from "../src/lib/entries";
@@ -186,5 +189,80 @@ describe("the visible rows", () => {
     });
     // The rows with no derivation are blank, so they sort last.
     expect(view).toEqual([0, 1, 2]);
+  });
+});
+
+describe("the fields typed into", () => {
+  test("are recorded against the entry, each with its latest keystroke", () => {
+    const entries = toEntries(rows);
+    let edited = markEdited(entries, entries[1].id, "year", 1);
+    edited = markEdited(edited, entries[1].id, "title", 2);
+    edited = markEdited(edited, entries[1].id, "year", 3);
+    expect(edited[1].edited).toEqual({ year: 3, title: 2 });
+    expect(edited[0].edited).toBeUndefined();
+    // The row itself is untouched: an edit is a record beside it.
+    expect(edited[1].row).toBe(rows[1]);
+  });
+
+  test("survive an edit of the row and a move", () => {
+    const entries = markEdited(toEntries(rows), 1, "title", 1);
+    const edited = editEntry(entries, 1, { title: "Mosses", year: 1994 });
+    expect(edited[0].edited).toEqual({ title: 1 });
+    expect(moveEntry(edited, 0, 2)[2].edited).toEqual({ title: 1 });
+  });
+
+  test("are listed by one-based line, fields in order, leaving out rows with none", () => {
+    let entries = toEntries(rows);
+    expect(editedLines(entries)).toEqual([]);
+    entries = markEdited(entries, entries[2].id, "year", 1);
+    entries = markEdited(entries, entries[2].id, "title", 2);
+    entries = markEdited(entries, entries[0].id, "title", 3);
+    expect(editedLines(entries)).toEqual([
+      { line: 1, fields: ["title"] },
+      { line: 3, fields: ["title", "year"] },
+    ]);
+    // A line is where the row is now.
+    expect(editedLines(moveEntry(entries, 2, 0))).toEqual([
+      { line: 1, fields: ["title", "year"] },
+      { line: 2, fields: ["title"] },
+    ]);
+  });
+
+  test("are forgotten once written, keeping those typed while the write was in flight", () => {
+    let entries = toEntries(rows);
+    entries = markEdited(entries, 1, "title", 1);
+    entries = markEdited(entries, 1, "year", 2);
+    entries = markEdited(entries, 2, "title", 3);
+    // The write went out after keystroke 2, carrying every row; keystroke 3
+    // came after it.
+    const sent = new Set(entries.map((e) => e.id));
+    const settled = settleEdits(entries, sent, 2);
+    expect(settled[0].edited).toBeUndefined();
+    expect(settled[1].edited).toEqual({ title: 3 });
+    expect(editedLines(settled)).toEqual([{ line: 2, fields: ["title"] }]);
+    // An entry with nothing to forget is the same entry.
+    expect(settled[2]).toBe(entries[2]);
+  });
+
+  test("keep an entry's edits where it was not in the write", () => {
+    const entries = markEdited(toEntries(rows), 3, "title", 1);
+    // Row 3 was deleted before the write and put back after it, so the file
+    // never had what was typed into it.
+    const settled = settleEdits(entries, new Set([1, 2]), 5);
+    expect(settled[2].edited).toEqual({ title: 1 });
+  });
+
+  test("come back with a row that is put back", () => {
+    const entries = markEdited(toEntries(rows), 2, "year", 4);
+    const removal = removeEntry(entries, 2)!;
+    const back = restoreEntry(removal.entries, removal.removed, removal.index);
+    expect(back[1].edited).toEqual({ year: 4 });
+    expect(editedLines(back)).toEqual([{ line: 2, fields: ["year"] }]);
+  });
+
+  test("are none on a row just added or just read", () => {
+    const entries = appendEntry(markEdited(toEntries(rows), 1, "title", 1), {});
+    expect(entries[3].edited).toBeUndefined();
+    expect(toEntries(rows).every((e) => e.edited === undefined)).toBe(true);
   });
 });

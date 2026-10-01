@@ -23,6 +23,7 @@ import {
   cellText,
   cellValue,
   controlWidth,
+  dateEdit,
   datalistOptions,
   editsAsLines,
   formatOf,
@@ -40,13 +41,17 @@ import {
   type RowEntry,
   appendEntry,
   editEntry,
+  editedLines,
   entryRows,
+  markEdited,
   moveEntry,
   removeEntry,
   restoreEntry,
+  settleEdits,
   toEntries,
   visibleIndices,
 } from "../lib/entries";
+import { adoptStamped, rowsAsWritten } from "../lib/stamp";
 import {
   type PendingSave,
   type SaveState,
@@ -72,6 +77,9 @@ const SAVE_DELAY = 600;
 const UNDO_WINDOW = 10_000;
 
 const NO_COLUMNS: Column[] = [];
+
+// What a table nobody has typed into lists as its edits.
+const NO_EDITS = "[]";
 
 // The width of the row controls at the start of each row, in pixels, which is
 // the sum of the sizes in the markup below: the cell's padding (12 + 8), a drag
@@ -106,7 +114,12 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // The rows as they were last written, which is what a row's link may point
   // at: the page it opens reads the file.
   const [saved, setSaved] = useState<RowEntry[]>([]);
-  const writing = useRef<RowEntry[]>([]);
+  // The write in flight: the entries it sent, as they were written once it
+  // lands, and the number of the last keystroke it carries.
+  const writing = useRef<{ entries: RowEntry[]; upTo: number }>({
+    entries: [],
+    upTo: 0,
+  });
   const [undoable, setUndoable] = useState<
     { removed: RowEntry; index: number }[]
   >([]);
@@ -119,6 +132,13 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // stale one is dropped.
   const reqSeq = useRef(0);
   const appliedSeq = useRef(0);
+  // Which reading of the table the page holds. A write's stamp is taken in
+  // only by the reading it was made from, since ids start again with each.
+  const reading = useRef(0);
+  // The number of the last keystroke, which each edit is recorded under so a
+  // write can forget the ones it stored and keep those typed while it was in
+  // flight.
+  const editSeq = useRef(0);
   // What the state is now, for the callbacks that outlive a render.
   const entriesRef = useRef<RowEntry[]>([]);
   entriesRef.current = entries;
@@ -126,18 +146,34 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const rowsKey = useMemo(() => JSON.stringify(entryRows(entries)), [entries]);
   const rowsKeyRef = useRef(rowsKey);
   rowsKeyRef.current = rowsKey;
+  // Which fields of which rows have been typed into since they were written.
+  // A field retyped with the value it held changes no row but is still
+  // something to derive and write, since the server stamps it.
+  const editsKey = useMemo(() => JSON.stringify(editedLines(entries)), [entries]);
+  const editsKeyRef = useRef(editsKey);
+  editsKeyRef.current = editsKey;
+
+  /** Put entries on screen, the refs first, so a write that starts in the
+   *  same tick sends them. */
+  const show = useCallback((next: RowEntry[]) => {
+    entriesRef.current = next;
+    rowsKeyRef.current = JSON.stringify(entryRows(next));
+    editsKeyRef.current = JSON.stringify(editedLines(next));
+    setEntries(next);
+  }, []);
 
   /** Take a derivation only when it answers the rows on screen. A response to
    *  rows that have since been edited, deleted or reordered would hang errors
    *  and computed values on whichever row took the place of the one they were
-   *  about. */
+   *  about. Says whether it was taken. */
   const applyDerived = useCallback(
-    (id: number, asked: string, res: DeriveResult) => {
-      if (id < appliedSeq.current) return;
-      if (asked !== rowsKeyRef.current) return;
+    (id: number, asked: string, res: DeriveResult): boolean => {
+      if (id < appliedSeq.current) return false;
+      if (asked !== rowsKeyRef.current) return false;
       appliedSeq.current = id;
       setDerived(res.derived);
       setErrors(res.errors);
+      return true;
     },
     [],
   );
@@ -150,22 +186,43 @@ export function TableEditor({ table, views, pending, go }: Props) {
     }
   };
 
-  /** The rows to write, read when the write starts rather than when it was
-   *  asked for. */
-  const onScreen = useCallback(() => {
-    writing.current = entriesRef.current;
-    return { rows: entryRows(entriesRef.current), key: rowsKeyRef.current };
+  /** The rows to write and the fields typed into them, read when the write
+   *  starts rather than when it was asked for. */
+  const onScreen = useCallback((): Pending => {
+    const sent = entriesRef.current;
+    writing.current = { entries: sent, upTo: editSeq.current };
+    return {
+      rows: entryRows(sent),
+      key: rowsKeyRef.current,
+      edited: editedLines(sent),
+    };
   }, []);
 
   const put = useCallback(
-    ({ rows, key }: Pending, version: string) => {
+    (write: Pending, version: string) => {
       const id = ++reqSeq.current;
-      return putTable(table, rows, version).then((res) => {
-        applyDerived(id, key, res);
+      const of = reading.current;
+      const { entries: sent, upTo } = writing.current;
+      return putTable(table, write.rows, version, write.edited).then((res) => {
+        // The derivation is of the rows as stamped, so it is taken only where
+        // the rows on screen, before the stamp is taken in, are the rows sent.
+        applyDerived(id, write.key, res);
+        if (of === reading.current) {
+          // The stamp is taken in field by field, where the reader has not
+          // changed the field since, and the edits the write stored are
+          // forgotten, all before anything renders.
+          const stamped = adoptStamped(entriesRef.current, sent, res.stamped ?? []);
+          show(settleEdits(stamped, new Set(sent.map((e) => e.id)), upTo));
+          const asWritten = rowsAsWritten(write.rows, res.stamped);
+          writing.current = {
+            entries: sent.map((entry, i) => ({ ...entry, row: asWritten[i] })),
+            upTo,
+          };
+        }
         return res;
       });
     },
-    [table, applyDerived],
+    [table, applyDerived, show],
   );
 
   const report = useCallback((state: SaveState) => {
@@ -174,7 +231,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
     // The shell asks whether a write is outstanding as soon as the write it
     // waited for settles, before the page has rendered what it reported.
     saveRef.current = state;
-    if (state.kind === "saved") setSaved(writing.current);
+    if (state.kind === "saved") setSaved(writing.current.entries);
     clearRetry();
     // A failure is not the end of it: try again on a lengthening timer, as
     // well as whenever the next edit lands. A refusal schedules nothing,
@@ -201,8 +258,16 @@ export function TableEditor({ table, views, pending, go }: Props) {
   }
   const writes = held.current.writes;
 
-  const lastWritten = writes.written();
-  const dirty = lastWritten !== null && rowsKey !== lastWritten;
+  /** Whether what is on screen is not yet written: rows that differ from the
+   *  last write, or a field typed into since. */
+  const unwritten = useCallback(
+    (rowsNow: string, editsNow: string) => {
+      const written = writes.written();
+      return written !== null && (rowsNow !== written || editsNow !== NO_EDITS);
+    },
+    [writes],
+  );
+  const dirty = unwritten(rowsKey, editsKey);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -213,6 +278,8 @@ export function TableEditor({ table, views, pending, go }: Props) {
       const key = JSON.stringify(data.rows);
       entriesRef.current = loaded;
       rowsKeyRef.current = key;
+      editsKeyRef.current = NO_EDITS;
+      reading.current += 1;
       writes.loaded(key, data.version);
       setSchema(data.schema);
       setEntries(loaded);
@@ -249,13 +316,11 @@ export function TableEditor({ table, views, pending, go }: Props) {
   useEffect(() => {
     pending.current = {
       flush,
-      waiting: () => {
-        const written = writes.written();
-        return waitingToSave(
+      waiting: () =>
+        waitingToSave(
           saveRef.current,
-          written !== null && rowsKeyRef.current !== written,
-        );
-      },
+          unwritten(rowsKeyRef.current, editsKeyRef.current),
+        ),
       failing: () => saveRef.current.kind === "failed",
     };
     // A page that is not this editor has nothing pending, and leaving this
@@ -267,7 +332,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
         failing: () => false,
       };
     };
-  }, [flush, pending, writes]);
+  }, [flush, pending, unwritten]);
 
   // Closing the page mid-edit throws the edit away, so say so first. What is
   // unwritten is read when the page is left rather than at the last render,
@@ -275,15 +340,14 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // write that the page has not yet rendered.
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
-      const written = writes.written();
-      const unwritten = written !== null && rowsKeyRef.current !== written;
-      if (!hasUnsavedWork(saveRef.current, unwritten)) return;
+      const left = unwritten(rowsKeyRef.current, editsKeyRef.current);
+      if (!hasUnsavedWork(saveRef.current, left)) return;
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", guard);
     return () => window.removeEventListener("beforeunload", guard);
-  }, [writes]);
+  }, [unwritten]);
 
   // ── Live derive, debounced ────────────────────────────────────────────────
   useEffect(() => {
@@ -295,8 +359,16 @@ export function TableEditor({ table, views, pending, go }: Props) {
       if (writes.stale()) return;
       const id = ++reqSeq.current;
       const asked = rowsKeyRef.current;
-      deriveTable(table, entryRows(entriesRef.current))
-        .then((res) => applyDerived(id, asked, res))
+      const sent = entriesRef.current;
+      deriveTable(table, entryRows(sent), editedLines(sent))
+        .then((res) => {
+          // The stamp is taken in with the derivation, and only where the
+          // derivation is: the rows on screen are then the rows asked about,
+          // so the stamp is shown with every figure worked out from it.
+          if (applyDerived(id, asked, res) && res.stamped?.length) {
+            show(adoptStamped(entriesRef.current, sent, res.stamped));
+          }
+        })
         .catch(() => {
           // Transient; the next derive or the save refreshes it.
         });
@@ -304,7 +376,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
     return () => {
       if (deriveTimer.current) clearTimeout(deriveTimer.current);
     };
-  }, [rowsKey, dirty, table, applyDerived, writes]);
+  }, [rowsKey, editsKey, dirty, table, applyDerived, show, writes]);
 
   // ── Autosave, debounced ───────────────────────────────────────────────────
   useEffect(() => {
@@ -314,7 +386,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [rowsKey, dirty, writes]);
+  }, [rowsKey, editsKey, dirty, writes]);
 
   useEffect(
     () => () => {
@@ -360,15 +432,19 @@ export function TableEditor({ table, views, pending, go }: Props) {
     setUndoable((stack) => (stack.length === 0 ? stack : []));
   };
 
+  // Each keystroke is recorded as an edit of its column's field, whether or
+  // not it changes the value: retyping a figure is how a reader says it still
+  // stands. The number is taken outside the update, which may run twice.
   const setCell = useCallback(
     (id: number, column: Column, raw: string) => {
       if (!schema) return;
       forgetUndo();
+      const seq = ++editSeq.current;
       setEntries((prev) => {
         const entry = prev.find((e) => e.id === id);
-        return entry
-          ? editEntry(prev, id, writeCell(entry.row, column, raw, schema))
-          : prev;
+        if (!entry) return prev;
+        const next = editEntry(prev, id, writeCell(entry.row, column, raw, schema));
+        return markEdited(next, id, column.field, seq);
       });
     },
     [schema],
@@ -378,11 +454,16 @@ export function TableEditor({ table, views, pending, go }: Props) {
     (id: number, column: Column, key: string, value: string) => {
       if (!schema) return;
       forgetUndo();
+      const seq = ++editSeq.current;
       setEntries((prev) => {
         const entry = prev.find((e) => e.id === id);
-        return entry
-          ? editEntry(prev, id, writeMapEntry(entry.row, column, key, value, schema))
-          : prev;
+        if (!entry) return prev;
+        const next = editEntry(
+          prev,
+          id,
+          writeMapEntry(entry.row, column, key, value, schema),
+        );
+        return markEdited(next, id, column.field, seq);
       });
     },
     [schema],
@@ -593,7 +674,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
                     .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
                     .join("\n")}
                   reorderable={reorderable}
-                  muted={rowMuted(schema, entry.row)}
+                  muted={rowMuted(schema, entry.row, derived[idx] as Derived)}
                   target={
                     link
                       ? savedRowTarget(link, table, entry.row, savedById.get(entry.id))
@@ -766,6 +847,25 @@ interface CellProps {
  *  real one replaces it. */
 const KEEP = "\u0000keep";
 
+/** The props that hand every keystroke in a box to `handle`.
+ *
+ *  Typing counts as an edit even where it leaves the value as it was, since
+ *  retyping a value is how a reader says it still stands. React's change event
+ *  fires only where the box's value differs from the one it last saw, so a
+ *  value typed over itself in one keystroke—"3" over "3", or a figure pasted
+ *  over itself—would go unseen; the input event is not held back that way. An
+ *  ordinary keystroke fires both, and the handler writes the same value
+ *  twice. A select needs neither, since choosing the option already chosen
+ *  fires nothing at all. */
+function typedInto<T extends HTMLInputElement | HTMLTextAreaElement>(
+  handle: (box: T) => void,
+) {
+  return {
+    onChange: (e: React.ChangeEvent<T>) => handle(e.currentTarget),
+    onInput: (e: React.FormEvent<T>) => handle(e.currentTarget),
+  };
+}
+
 function Cell({
   column,
   entry,
@@ -790,7 +890,10 @@ function Cell({
     (mismatched ? " cell-mismatch" : "");
   const value = row[column.field];
   const label = `${column.label}, row ${position + 1}`;
-  const oddTitle = `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
+  const oddTitle =
+    column.type === "date" && typeof value === "string"
+      ? "Not a day written YYYY-MM-DD, which is what this column holds"
+      : `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
 
   const format = formatOf(column);
 
@@ -826,6 +929,47 @@ function Cell({
         >
           {text}
         </span>
+      </td>
+    );
+  }
+
+  // A stored value the reader cannot edit is data rather than an annotation,
+  // so it is read at the grid's size: a figure in ink, right-aligned with its
+  // unit after it, and anything else in the muted tone. A value that is not
+  // what its column describes is shown as it is stored and marked.
+  if (column.read_only) {
+    const text = cellText(column, row, derived);
+    const parts =
+      format && typeof value === "number" && !mismatched
+        ? numberParts(value, format)
+        : { number: text, unit: null };
+    return (
+      <td className={tdCls}>
+        <span
+          className={
+            "readout stored" + (format ? " figure text-right tabular-nums" : "")
+          }
+          style={{ width: controlWidth(column) }}
+          title={mismatched ? oddTitle : text || undefined}
+        >
+          {parts.number}
+          {parts.unit && <span className="unit">{parts.unit}</span>}
+        </span>
+      </td>
+    );
+  }
+
+  if (column.type === "date") {
+    return (
+      <td className={tdCls}>
+        <DateField
+          value={value}
+          mismatched={mismatched}
+          width={controlWidth(column)}
+          label={label}
+          title={mismatched ? oddTitle : undefined}
+          onWrite={(raw) => onCell(entry.id, column, raw)}
+        />
       </td>
     );
   }
@@ -925,7 +1069,7 @@ function Cell({
           type={mismatched ? "text" : "number"}
           step={column.int_only ? 1 : "any"}
           value={shown}
-          onChange={(e) => onCell(entry.id, column, e.target.value)}
+          {...typedInto<HTMLInputElement>((box) => onCell(entry.id, column, box.value))}
           // A wheel over a focused number box would otherwise change it while
           // the user is only scrolling past.
           onWheel={(e) => e.currentTarget.blur()}
@@ -994,7 +1138,7 @@ function Cell({
           type="text"
           value={shown}
           list={column.datalist ? `dl-${column.datalist}` : undefined}
-          onChange={(e) => onCell(entry.id, column, e.target.value)}
+          {...typedInto<HTMLInputElement>((box) => onCell(entry.id, column, box.value))}
           spellCheck={column.type === "text"}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
@@ -1048,12 +1192,12 @@ function NumberField({ value, format, width, label, onWrite }: NumberFieldProps)
             if (document.activeElement === box) box.select();
           }, 0);
         }}
-        onChange={(e) => {
-          setTyped(e.target.value);
-          const read = parseEditText(e.target.value, format);
+        {...typedInto<HTMLInputElement>((box) => {
+          setTyped(box.value);
+          const read = parseEditText(box.value, format);
           if (read.kind === "clear") onWrite("");
           else if (read.kind === "number") onWrite(String(read.value));
-        }}
+        })}
         onBlur={() => setTyped(null)}
         aria-label={label}
         aria-invalid={invalid || undefined}
@@ -1066,6 +1210,71 @@ function NumberField({ value, format, width, label, onWrite }: NumberFieldProps)
       />
       {format.unit && <span className="unit">{format.unit}</span>}
     </span>
+  );
+}
+
+// ── Date ────────────────────────────────────────────────────────────────────
+interface DateFieldProps {
+  /** The stored value, whatever it is. */
+  value: unknown;
+  /** Whether the stored value is not a day written `YYYY-MM-DD`. */
+  mismatched: boolean;
+  width: string | undefined;
+  label: string;
+  title: string | undefined;
+  onWrite: (raw: string) => void;
+}
+
+/** A date cell: the browser's own date box, which shows the day however the
+ *  reader's browser writes dates and hands back ISO.
+ *
+ *  While it is focused the box holds what is typed, so a date half typed
+ *  stays in it, writing nothing, until it is a whole date or nothing; a box
+ *  held to the stored value would have it put back over the half-typed one
+ *  with each keystroke. A stored value that is not a date is shown as it is
+ *  in a text box, and is edited as text until the box is left. */
+function DateField({
+  value,
+  mismatched,
+  width,
+  label,
+  title,
+  onWrite,
+}: DateFieldProps) {
+  // What is being typed, shown in place of the stored value until the box is
+  // left; null at rest.
+  const [typed, setTyped] = useState<string | null>(null);
+  // Whether the box is text, settled when it is focused so that it does not
+  // change under the caret when what is typed becomes a date.
+  const [asText, setAsText] = useState(mismatched);
+  const text = typed === null ? mismatched : asText;
+  const stored = value == null ? "" : String(value);
+  const edited = (box: HTMLInputElement) => {
+    setTyped(box.value);
+    const edit = dateEdit(box.value, box.validity.badInput);
+    if (edit.kind === "clear") onWrite("");
+    else if (edit.kind === "date") onWrite(edit.value);
+  };
+  return (
+    <input
+      type={text ? "text" : "date"}
+      value={typed ?? stored}
+      onFocus={() => setAsText(mismatched)}
+      {...typedInto<HTMLInputElement>(edited)}
+      onBlur={(e) => {
+        // A date box half typed and one emptied both hold "", so a browser
+        // says nothing when the last part of a half-typed date is emptied.
+        // Leaving the box is when an emptied one is known to be emptied.
+        const box = e.currentTarget;
+        const left = dateEdit(box.value, box.validity.badInput);
+        if (typed !== null && left.kind === "clear" && stored !== "") onWrite("");
+        setTyped(null);
+      }}
+      aria-label={label}
+      title={title}
+      style={{ width }}
+      className="field h-8 tabular-nums"
+    />
   );
 }
 

@@ -26,15 +26,32 @@ export interface TableGet {
   version: string;
 }
 
-/** `POST api/<table>/derive`, which writes nothing. */
+/** The fields of one row the reader typed into since it was last written,
+ *  by the row's one-based line. */
+export interface EditedLine {
+  line: number;
+  fields: string[];
+}
+
+/** A row the server's stamp changed, whole, under its one-based line in the
+ *  rows the request sent. */
+export interface StampedRow {
+  line: number;
+  row: Row;
+}
+
+/** `POST api/<table>/derive`, which writes nothing. `stamped` is absent
+ *  where the stamp changed no row. */
 export interface DeriveResult {
   derived: unknown[];
   errors: ValidationError[];
+  stamped?: StampedRow[];
 }
 
 /** `PUT api/<table>`: the same, and the version the file now has, which the
  *  next write states. `notice` is a sentence the server had for the reader
- *  about the write—a push that failed, say—and is absent where it had none. */
+ *  about the write—a rate that could not be fetched, a push that failed—and
+ *  is absent where it had none. */
 export interface PutResult extends DeriveResult {
   version: string;
   notice?: string;
@@ -128,8 +145,22 @@ export function postAction(
   }).then((r) => asJson<ActionResult>(r));
 }
 
-/** Write the rows, returning the derivation of what was written and the version
- *  the file now has.
+/** The body of a derive or a write: the rows, and the edits where there are
+ *  any, since a body that lists none is simply not stamped. */
+export function rowsBody(
+  rows: readonly Row[],
+  edited: readonly EditedLine[],
+  version?: string,
+): string {
+  return JSON.stringify({
+    rows,
+    ...(version === undefined ? {} : { version }),
+    ...(edited.length === 0 ? {} : { edited }),
+  });
+}
+
+/** Write the rows, returning the derivation of what was written, the version
+ *  the file now has, and the rows the server stamped.
  *
  *  `version` is the file as it was when these rows were read. The server
  *  refuses the write with a 409 where the file holds something else, so a
@@ -138,22 +169,25 @@ export function putTable(
   table: string,
   rows: readonly Row[],
   version: string,
+  edited: readonly EditedLine[] = [],
 ): Promise<PutResult> {
   return fetch(`${api()}/${table}`, {
     method: "PUT",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ rows, version }),
+    body: rowsBody(rows, edited, version),
   }).then((r) => asJson<PutResult>(r));
 }
 
-/** Derive and validate without writing, which backs the live indicators. */
+/** Stamp as a preview, derive and validate without writing, which backs the
+ *  live indicators. */
 export function deriveTable(
   table: string,
   rows: readonly Row[],
+  edited: readonly EditedLine[] = [],
 ): Promise<DeriveResult> {
   return fetch(`${api()}/${table}/derive`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ rows }),
+    body: rowsBody(rows, edited),
   }).then((r) => asJson<DeriveResult>(r));
 }
