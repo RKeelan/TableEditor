@@ -57,6 +57,7 @@ import {
   editedLines,
   entryRows,
   insertEntry,
+  lastEdit,
   markEdited,
   moveEntry,
   nextEntryId,
@@ -95,9 +96,6 @@ const UNDO_WINDOW = 10_000;
 
 const NO_COLUMNS: Column[] = [];
 const NO_FILLS: ReadonlySet<string> = new Set();
-
-// What a table nobody has typed into lists as its edits.
-const NO_EDITS = "[]";
 
 // The width of the row controls at the start of each row, in pixels, which is
 // the sum of the sizes in the markup below: the cell's padding (12 + 8), a drag
@@ -171,19 +169,16 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const rowsKey = useMemo(() => JSON.stringify(entryRows(entries)), [entries]);
   const rowsKeyRef = useRef(rowsKey);
   rowsKeyRef.current = rowsKey;
-  // Which fields of which rows have been typed into since they were written.
-  // A field retyped with the value it held changes no row but is still
-  // something to derive and write, since the server stamps it.
-  const editsKey = useMemo(() => JSON.stringify(editedLines(entries)), [entries]);
-  const editsKeyRef = useRef(editsKey);
-  editsKeyRef.current = editsKey;
+  // The latest keystroke recorded. A value typed over itself changes no row,
+  // but it is still an edit the server may stamp, so it is derived all the
+  // same; whether it is then written is up to what the derive answers.
+  const latestEdit = useMemo(() => lastEdit(entries), [entries]);
 
   /** Put entries on screen, the refs first, so a write that starts in the
    *  same tick sends them. */
   const show = useCallback((next: RowEntry[]) => {
     entriesRef.current = next;
     rowsKeyRef.current = JSON.stringify(entryRows(next));
-    editsKeyRef.current = JSON.stringify(editedLines(next));
     setEntries(next);
   }, []);
 
@@ -285,15 +280,17 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const writes = held.current.writes;
 
   /** Whether what is on screen is not yet written: rows that differ from the
-   *  last write, or a field typed into since. */
+   *  last write. A field typed into that leaves its row as it was is not, so a
+   *  value retyped on a table whose stamp leaves the row alone, or that has
+   *  none, writes nothing. */
   const unwritten = useCallback(
-    (rowsNow: string, editsNow: string) => {
+    (rowsNow: string) => {
       const written = writes.written();
-      return written !== null && (rowsNow !== written || editsNow !== NO_EDITS);
+      return written !== null && rowsNow !== written;
     },
     [writes],
   );
-  const dirty = unwritten(rowsKey, editsKey);
+  const dirty = unwritten(rowsKey);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -304,7 +301,6 @@ export function TableEditor({ table, views, pending, go }: Props) {
       const key = JSON.stringify(data.rows);
       entriesRef.current = loaded;
       rowsKeyRef.current = key;
-      editsKeyRef.current = NO_EDITS;
       reading.current += 1;
       writes.loaded(key, data.version);
       setSchema(data.schema);
@@ -343,11 +339,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
   useEffect(() => {
     pending.current = {
       flush,
-      waiting: () =>
-        waitingToSave(
-          saveRef.current,
-          unwritten(rowsKeyRef.current, editsKeyRef.current),
-        ),
+      waiting: () => waitingToSave(saveRef.current, unwritten(rowsKeyRef.current)),
       failing: () => saveRef.current.kind === "failed",
     };
     // A page that is not this editor has nothing pending, and leaving this
@@ -367,8 +359,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // write that the page has not yet rendered.
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
-      const left = unwritten(rowsKeyRef.current, editsKeyRef.current);
-      if (!hasUnsavedWork(saveRef.current, left)) return;
+      if (!hasUnsavedWork(saveRef.current, unwritten(rowsKeyRef.current))) return;
       e.preventDefault();
       e.returnValue = "";
     };
@@ -377,8 +368,11 @@ export function TableEditor({ table, views, pending, go }: Props) {
   }, [unwritten]);
 
   // ── Live derive, debounced ────────────────────────────────────────────────
+  // Asked for by rows that differ from the last write and by every edit, so a
+  // value typed over itself is derived, and stamped where the table stamps it,
+  // though it changes no row.
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && latestEdit === 0) return;
     if (deriveTimer.current) clearTimeout(deriveTimer.current);
     deriveTimer.current = setTimeout(() => {
       // A page that can no longer save has nothing to show a fresh derivation
@@ -403,9 +397,11 @@ export function TableEditor({ table, views, pending, go }: Props) {
     return () => {
       if (deriveTimer.current) clearTimeout(deriveTimer.current);
     };
-  }, [rowsKey, editsKey, dirty, table, applyDerived, show, writes]);
+  }, [rowsKey, latestEdit, dirty, table, applyDerived, show, writes]);
 
   // ── Autosave, debounced ───────────────────────────────────────────────────
+  // Asked for only by rows that differ from the last write: where a preview
+  // stamp has changed a row, they do.
   useEffect(() => {
     if (!dirty) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -413,7 +409,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [rowsKey, editsKey, dirty, writes]);
+  }, [rowsKey, dirty, writes]);
 
   useEffect(
     () => () => {

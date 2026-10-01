@@ -81,6 +81,19 @@ export function editedLines(
   return lines;
 }
 
+/** The number of the latest keystroke the entries record, or 0 where none is
+ *  recorded. It moves with every edit, a value typed over itself included,
+ *  where the rows' text does not, so it is what a derive is asked for by. */
+export function lastEdit(entries: readonly RowEntry[]): number {
+  let latest = 0;
+  for (const entry of entries) {
+    for (const seq of Object.values(entry.edited ?? {})) {
+      latest = Math.max(latest, seq);
+    }
+  }
+  return latest;
+}
+
 /** Forget the edits a write has stored: those numbered `upTo` or lower, on
  *  the entries whose ids went out with it. An edit made while the write was
  *  in flight is numbered after it and stays for the next write, and so do
