@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Column, Row, Schema } from "../src/lib/schema";
 import {
+  boxInput,
+  boxText,
   cellSearchText,
   cellText,
   CHIP_KEY_SHRINK,
@@ -1078,6 +1080,46 @@ describe("a date cell", () => {
 });
 
 // ── Read-only cells ─────────────────────────────────────────────────────────
+
+describe("an input event in a cell's box", () => {
+  // A table whose new rows start with an empty string in every optional
+  // field, numbers included, which is what clearing a cell writes there.
+  const emptyDefaults = schemaOf({ copies: "", title: "" });
+
+  test("on a filled cell, leaving the box as it read, marks the field and writes nothing", () => {
+    const row: Row = { title: "Moss", copies: 3 };
+    // "3" typed over "3".
+    expect(boxInput(boxText(copies, row), "3")).toBe("mark");
+    expect(boxInput(boxText(title, row), "Moss")).toBe("mark");
+  });
+
+  test("on an absent field, leaving the box empty, marks the field and writes nothing", () => {
+    const row: Row = { title: "Moss" };
+    // A lone "-" in an empty number box leaves it reading nothing.
+    expect(boxText(copies, row)).toBe("");
+    expect(boxInput(boxText(copies, row), "")).toBe("mark");
+    // Written, the empty box would be a cleared cell, and the absent field
+    // would come back as the empty string the defaults give it, which a
+    // number cell then shows as a mismatch.
+    const written = writeCell(row, copies, "", emptyDefaults);
+    expect(written).toEqual({ title: "Moss", copies: "" });
+    expect(cellMismatch(copies, written)).toBe(true);
+  });
+
+  test("that changes what the box reads writes it", () => {
+    expect(boxInput(boxText(copies, { copies: 3 }), "4")).toBe("write");
+    expect(boxInput(boxText(copies, {}), "4")).toBe("write");
+    expect(boxInput(boxText(title, { title: "Moss" }), "")).toBe("write");
+  });
+
+  test("is measured against what the box holds, not what the cell shows", () => {
+    // A number that does not match its column is held as it is stored.
+    expect(boxText(year, { year: "1994" })).toBe("1994");
+    // A cell of several lines is held as a box of several lines holds it.
+    expect(boxText(letter, { letter: "Dear Ada,\r\nThanks!" })).toBe("Dear Ada,\nThanks!");
+    expect(boxText(title, { title: null })).toBe("");
+  });
+});
 
 describe("a read-only cell", () => {
   test("reads as the text a cell of its type reads as", () => {
