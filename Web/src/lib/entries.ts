@@ -14,10 +14,17 @@ import type { FilterPlan } from "./rows";
 export interface RowEntry {
   id: number;
   row: Row;
+  /** The fields the reader typed into since the row was last written, each
+   *  with the number of the last keystroke in it. Typing counts even where
+   *  what was typed is what the cell held, since retyping a value is how a
+   *  reader says it still stands. A stamp the server applies is not an edit,
+   *  and neither is a row added, moved, deleted or put back. */
+  edited?: Record<string, number>;
 }
 
-/** Wrap rows as they arrive from the server. Ids start again with each load,
- *  which is what a fresh set of rows deserves. */
+/** Wrap rows as they arrive from the server, with nothing typed into them.
+ *  Ids start again with each load, which is what a fresh set of rows
+ *  deserves. */
 export function toEntries(rows: readonly Row[], firstId = 1): RowEntry[] {
   return rows.map((row, i) => ({ id: firstId + i, row }));
 }
@@ -32,13 +39,66 @@ export function nextEntryId(entries: readonly RowEntry[]): number {
   return entries.reduce((highest, entry) => Math.max(highest, entry.id), 0) + 1;
 }
 
-/** Replace one entry's row, keeping its identity. */
+/** Replace one entry's row, keeping its identity and its edits. */
 export function editEntry(
   entries: readonly RowEntry[],
   id: number,
   row: Row,
 ): RowEntry[] {
-  return entries.map((entry) => (entry.id === id ? { id, row } : entry));
+  return entries.map((entry) => (entry.id === id ? { ...entry, row } : entry));
+}
+
+// ── Edits ───────────────────────────────────────────────────────────────────
+// Every derive and every write tells the server which fields the reader typed
+// into since each row was last written, so that it can stamp what follows from
+// them: the day a value was checked, the rate it was converted at.
+
+/** Record that `field` of one entry was typed into, as keystroke `seq`. */
+export function markEdited(
+  entries: readonly RowEntry[],
+  id: number,
+  field: string,
+  seq: number,
+): RowEntry[] {
+  return entries.map((entry) =>
+    entry.id === id
+      ? { ...entry, edited: { ...entry.edited, [field]: seq } }
+      : entry,
+  );
+}
+
+/** The edits a request carries: each row typed into, by its one-based
+ *  position, with its fields in order. A row nothing was typed into is left
+ *  out, so a request about rows nobody touched lists nothing. */
+export function editedLines(
+  entries: readonly RowEntry[],
+): { line: number; fields: string[] }[] {
+  const lines: { line: number; fields: string[] }[] = [];
+  entries.forEach((entry, i) => {
+    const fields = Object.keys(entry.edited ?? {}).sort();
+    if (fields.length > 0) lines.push({ line: i + 1, fields });
+  });
+  return lines;
+}
+
+/** Forget the edits a write has stored: those numbered `upTo` or lower, on
+ *  the entries whose ids went out with it. An edit made while the write was
+ *  in flight is numbered after it and stays for the next write, and so do
+ *  the edits of a row that was not in the write—one deleted before it and put
+ *  back since—since the file never had them. */
+export function settleEdits(
+  entries: readonly RowEntry[],
+  sentIds: ReadonlySet<number>,
+  upTo: number,
+): RowEntry[] {
+  return entries.map((entry) => {
+    if (!entry.edited || !sentIds.has(entry.id)) return entry;
+    const kept = Object.entries(entry.edited).filter(([, seq]) => seq > upTo);
+    if (kept.length === Object.keys(entry.edited).length) return entry;
+    const settled: RowEntry = { id: entry.id, row: entry.row };
+    if (kept.length > 0) settled.edited = Object.fromEntries(kept);
+    return settled;
+  });
 }
 
 /** Add a row at the end. */

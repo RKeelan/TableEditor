@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PutResult } from "../src/lib/api";
+import type { EditedLine, PutResult } from "../src/lib/api";
 import { ApiError } from "../src/lib/errors";
 import type { Row } from "../src/lib/schema";
 import {
@@ -78,7 +78,7 @@ describe("leaving a table", () => {
     // called rather than at the next render, which is what this stands in
     // for: the state here is only ever the last one reported.
     let state = { kind: "idle" } as SaveState;
-    let onScreen: Pending = { rows: [], key: "[]" };
+    let onScreen: Pending = { rows: [], key: "[]", edited: [] };
     let landed: (version: string) => void = () => {};
     const writes = writer({
       pending: () => onScreen,
@@ -91,7 +91,7 @@ describe("leaving a table", () => {
       },
     });
     writes.loaded("[]", "v0");
-    onScreen = { rows: [{ title: "Moss" }], key: '[{"title":"Moss"}]' };
+    onScreen = { rows: [{ title: "Moss" }], key: '[{"title":"Moss"}]', edited: [] };
 
     const going = leave({
       flush: () => writes.save(),
@@ -217,10 +217,12 @@ interface Asked {
   refuse: (e: unknown) => void;
 }
 
-/** What the editor has on screen: the rows, and the text they compare as. */
+/** What the editor has on screen: the rows, the text they compare as, and
+ *  the fields typed into since they were written. */
 interface Screen {
   rows: readonly Row[];
   key: string;
+  edited: EditedLine[];
 }
 
 /** A writer whose writes the test settles, with what it was asked to write,
@@ -233,10 +235,10 @@ function driven(): {
 } {
   const asked: Asked[] = [];
   const states: SaveState[] = [];
-  const screen: Screen = { rows: [], key: "[]" };
+  const screen: Screen = { rows: [], key: "[]", edited: [] };
 
   const writes = writer({
-    pending: () => ({ rows: screen.rows, key: screen.key }),
+    pending: () => ({ rows: screen.rows, key: screen.key, edited: screen.edited }),
     put: (write, version) =>
       new Promise<PutResult>((resolve, reject) => {
         asked.push({
@@ -570,6 +572,71 @@ describe("the writes of one table", () => {
       "The push to origin failed again.",
       null,
     ]);
+  });
+
+  test("count the rows as the server stamped them as written, so taking the stamp in writes nothing", async () => {
+    const { writes, asked, screen, states } = driven();
+    writes.loaded("[]", "v0");
+
+    typed(screen, "Moss");
+    screen.edited = [{ line: 1, fields: ["title"] }];
+    const first = writes.save();
+    await settle();
+    expect(asked[0]!.write.edited).toEqual([{ line: 1, fields: ["title"] }]);
+    asked[0]!.answer({
+      derived: [],
+      errors: [],
+      version: "v1",
+      stamped: [{ line: 1, row: { checked: "2026-09-30", title: "Moss" } }],
+      notice: "The rate is from the file.",
+    });
+    await first;
+
+    // What the file holds, in the order of the page's own keys.
+    expect(writes.written()).toBe('[{"title":"Moss","checked":"2026-09-30"}]');
+    expect(states.at(-1)).toMatchObject({
+      kind: "saved",
+      notice: "The rate is from the file.",
+    });
+
+    // The page takes the stamp in and forgets the edit the write stored. What
+    // is on screen is then what was written, so the save that follows it is
+    // dropped rather than writing the page's adoption of the stamp back.
+    screen.rows = [{ title: "Moss", checked: "2026-09-30" }];
+    screen.key = JSON.stringify(screen.rows);
+    screen.edited = [];
+    await writes.save();
+    expect(asked).toHaveLength(1);
+
+    // The next answer, with no notice, clears the one before.
+    typed(screen, "Moss and lichen");
+    const second = writes.save();
+    await settle();
+    asked[1]!.land("v2");
+    await second;
+    expect(noticeAfter("The rate is from the file.", states.at(-1)!)).toBeNull();
+  });
+
+  test("make a write of rows that read as written where a field was typed into since", async () => {
+    const { writes, asked, screen } = driven();
+    typed(screen, "Moss");
+    writes.loaded(screen.key, "v0");
+
+    // The reader retyped the title as it was, which is how a value is said to
+    // still stand: the rows are unchanged, and the server stamps it all the
+    // same.
+    screen.edited = [{ line: 1, fields: ["title"] }];
+    const retyped = writes.save();
+    await settle();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.write.edited).toEqual([{ line: 1, fields: ["title"] }]);
+    asked[0]!.land("v1");
+    await retyped;
+
+    // Once the edit is forgotten there is nothing left to send.
+    screen.edited = [];
+    await writes.save();
+    expect(asked).toHaveLength(1);
   });
 
   test("do not take a refusal that lands after the table has been read again", async () => {

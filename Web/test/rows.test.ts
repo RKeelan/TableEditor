@@ -13,11 +13,13 @@ import {
   chipsFor,
   compareByColumn,
   controlWidth,
+  dateEdit,
   datalistOptions,
   editsAsLines,
   firstLine,
   hasLineBreak,
   isFigure,
+  isIsoDate,
   linesText,
   mapEntries,
   newRow,
@@ -34,7 +36,7 @@ import {
   writeCell,
   writeMapEntry,
 } from "../src/lib/rows";
-import { apiRoot } from "../src/lib/api";
+import { apiRoot, rowsBody } from "../src/lib/api";
 import { toEntries, visibleIndices } from "../src/lib/entries";
 
 const title: Column = { field: "title", label: "Title", type: "string" };
@@ -115,6 +117,25 @@ describe("the API root", () => {
     expect(apiRoot("/bib/")).toBe("/bib/api");
     expect(apiRoot("/bib/index.html")).toBe("/bib/api");
     expect(apiRoot("/bib")).toBe("/bib/api");
+  });
+});
+
+describe("the body of a derive or a write", () => {
+  const rows = [{ title: "Moss" }];
+
+  test("lists the edits where there are any", () => {
+    const edited = [{ line: 1, fields: ["title"] }];
+    expect(JSON.parse(rowsBody(rows, edited))).toEqual({ rows, edited });
+    expect(JSON.parse(rowsBody(rows, edited, "v1"))).toEqual({
+      rows,
+      version: "v1",
+      edited,
+    });
+  });
+
+  test("leaves them out where there are none, so the rows are not stamped", () => {
+    expect(rowsBody(rows, [])).toBe('{"rows":[{"title":"Moss"}]}');
+    expect(rowsBody(rows, [], "v1")).toBe('{"rows":[{"title":"Moss"}],"version":"v1"}');
   });
 });
 
@@ -427,28 +448,49 @@ describe("muted rows", () => {
   const muted: Schema = { ...schemaOf(), muted_by: "lent" };
 
   test("are the rows holding true in the field the schema names", () => {
-    expect(rowMuted(muted, { title: "Moss", lent: true })).toBe(true);
-    expect(rowMuted(muted, { title: "Moss", lent: false })).toBe(false);
-    expect(rowMuted(muted, { title: "Moss" })).toBe(false);
+    expect(rowMuted(muted, { title: "Moss", lent: true }, null)).toBe(true);
+    expect(rowMuted(muted, { title: "Moss", lent: false }, null)).toBe(false);
+    expect(rowMuted(muted, { title: "Moss" }, null)).toBe(false);
   });
 
   test("do not include a row holding something other than a boolean", () => {
-    expect(rowMuted(muted, { lent: "true" })).toBe(false);
-    expect(rowMuted(muted, { lent: 1 })).toBe(false);
-    expect(rowMuted(muted, { lent: null })).toBe(false);
+    expect(rowMuted(muted, { lent: "true" }, null)).toBe(false);
+    expect(rowMuted(muted, { lent: 1 }, null)).toBe(false);
+    expect(rowMuted(muted, { lent: null }, null)).toBe(false);
   });
 
   test("do not exist where the schema names no field", () => {
-    expect(rowMuted(schemaOf(), { lent: true })).toBe(false);
+    expect(rowMuted(schemaOf(), { lent: true }, { lent: true })).toBe(false);
   });
 
   test("follow the cell as it is edited", () => {
     const row: Row = { title: "Moss", lent: true };
-    expect(rowMuted(muted, writeCell(row, lent, "false", muted))).toBe(false);
-    expect(rowMuted(muted, writeCell(row, lent, "", muted))).toBe(false);
-    expect(rowMuted(muted, writeCell({ title: "Moss" }, lent, "true", muted))).toBe(
-      true,
-    );
+    expect(rowMuted(muted, writeCell(row, lent, "false", muted), null)).toBe(false);
+    expect(rowMuted(muted, writeCell(row, lent, "", muted), null)).toBe(false);
+    expect(
+      rowMuted(muted, writeCell({ title: "Moss" }, lent, "true", muted), null),
+    ).toBe(true);
+  });
+
+  test("are the rows whose derivation holds true under the key the schema names", () => {
+    const stale: Schema = { ...schemaOf(), muted_by_derived: "stale" };
+    expect(rowMuted(stale, { title: "Moss" }, { stale: true })).toBe(true);
+    expect(rowMuted(stale, { title: "Moss" }, { stale: false })).toBe(false);
+    // Only a JSON true mutes, as with a stored field.
+    expect(rowMuted(stale, { title: "Moss" }, { stale: "true" })).toBe(false);
+    expect(rowMuted(stale, { title: "Moss" }, { shelf: "QK" })).toBe(false);
+    expect(rowMuted(stale, { title: "Moss" }, null)).toBe(false);
+    // The stored field of the same name is not what it reads.
+    expect(rowMuted(stale, { title: "Moss", stale: true }, {})).toBe(false);
+  });
+
+  test("are muted where either key says so", () => {
+    const both: Schema = { ...schemaOf(), muted_by: "lent", muted_by_derived: "stale" };
+    expect(rowMuted(both, { lent: true }, { stale: false })).toBe(true);
+    expect(rowMuted(both, { lent: false }, { stale: true })).toBe(true);
+    expect(rowMuted(both, { lent: false }, { stale: false })).toBe(false);
+    // A schema naming only the stored field does not read the derivation.
+    expect(rowMuted(muted, { lent: false }, { lent: true })).toBe(false);
   });
 
   test("sort and filter like any other row", () => {
@@ -923,5 +965,152 @@ describe("where an open cell of several lines goes", () => {
 
   test("never shorter than a cell at rest", () => {
     expect(openBoxPlacement(256, 10, 5, 32)).toEqual({ up: false, max: 32 });
+  });
+});
+
+// ── Dates ───────────────────────────────────────────────────────────────────
+
+const acquired: Column = { field: "acquired", label: "Acquired", type: "date" };
+
+describe("an ISO date", () => {
+  test("is a day written YYYY-MM-DD that exists", () => {
+    expect(isIsoDate("2026-09-30")).toBe(true);
+    expect(isIsoDate("2024-02-29")).toBe(true);
+    expect(isIsoDate("2000-02-29")).toBe(true);
+    expect(isIsoDate("0099-12-31")).toBe(true);
+  });
+
+  test("is not a day that does not exist", () => {
+    expect(isIsoDate("2026-02-30")).toBe(false);
+    expect(isIsoDate("2023-02-29")).toBe(false);
+    expect(isIsoDate("1900-02-29")).toBe(false);
+    expect(isIsoDate("2026-04-31")).toBe(false);
+    expect(isIsoDate("2026-13-01")).toBe(false);
+    expect(isIsoDate("2026-00-10")).toBe(false);
+    expect(isIsoDate("2026-01-00")).toBe(false);
+  });
+
+  test("is not a day written any other way", () => {
+    expect(isIsoDate("2026-9-1")).toBe(false);
+    expect(isIsoDate("26-09-30")).toBe(false);
+    expect(isIsoDate("2026/09/30")).toBe(false);
+    expect(isIsoDate(" 2026-09-30")).toBe(false);
+    expect(isIsoDate("2026-09-30T00:00")).toBe(false);
+    expect(isIsoDate("")).toBe(false);
+  });
+
+  test("is a string", () => {
+    expect(isIsoDate(20260930)).toBe(false);
+    expect(isIsoDate(null)).toBe(false);
+    expect(isIsoDate(undefined)).toBe(false);
+    expect(isIsoDate(new Date(0))).toBe(false);
+  });
+});
+
+describe("a date cell", () => {
+  test("holds a real day, nothing, or an empty string, and anything else is marked", () => {
+    expect(cellMismatch(acquired, { acquired: "2026-09-30" })).toBe(false);
+    expect(cellMismatch(acquired, {})).toBe(false);
+    expect(cellMismatch(acquired, { acquired: "" })).toBe(false);
+    expect(cellMismatch(acquired, { acquired: "2026-02-30" })).toBe(true);
+    expect(cellMismatch(acquired, { acquired: "2026-9-1" })).toBe(true);
+    expect(cellMismatch(acquired, { acquired: 20260930 })).toBe(true);
+    expect(cellMismatch(acquired, { acquired: null })).toBe(true);
+    // Shown as it is stored.
+    expect(cellText(acquired, { acquired: "2026-9-1" }, null)).toBe("2026-9-1");
+  });
+
+  test("writes a whole date, a clear, or nothing for a date half typed", () => {
+    expect(dateEdit("2026-09-30", false)).toEqual({ kind: "date", value: "2026-09-30" });
+    expect(dateEdit("", false)).toEqual({ kind: "clear" });
+    expect(dateEdit("", true)).toEqual({ kind: "none" });
+    // What a text box holding an odd value hands back as it is retyped.
+    expect(dateEdit("2026-02-3", false)).toEqual({ kind: "none" });
+    expect(dateEdit("2026-02-30", false)).toEqual({ kind: "none" });
+  });
+
+  test("stores the day as ISO text and clears by the usual rule", () => {
+    expect(writeCell({}, acquired, "2026-09-30", schemaOf())).toEqual({
+      acquired: "2026-09-30",
+    });
+    expect(
+      "acquired" in writeCell({ acquired: "2026-09-30" }, acquired, "", schemaOf()),
+    ).toBe(false);
+    expect(
+      writeCell({ acquired: "2026-09-30" }, acquired, "", schemaOf({ acquired: "" })),
+    ).toEqual({ acquired: "" });
+    // Anything else is a date half typed, which writes nothing.
+    expect(writeCell({ acquired: "2026-09-30" }, acquired, "2026-09", schemaOf())).toEqual({
+      acquired: "2026-09-30",
+    });
+  });
+
+  test("fits a day however a browser writes it, with room for the picker, unless it says otherwise", () => {
+    // 30-Sep-2026 is the widest a browser writes a day.
+    expect(widthChOf(acquired)).toBe(11);
+    expect(controlWidth(acquired)).toBe(
+      "calc(11ch + var(--field-chrome) + var(--field-picker))",
+    );
+    expect(widthChOf({ ...acquired, width_ch: 12 })).toBe(12);
+    expect(controlWidth({ ...acquired, width_ch: 10 })).toBe(
+      "calc(10ch + var(--field-chrome) + var(--field-picker))",
+    );
+  });
+
+  test("sorts by date, since ISO text does", () => {
+    const a = { row: { acquired: "2019-12-31" }, derived: null };
+    const b = { row: { acquired: "2020-01-01" }, derived: null };
+    expect(compareByColumn(acquired, a, b)).toBeLessThan(0);
+  });
+});
+
+// ── Read-only cells ─────────────────────────────────────────────────────────
+
+describe("a read-only cell", () => {
+  test("reads as the text a cell of its type reads as", () => {
+    const readOnly = (column: Column): Column => ({ ...column, read_only: true });
+    const row: Row = {
+      title: "Moss",
+      year: 1994,
+      lent: true,
+      genre: "reference",
+      edition: 2,
+      shelved: { hb: "one", Central: "Several" },
+      acquired: "2026-09-30",
+    };
+    expect(cellText(readOnly(title), row, null)).toBe("Moss");
+    expect(cellText(readOnly(year), row, null)).toBe("1994");
+    expect(cellText(readOnly(lent), row, null)).toBe("Yes");
+    expect(cellText(readOnly(genre), row, null)).toBe("Reference");
+    expect(cellText(readOnly(edition), row, null)).toBe("Second (2)");
+    expect(cellText(readOnly(shelved), row, null)).toBe("Harbour: One, Central: Several");
+    expect(cellText(readOnly(acquired), row, null)).toBe("2026-09-30");
+    const fx: Column = {
+      field: "fx",
+      label: "FX",
+      type: "number",
+      read_only: true,
+      format: { decimals: 4 },
+    };
+    expect(cellText(fx, { fx: 1.3598 }, null)).toBe("1.3598");
+    // A value its column does not describe reads as it is stored.
+    expect(cellText(readOnly(year), { year: "1994" }, null)).toBe("1994");
+    expect(cellMismatch(readOnly(year), { year: "1994" })).toBe(true);
+  });
+
+  test("is a figure where its numbers have a format, and plain text otherwise", () => {
+    const fx: Column = { ...year, read_only: true, format: { decimals: 4 } };
+    expect(isFigure(fx)).toBe(true);
+    expect(isFigure({ ...year, read_only: true })).toBe(false);
+    expect(isFigure({ ...acquired, read_only: true })).toBe(false);
+  });
+
+  test("draws no control, and so leaves no room for an arrow or a picker", () => {
+    expect(controlWidth({ ...acquired, read_only: true })).toBe(
+      "calc(11ch + var(--field-chrome))",
+    );
+    expect(controlWidth({ ...genre, width_ch: 12, read_only: true })).toBe(
+      "calc(12ch + var(--field-chrome))",
+    );
   });
 });

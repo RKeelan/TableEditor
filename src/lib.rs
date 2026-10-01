@@ -10,7 +10,9 @@
 //! The API is `GET /api/app` for the shell (the app's name and its tables) and
 //! three endpoints per table: `GET /api/<table>` reads, `PUT /api/<table>`
 //! writes, and `POST /api/<table>/derive` validates and derives without
-//! writing. A view is `GET /api/views/<view>`, and what one of its buttons
+//! writing; both of the last two stamp the fields an edit implies through
+//! [`TableLogic::stamp`], told which fields were typed into by [`Edits`]. A
+//! view is `GET /api/views/<view>`, and what one of its buttons
 //! writes is `POST /api/views/<view>/actions/<name>`. `GET /api/health` and
 //! `POST /api/shutdown` control the process. All file I/O runs here, through
 //! the [`Context`] that resolves the `Data/` directory, or takes the one
@@ -79,6 +81,6 @@ pub use schema::{
 #[cfg(feature = "server")]
 pub use server::{Server, ServerArgs, ServerCommand};
 #[cfg(feature = "server")]
-pub use table::{App, Front, Table, TableLogic, Written};
+pub use table::{App, Edits, Front, Stamping, Table, TableLogic, Written};
 #[cfg(feature = "server")]
 pub use view::{Fields, Param, View, ViewArgs, ViewData, ViewLogic};

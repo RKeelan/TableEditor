@@ -101,6 +101,16 @@ export function writeCell(
       }
       break;
     }
+    case "date": {
+      // A day is stored as ISO text or not at all: anything else is a date
+      // half typed, which writes nothing (see dateEdit).
+      if (raw === "") {
+        clearField(next, schema, column.field);
+      } else if (isIsoDate(raw)) {
+        next[column.field] = raw;
+      }
+      break;
+    }
     default: {
       if (raw.trim() === "") {
         clearField(next, schema, column.field);
@@ -118,6 +128,47 @@ export function writeCell(
   }
 
   return next;
+}
+
+// ── Dates ───────────────────────────────────────────────────────────────────
+
+/** Whether a value is a day written `YYYY-MM-DD` that exists: 2026-02-28
+ *  does and 2026-02-30 does not.
+ *
+ *  This is stricter than it need be to read a date, on purpose. A browser's
+ *  date box handed a day that does not exist shows nothing, and a cell that
+ *  looks empty invites an edit over what the file holds, so such a value is
+ *  shown as it is stored and marked instead. */
+export function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  // A day that does not exist rolls over into the next month, which the round
+  // trip catches. Setting the year separately keeps years below 100 from
+  // being read as 19xx.
+  const date = new Date(Date.UTC(2000, month - 1, day));
+  date.setUTCFullYear(year);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+/** What a date box asks to write, given what it holds and whether the
+ *  browser says what was typed is not yet a date.
+ *
+ *  A box that has been cleared is a cleared cell. A box whose date is only
+ *  half typed also reads as empty, and says so through `validity.badInput`:
+ *  it writes nothing, and the stored day stays until a whole one is typed. */
+export function dateEdit(
+  raw: string,
+  badInput: boolean,
+): { kind: "clear" } | { kind: "date"; value: string } | { kind: "none" } {
+  if (raw === "") return badInput ? { kind: "none" } : { kind: "clear" };
+  if (isIsoDate(raw)) return { kind: "date", value: raw };
+  return { kind: "none" };
 }
 
 // ── Lines ───────────────────────────────────────────────────────────────────
@@ -343,9 +394,9 @@ export function formatOf(column: Column): NumberFormat | undefined {
 }
 
 /** Whether a column is a figure: a `number` or a `computed` column with a
- *  format. A figure is right-aligned and drawn in ink, a computed one
- *  included, rather than as the muted read-out a computed column otherwise
- *  gets. */
+ *  format. A figure is right-aligned and drawn in ink, a computed one and a
+ *  read-only one included, rather than as the muted read-out either
+ *  otherwise gets. */
 export function isFigure(column: Column): boolean {
   return formatOf(column) !== undefined;
 }
@@ -372,6 +423,10 @@ export function cellMismatch(column: Column, row: Row): boolean {
       return column.numeric_value
         ? typeof value !== "number"
         : typeof value !== "string";
+    case "date":
+      // An empty string is what a cleared cell holds in a table whose new
+      // rows start with one, and an empty box is what it is.
+      return value !== "" && !isIsoDate(value);
     default:
       return typeof value !== "string";
   }
@@ -521,16 +576,25 @@ export function nextSort(current: Sort | null, field: string): Sort | null {
 
 // ── Muting ──────────────────────────────────────────────────────────────────
 
-/** Whether a row is drawn muted: the schema names a field, and the row holds
- *  exactly `true` there. Anything else—absent, `false`, the string `"true"`—
- *  leaves the row as it is, the same way a boolean cell holding such a value
- *  is marked rather than read as a yes.
+/** Whether a row is drawn muted: the row holds exactly `true` in the field
+ *  the schema's `muted_by` names, or its derivation does under the key
+ *  `muted_by_derived` names. Anything else—absent, `false`, the string
+ *  `"true"`—leaves the row as it is, the same way a boolean cell holding such
+ *  a value is marked rather than read as a yes.
  *
- *  It reads the row on screen, so a row mutes and comes back as soon as the
- *  cell is edited, before the write. It changes nothing else about the row:
- *  what is written, where it sorts, and whether a filter finds it. */
-export function rowMuted(schema: Schema, row: Row): boolean {
-  return schema.muted_by !== undefined && row[schema.muted_by] === true;
+ *  The stored field is read from the row on screen, so a row mutes and comes
+ *  back as soon as the cell is edited, before the write; the derived one
+ *  follows the derivation, so it changes when the next derive answers. It
+ *  changes nothing else about the row: what is written, where it sorts, and
+ *  whether a filter finds it. */
+export function rowMuted(schema: Schema, row: Row, derived: Derived): boolean {
+  if (schema.muted_by !== undefined && row[schema.muted_by] === true) {
+    return true;
+  }
+  return (
+    schema.muted_by_derived !== undefined &&
+    derivedValue(derived, schema.muted_by_derived) === true
+  );
 }
 
 // ── Filtering ───────────────────────────────────────────────────────────────
@@ -707,15 +771,16 @@ export function chipValueStyle(): CSSProperties {
  *  exactly `n` characters would therefore fit two or three fewer than it says,
  *  which is how a ten-character date column clips every date in it. The
  *  padding and border are one custom property so this and the stylesheet
- *  cannot drift apart; a select adds the room its arrow takes, and a
- *  formatted number the room its unit takes.
+ *  cannot drift apart; a select adds the room its arrow takes, a date box
+ *  the room its picker button takes, and a formatted number the room its
+ *  unit takes.
  *
  *  `undefined` means the column named no width and the control keeps whatever
  *  width its own class gives it. */
 export function controlWidth(column: Column): string | undefined {
   const n = widthChOf(column);
   if (n === undefined) return undefined;
-  return `calc(${n + unitChars(column)}ch + var(--field-chrome)${hasArrow(column) ? " + var(--field-arrow)" : ""})`;
+  return `calc(${n + unitChars(column)}ch + var(--field-chrome)${buttonRoom(column)})`;
 }
 
 /** The characters a formatted number's unit takes beside it: the unit and the
@@ -726,15 +791,23 @@ export function unitChars(column: Column): number {
   return unit ? unit.length + 1 : 0;
 }
 
-/** Whether a control draws a dropdown arrow inside its own box: a select
- *  always, and a text input that completes from a datalist, which browsers
- *  give an arrow of its own. */
-function hasArrow(column: Column): boolean {
-  return column.type === "select" || column.datalist !== undefined;
+/** The room a control's own button takes inside its box: a select's arrow,
+ *  the arrow browsers give a text input that completes from a datalist, and
+ *  a date box's picker button, which with the space around it is wider than
+ *  an arrow. A read-only column draws no control, and so no button. */
+function buttonRoom(column: Column): string {
+  if (column.read_only) return "";
+  if (column.type === "date") return " + var(--field-picker)";
+  if (column.type === "select" || column.datalist !== undefined) {
+    return " + var(--field-arrow)";
+  }
+  return "";
 }
 
 /** The character count a column asks for, including the default a text column
- *  takes when it names none. */
+ *  takes when it names none, and a date column's: 11, which fits a day
+ *  however a browser writes it, ISO and 09/30/2026 being 10 and 30-Sep-2026
+ *  11. */
 export function widthChOf(column: Column): number | undefined {
   if (column.width_ch !== undefined) return column.width_ch;
   switch (column.type) {
@@ -743,6 +816,8 @@ export function widthChOf(column: Column): number | undefined {
     case "spaced-string":
     case "multiline":
       return column.wide ? 40 : 16;
+    case "date":
+      return 11;
     default:
       // A number, a select, a boolean and a map are as wide as their own
       // class makes them until a table says otherwise.

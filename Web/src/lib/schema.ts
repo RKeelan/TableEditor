@@ -40,7 +40,8 @@ export type ColumnType =
   | "boolean"
   | "select"
   | "computed"
-  | "map";
+  | "map"
+  | "date";
 
 /** One column. The `map` fields are flattened into the column by the server,
  *  so they are present together or not at all. */
@@ -50,6 +51,9 @@ export interface Column {
   type: ColumnType;
   allow_empty?: boolean;
   wide?: boolean;
+  /** Draw the value without a control: the server sets it, or the file is
+   *  where it is changed. A `computed` column is read-only already. */
+  read_only?: boolean;
   width_ch?: number;
   options?: SelectOption[];
   options_by?: OptionsBy;
@@ -103,6 +107,8 @@ export interface Schema {
   sortable?: boolean;
   /** The field whose value `true` draws a row muted. */
   muted_by?: string;
+  /** The key of each row's derivation whose value `true` draws it muted. */
+  muted_by_derived?: string;
   columns: Column[];
   new_row: NewRowSpec;
   datalists: Record<string, Datalist>;

@@ -17,18 +17,24 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
-    ApiError, App, Button, Column, Context, Detail, DetailRow, DetailSection, Field, Fields, Form,
-    Front, NewRow, Param, Schema, Section, Server, ServerArgs, Status, Table, TableLogic, Tone,
-    ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic,
+    ApiError, App, Button, Column, Context, Detail, DetailRow, DetailSection, Edits, Field, Fields,
+    Form, Front, NewRow, Param, Schema, Section, Server, ServerArgs, Stamping, Status, Table,
+    TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
 const GENRES_FILE: &str = "Genres.jsonl";
 
+/// The day a stamp puts on a book whose year was typed into. A real table
+/// would stamp today; a fixed day keeps the answers comparable.
+const CHECKED: &str = "2026-09-30";
+
 #[derive(Serialize, Deserialize)]
 struct Book {
     title: String,
     year: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checked: Option<String>,
 }
 
 struct Books;
@@ -52,8 +58,22 @@ impl TableLogic for Books {
         Ok(Schema::new([
             Column::string("title", "Title"),
             Column::number("year", "Year"),
+            Column::date("checked", "Checked").read_only(),
         ])
         .new_row(NewRow::new().with("title", "").with("year", 0)))
+    }
+
+    fn stamp(
+        &self,
+        rows: &mut [Book],
+        edits: &Edits,
+        _stamping: Stamping,
+        _ctx: &Context,
+    ) -> Result<Option<String>, ApiError> {
+        for index in edits.rows_touching(&["year"]) {
+            rows[index].checked = Some(CHECKED.to_string());
+        }
+        Ok(None)
     }
 
     fn validate(&self, rows: &[Book], _ctx: &Context) -> Result<Vec<ValidationError>, ApiError> {
@@ -387,6 +407,41 @@ fn the_api_answers_over_http() {
     // is what a script and a client that does not read the version send.
     let (status, _) = request(port, "PUT", "/api/books", rows);
     assert_eq!(status, 200);
+    assert_eq!(
+        std::fs::read_to_string(data.join(BOOKS_FILE)).unwrap(),
+        "{\"title\":\"A Field Guide to Moss\",\"year\":1994}\n{\"title\":\"\",\"year\":2001}\n"
+    );
+
+    // ── Stamps ─────────────────────────────────────────────────────────────
+    // A body that lists the fields the reader typed into is stamped: a derive
+    // shows the stamp and a write stores it, and each answers with the rows
+    // the stamp changed, whole, under their lines.
+    let edited = r#"{"rows":[{"title":"A Field Guide to Moss","year":1994},{"title":"","year":2002}],
+                     "edited":[{"line":2,"fields":["year"]}]}"#;
+    let stamped = json!([{ "line": 2, "row": { "title": "", "year": 2002, "checked": CHECKED } }]);
+    let (status, body) = request(port, "POST", "/api/books/derive", edited);
+    assert_eq!(status, 200);
+    assert_eq!(json(&body)["stamped"], stamped);
+    assert_eq!(
+        std::fs::read_to_string(data.join(BOOKS_FILE)).unwrap(),
+        "{\"title\":\"A Field Guide to Moss\",\"year\":1994}\n{\"title\":\"\",\"year\":2001}\n"
+    );
+
+    let (status, body) = request(port, "PUT", "/api/books", edited);
+    assert_eq!(status, 200);
+    assert_eq!(json(&body)["stamped"], stamped);
+    assert_eq!(
+        std::fs::read_to_string(data.join(BOOKS_FILE)).unwrap(),
+        format!(
+            "{{\"title\":\"A Field Guide to Moss\",\"year\":1994}}\n{{\"title\":\"\",\"year\":2002,\"checked\":\"{CHECKED}\"}}\n"
+        )
+    );
+
+    // A body that lists none is written as it was sent, which is what a
+    // repository's script sends: it stamps what it changes itself.
+    let (status, body) = request(port, "PUT", "/api/books", rows);
+    assert_eq!(status, 200);
+    assert!(json(&body).get("stamped").is_none());
     assert_eq!(
         std::fs::read_to_string(data.join(BOOKS_FILE)).unwrap(),
         "{\"title\":\"A Field Guide to Moss\",\"year\":1994}\n{\"title\":\"\",\"year\":2001}\n"
