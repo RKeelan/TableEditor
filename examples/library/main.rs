@@ -15,14 +15,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
     ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
-    DetailSection, Edits, Field, Fields, Form, Format, Front, MapSpec, NewRow, OptionsBy, Param,
-    RowLink, Schema, Section, SelectOption, Server, ServerArgs, Speak, Stamping, Status, Table,
-    TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic, Written,
+    DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec, NewRow, OptionsBy,
+    Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server, ServerArgs, Speak,
+    Stamping, Status, Table, TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink,
+    ViewLogic, Written,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
 const GENRES_FILE: &str = "Genres.jsonl";
 const BRANCHES_FILE: &str = "Branches.jsonl";
+const PURCHASES_FILE: &str = "Purchases.jsonl";
 
 const DEFAULT_PORT: u16 = 8791;
 
@@ -98,6 +100,18 @@ struct Branch {
     open: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     hours: BTreeMap<String, String>,
+}
+
+/// Something a branch bought, under the code of the branch that bought it.
+#[derive(Debug, Serialize, Deserialize)]
+struct Purchase {
+    branch: String,
+    item: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<f64>,
+    /// The day it was ordered, as `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    ordered: String,
 }
 
 // ── Books ───────────────────────────────────────────────────────────────────
@@ -526,6 +540,85 @@ impl TableLogic for Branches {
                 _ => json!({}),
             })
             .collect())
+    }
+}
+
+// ── Purchases ───────────────────────────────────────────────────────────────
+
+/// What each branch bought, in a group of its own under a heading with what
+/// it spent, and what every branch spent pinned at the foot.
+struct Purchases;
+
+impl TableLogic for Purchases {
+    type Row = Purchase;
+
+    fn name(&self) -> &'static str {
+        "purchases"
+    }
+
+    fn file(&self) -> &'static str {
+        PURCHASES_FILE
+    }
+
+    fn title(&self) -> &'static str {
+        "Purchases"
+    }
+
+    /// Grouped by branch, which is not a column: the heading says which
+    /// branch a group is, and a row is added to a branch through its group.
+    fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+        Ok(Schema::new([
+            Column::string("item", "Item").wide(),
+            Column::number("cost", "Cost")
+                .format(Format::money())
+                .width_ch(8),
+            Column::date("ordered", "Ordered"),
+        ])
+        .group_by("branch")
+        .sortable()
+        .new_row(NewRow::new().with("item", "").carry_forward(["ordered"])))
+    }
+
+    fn validate(
+        &self,
+        rows: &[Purchase],
+        _ctx: &Context,
+    ) -> Result<Vec<ValidationError>, ApiError> {
+        Ok(rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.item.trim().is_empty())
+            .map(|(idx, _)| ValidationError::field(idx + 1, "item", "say what was bought"))
+            .collect())
+    }
+
+    /// A group for every branch, in the order the Branches table lists them,
+    /// whether or not it has bought anything, so the first purchase of one
+    /// that has not can be added. Each heading carries the branch's name, its
+    /// code, and what it spent; a closed branch says so, and one with no
+    /// budget notes that what it spent was spent without one.
+    fn overview(&self, rows: &[Purchase], ctx: &Context) -> Result<Overview, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let spent = |code: Option<&str>| -> f64 {
+            rows.iter()
+                .filter(|row| code.is_none_or(|code| row.branch == code))
+                .filter_map(|row| row.cost)
+                .sum()
+        };
+        Ok(Overview::new()
+            .groups(branches.iter().map(|branch| {
+                let mut group = RowGroup::new(&branch.code, &branch.name)
+                    .fact(&branch.code)
+                    .value("cost", spent(Some(&branch.code)));
+                if branch.open == Some(false) {
+                    group = group.fact("closed");
+                }
+                if branch.budget.is_none() {
+                    group = group.note("unbudgeted");
+                }
+                group
+            }))
+            .footer(Footer::new("All branches").value("cost", spent(None))))
     }
 }
 
@@ -1214,6 +1307,7 @@ struct Library {
     books: Books,
     genres: Genres,
     branches: Branches,
+    purchases: Purchases,
     on_loan: OnLoan,
     branch_cards: BranchCards,
     branch_detail: BranchDetail,
@@ -1230,7 +1324,7 @@ impl App for Library {
     }
 
     fn tables(&self) -> Vec<&dyn Table> {
-        vec![&self.books, &self.genres, &self.branches]
+        vec![&self.books, &self.genres, &self.branches, &self.purchases]
     }
 
     fn views(&self) -> Vec<&dyn View> {
@@ -1298,6 +1392,7 @@ fn main() -> anyhow::Result<()> {
             books: Books,
             genres: Genres,
             branches: Branches,
+            purchases: Purchases,
             on_loan: OnLoan,
             branch_cards: BranchCards,
             branch_detail: BranchDetail,

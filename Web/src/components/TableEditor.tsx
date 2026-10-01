@@ -1,7 +1,9 @@
 import {
+  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,9 +12,20 @@ import { type DeriveResult, deriveTable, getTable, putTable } from "../lib/api";
 import { describeError } from "../lib/errors";
 import { editText, formatNumber, numberParts, parseEditText } from "../lib/format";
 import {
+  type DrawnGroup,
+  fallbackTitle,
+  groupInsertIndex,
+  groupRows,
+  groupTextOf,
+  lineCells,
+  lineValueText,
+  newGroupRow,
+} from "../lib/groups";
+import {
   type Column,
   type Derived,
   type NumberFormat,
+  type Overview,
   type Schema,
   type ValidationError,
 } from "../lib/schema";
@@ -43,8 +56,10 @@ import {
   editEntry,
   editedLines,
   entryRows,
+  insertEntry,
   markEdited,
   moveEntry,
+  nextEntryId,
   removeEntry,
   restoreEntry,
   settleEdits,
@@ -85,9 +100,13 @@ const NO_EDITS = "[]";
 // the sum of the sizes in the markup below: the cell's padding (12 + 8), a drag
 // handle (24), a gap (8), and a delete button (32); and, where the table has a
 // link, a wider gap (8 + 12) and the link (32), kept apart from the delete
-// button so that a thumb aiming at one does not land on the other.
+// button so that a thumb aiming at one does not land on the other. A grouped
+// table's rows are not dragged, so its controls are those less the handle and
+// its gap.
 const CONTROLS = 84;
 const CONTROLS_WITH_LINK = 136;
+const GROUPED_CONTROLS = 52;
+const GROUPED_CONTROLS_WITH_LINK = 104;
 
 interface Props {
   table: string;
@@ -105,6 +124,9 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const [entries, setEntries] = useState<RowEntry[]>([]);
   const [derived, setDerived] = useState<unknown[]>([]);
   const [errors, setErrors] = useState<ValidationError[]>([]);
+  // The headings of the groups and the footer, which follow the derivation:
+  // they are of the same rows.
+  const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [filterNote, setFilterNote] = useState(false);
@@ -173,6 +195,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
       appliedSeq.current = id;
       setDerived(res.derived);
       setErrors(res.errors);
+      setOverview(res.overview ?? null);
       return true;
     },
     [],
@@ -286,6 +309,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
       setSaved(loaded);
       setDerived(data.derived);
       setErrors(data.errors);
+      setOverview(data.overview ?? null);
       setUndoable([]);
       appliedSeq.current = ++reqSeq.current;
     } catch (e) {
@@ -421,9 +445,23 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const plan = useMemo(() => parseFilter(filter, columns), [filter, columns]);
   const filtering = plan.terms.length > 0;
 
+  // In a grouped table the filter finds a row by its group's heading too.
+  const known = useMemo(
+    () => (schema ? groupTextOf(schema, overview) : undefined),
+    [schema, overview],
+  );
+
   const visible = useMemo(
-    () => visibleIndices(entries, derived, columns, plan, sort),
-    [entries, derived, columns, plan, sort],
+    () => visibleIndices(entries, derived, columns, plan, sort, known),
+    [entries, derived, columns, plan, sort, known],
+  );
+
+  const groups = useMemo(
+    () =>
+      schema?.group_by === undefined
+        ? null
+        : groupRows(entries, visible, schema, overview, filtering),
+    [entries, visible, schema, overview, filtering],
   );
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -501,6 +539,80 @@ export function TableEditor({ table, views, pending, go }: Props) {
     setEntries((prev) => appendEntry(prev, newRow(schema, entryRows(prev))));
   }, [schema, plan.terms]);
 
+  // The row a group's control added, whose first editable cell takes the
+  // focus once it is drawn.
+  const focusEntry = useRef<number | null>(null);
+
+  const addToGroup = useCallback(
+    (key: string) => {
+      if (!schema) return;
+      forgetUndo();
+      if (plan.terms) {
+        setFilter("");
+        setFilterNote(true);
+      }
+      setEntries((prev) => {
+        const rows = entryRows(prev);
+        const order = groupRows(prev, rows.map((_, i) => i), schema, overview, false).map(
+          (group) => group.key,
+        );
+        const at = groupInsertIndex(rows, order, schema.group_by ?? "", key);
+        focusEntry.current = nextEntryId(prev);
+        return insertEntry(prev, at, newGroupRow(schema, rows, key));
+      });
+    },
+    [schema, overview, plan.terms],
+  );
+
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+
+  useEffect(() => {
+    const id = focusEntry.current;
+    if (id === null) return;
+    focusEntry.current = null;
+    paneRef.current
+      ?.querySelector<HTMLElement>(
+        `tr[data-entry="${id}"] > td:not(:first-child) :is(input, select, textarea, button)`,
+      )
+      ?.focus();
+  }, [entries]);
+
+  // Where the header and the footer sit against the box the table is drawn
+  // in, since their outer corners round only where they are the box's: the
+  // header stuck when it is not at the box's top edge, the footer when it is
+  // not at its bottom edge, and the table narrow when it stops short of the
+  // box's right-hand edge. A scrollbar is inside the box, so a row held
+  // against one is not at the box's edge either.
+  const [headStuck, setHeadStuck] = useState(false);
+  const [footStuck, setFootStuck] = useState(false);
+  const [narrow, setNarrow] = useState(false);
+  const markStuck = useCallback(() => {
+    const pane = paneRef.current;
+    const grid = tableRef.current;
+    if (!pane || !grid) return;
+    const box = pane.getBoundingClientRect();
+    const head = grid.tHead?.getBoundingClientRect();
+    const foot = grid.tFoot?.getBoundingClientRect();
+    const away = (from: number, edge: number) => Math.abs(from - edge) > 0.5;
+    setHeadStuck(head !== undefined && away(head.top, box.top + pane.clientTop));
+    setFootStuck(foot !== undefined && away(foot.bottom, box.bottom - pane.clientTop));
+    setNarrow(grid.getBoundingClientRect().right < box.right - pane.clientLeft - 0.5);
+  }, []);
+
+  const loaded = schema !== null;
+  useLayoutEffect(() => {
+    const pane = paneRef.current;
+    const grid = tableRef.current;
+    if (!loaded || !pane || !grid) return;
+    markStuck();
+    // The rows growing or shrinking moves the foot as surely as a scroll.
+    const observer = new ResizeObserver(markStuck);
+    observer.observe(pane);
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [loaded, markStuck]);
+
   // ── Reordering, which a sorted view has no order to reorder ───────────────
   const dragSource = useRef<number | null>(null);
 
@@ -529,15 +641,64 @@ export function TableEditor({ table, views, pending, go }: Props) {
   }
 
   const banner = saveBanner(save);
-  const reorderable = sort === null && !filtering;
+  const grouped = groups !== null;
+  // A grouped table's rows belong to their groups, so they are never dragged.
+  const reorderable = !grouped && sort === null && !filtering;
   const link = schema.link;
   const linkTitle = link
     ? (views.find((v) => v.view === link.view)?.title ?? link.view)
     : "";
-  const controls = link ? CONTROLS_WITH_LINK : CONTROLS;
+  const controls = grouped
+    ? link
+      ? GROUPED_CONTROLS_WITH_LINK
+      : GROUPED_CONTROLS
+    : link
+      ? CONTROLS_WITH_LINK
+      : CONTROLS;
   const savedById = new Map(saved.map((e) => [e.id, e.row]));
+  const footer = overview?.footer;
   const headCls =
     "sticky top-0 z-20 border-b border-border bg-raised py-2 font-medium";
+
+  const rowAt = (idx: number) => {
+    const entry = entries[idx];
+    const errs = errorsByLine.get(idx + 1) ?? [];
+    return (
+      <TableRow
+        key={entry.id}
+        entry={entry}
+        position={idx}
+        columns={columns}
+        derived={derived[idx] as Derived}
+        errFields={new Set(errs.map((e) => e.field ?? ""))}
+        errTitle={errs
+          .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
+          .join("\n")}
+        handle={!grouped}
+        reorderable={reorderable}
+        muted={rowMuted(schema, entry.row, derived[idx] as Derived)}
+        target={
+          link ? savedRowTarget(link, table, entry.row, savedById.get(entry.id)) : null
+        }
+        linkTitle={linkTitle}
+        go={go}
+        onCell={setCell}
+        onMapEntry={setMapEntry}
+        onDelete={onDelete}
+        onDragStart={() => (dragSource.current = idx)}
+        onDrop={() => onDrop(idx)}
+      />
+    );
+  };
+
+  const addRowButton = (
+    <button
+      onClick={addRow}
+      className="w-full select-none py-3 text-center text-xs text-muted transition hover:bg-raised/60 hover:text-accent"
+    >
+      + Add row
+    </button>
+  );
 
   // A table is data, and its widths are counted in characters, so the whole of
   // it is set in the monospaced face at the size the grid was designed around.
@@ -610,8 +771,19 @@ export function TableEditor({ table, views, pending, go }: Props) {
 
       {/* The pane is the only thing that scrolls sideways, and it takes
           whatever height the header and the bars leave it. */}
-      <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40">
+      <div
+        ref={paneRef}
+        onScroll={markStuck}
+        className={
+          "table-box mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40" +
+          (headStuck ? " head-stuck" : "") +
+          (footStuck ? " foot-stuck" : "") +
+          (narrow ? " narrow" : "") +
+          (footer ? " has-footer" : "")
+        }
+      >
         <table
+          ref={tableRef}
           className="border-collapse text-left"
           style={{ "--controls": `${controls}px` } as React.CSSProperties}
         >
@@ -658,51 +830,56 @@ export function TableEditor({ table, views, pending, go }: Props) {
               ))}
             </tr>
           </thead>
-          <tbody>
-            {visible.map((idx) => {
-              const entry = entries[idx];
-              const errs = errorsByLine.get(idx + 1) ?? [];
-              return (
-                <TableRow
-                  key={entry.id}
-                  entry={entry}
-                  position={idx}
-                  columns={columns}
-                  derived={derived[idx] as Derived}
-                  errFields={new Set(errs.map((e) => e.field ?? ""))}
-                  errTitle={errs
-                    .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
-                    .join("\n")}
-                  reorderable={reorderable}
-                  muted={rowMuted(schema, entry.row, derived[idx] as Derived)}
-                  target={
-                    link
-                      ? savedRowTarget(link, table, entry.row, savedById.get(entry.id))
-                      : null
-                  }
-                  linkTitle={linkTitle}
-                  go={go}
-                  onCell={setCell}
-                  onMapEntry={setMapEntry}
-                  onDelete={onDelete}
-                  onDragStart={() => (dragSource.current = idx)}
-                  onDrop={() => onDrop(idx)}
-                />
-              );
-            })}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={columns.length + 1}>
-                <button
-                  onClick={addRow}
-                  className="w-full select-none py-3 text-center text-xs text-muted transition hover:bg-raised/60 hover:text-accent"
-                >
-                  + Add row
-                </button>
-              </td>
-            </tr>
-          </tfoot>
+          {groups ? (
+            // Each group is a body of its own: its heading, its rows, and its
+            // control for adding a row, which is the only way one is added.
+            groups.map((group) => (
+              <tbody key={`group:${group.key}`}>
+                <GroupHead group={group} columns={columns} />
+                {group.indices.map(rowAt)}
+                <tr className="group-add">
+                  <td colSpan={columns.length + 1}>
+                    <button
+                      type="button"
+                      onClick={() => addToGroup(group.key)}
+                      aria-label={`Add a row to ${group.heading?.title ?? fallbackTitle(group.key)}`}
+                    >
+                      + Add row
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            ))
+          ) : (
+            <tbody>
+              {visible.map(rowAt)}
+              {/* With a footer pinned at the foot, adding a row is the last
+                  row of the body, so the footer is the one thing pinned. */}
+              {footer && (
+                <tr>
+                  <td colSpan={columns.length + 1}>{addRowButton}</td>
+                </tr>
+              )}
+            </tbody>
+          )}
+          {footer ? (
+            <tfoot>
+              <tr className="total">
+                <td />
+                <LineCells columns={columns} values={footer.values}>
+                  {footer.title}
+                </LineCells>
+              </tr>
+            </tfoot>
+          ) : (
+            !grouped && (
+              <tfoot>
+                <tr>
+                  <td colSpan={columns.length + 1}>{addRowButton}</td>
+                </tr>
+              </tfoot>
+            )
+          )}
         </table>
       </div>
 
@@ -711,8 +888,11 @@ export function TableEditor({ table, views, pending, go }: Props) {
           ? `${visible.length} of ${entries.length} record(s).`
           : `${entries.length} record(s).`}
         {filterNote && " Filter cleared so the new row is in view."}
-        {sort && " Sorted; dragging is off and writes keep the stored order."}
-        {!sort && filtering && " Dragging is off while a filter is on."}
+        {sort &&
+          (grouped
+            ? " Sorted within each group; writes keep the stored order."
+            : " Sorted; dragging is off and writes keep the stored order.")}
+        {!sort && filtering && !grouped && " Dragging is off while a filter is on."}
       </p>
 
       {Object.entries(datalists).map(([id, options]) => (
@@ -734,6 +914,9 @@ interface RowProps {
   derived: Derived;
   errFields: Set<string>;
   errTitle: string;
+  /** Whether the row has a drag handle at all, which a grouped table's do
+   *  not. */
+  handle: boolean;
   reorderable: boolean;
   /** Whether the row is drawn muted, which is all it changes. */
   muted: boolean;
@@ -758,6 +941,7 @@ function TableRow(p: RowProps) {
   return (
     <tr
       data-row={p.position}
+      data-entry={p.entry.id}
       data-muted={p.muted || undefined}
       title={p.errTitle || undefined}
       onDragOver={(e) => e.preventDefault()}
@@ -772,24 +956,26 @@ function TableRow(p: RowProps) {
         className={`sticky left-0 z-10 w-[var(--controls)] whitespace-nowrap py-1 pl-3 pr-2 ${stuck}`}
       >
         <span className="flex items-center gap-2">
-          <span
-            draggable={p.reorderable}
-            onDragStart={p.reorderable ? p.onDragStart : undefined}
-            title={
-              p.reorderable
-                ? "Drag to reorder"
-                : "Reordering is off while the view is sorted or filtered"
-            }
-            aria-hidden
-            className={
-              "flex h-8 w-6 select-none items-center justify-center " +
-              (p.reorderable
-                ? "cursor-grab text-muted hover:text-ink"
-                : "cursor-default text-border")
-            }
-          >
-            ⋮⋮
-          </span>
+          {p.handle && (
+            <span
+              draggable={p.reorderable}
+              onDragStart={p.reorderable ? p.onDragStart : undefined}
+              title={
+                p.reorderable
+                  ? "Drag to reorder"
+                  : "Reordering is off while the view is sorted or filtered"
+              }
+              aria-hidden
+              className={
+                "flex h-8 w-6 select-none items-center justify-center " +
+                (p.reorderable
+                  ? "cursor-grab text-muted hover:text-ink"
+                  : "cursor-default text-border")
+              }
+            >
+              ⋮⋮
+            </span>
+          )}
           <button
             type="button"
             onClick={() => p.onDelete(p.entry.id)}
@@ -826,6 +1012,100 @@ function TableRow(p: RowProps) {
         />
       ))}
     </tr>
+  );
+}
+
+// ── Headings and the footer ────────────────────────────────────────────────
+/** A group's heading: an empty controls cell, then the title with the facts
+ *  after it and the note at its far end, then the values under their
+ *  columns. A group the overview did not give is headed with the value its
+ *  rows hold. */
+function GroupHead({
+  group,
+  columns,
+}: {
+  group: DrawnGroup;
+  columns: readonly Column[];
+}) {
+  const heading = group.heading;
+  return (
+    <tr className="group-head">
+      <td />
+      <LineCells columns={columns} values={heading?.values} header>
+        <span className="group-title">
+          {heading?.title ?? fallbackTitle(group.key)}
+        </span>
+        {heading?.facts?.map((fact, i) => (
+          <span key={i} className="group-fact">
+            {" "}
+            {fact}
+          </span>
+        ))}
+        {heading?.note && <span className="group-note">{heading.note}</span>}
+      </LineCells>
+    </tr>
+  );
+}
+
+/** The cells after the controls of a heading or the footer, lined up with
+ *  the columns by `lineCells`: the title, given as `children`, then each
+ *  column's value or nothing. A heading's title cell heads its group's rows
+ *  for a screen reader. */
+function LineCells({
+  columns,
+  values,
+  header = false,
+  children,
+}: {
+  columns: readonly Column[];
+  values: Readonly<Record<string, unknown>> | undefined;
+  header?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      {lineCells(columns, values).map((cell, i) => {
+        if (cell.kind === "title") {
+          const label = <div className="line-label">{children}</div>;
+          return header ? (
+            <th key={i} scope="rowgroup" colSpan={cell.span}>
+              {label}
+            </th>
+          ) : (
+            <td key={i} colSpan={cell.span}>
+              {label}
+            </td>
+          );
+        }
+        if (cell.kind === "empty") return <td key={i} />;
+        return (
+          <td key={i}>
+            <LineValue column={cell.column} value={cell.value} />
+          </td>
+        );
+      })}
+    </>
+  );
+}
+
+/** A heading's or the footer's value, read the way its column reads its own
+ *  cells and drawn as a right-aligned read-out as wide as the column's. */
+function LineValue({ column, value }: { column: Column; value: unknown }) {
+  const text = lineValueText(column, value);
+  const format = formatOf(column);
+  const parts =
+    format && typeof value === "number"
+      ? numberParts(value, format)
+      : { number: text, unit: null };
+  return (
+    <span
+      className="readout figure text-right tabular-nums"
+      style={{ width: controlWidth(column) }}
+      title={text || undefined}
+    >
+      {parts.number}
+      {parts.unit && <span className="unit">{parts.unit}</span>}
+    </span>
   );
 }
 

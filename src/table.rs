@@ -16,6 +16,7 @@ use crate::context::Context;
 use crate::error::{ApiError, ParseError, ValidationError};
 use crate::head::Icon;
 use crate::jsonl;
+use crate::overview::Overview;
 use crate::schema::{RowLink, Schema};
 use crate::view::View;
 
@@ -246,6 +247,16 @@ pub trait TableLogic: Send + Sync + 'static {
         Ok(None)
     }
 
+    /// The headings of the table's groups and its footer. Rebuilt with every
+    /// read, derive and write, from the rows each is about, so its figures
+    /// follow the rows as they are typed. The default is neither.
+    ///
+    /// Two groups with one key fail the request, and so, on a read, does a
+    /// value under a field none of the columns is.
+    fn overview(&self, _rows: &[Self::Row], _ctx: &Context) -> Result<Overview, ApiError> {
+        Ok(Overview::new())
+    }
+
     /// Cross-table data a bespoke editor needs. The schema-driven editor
     /// ignores it.
     fn siblings(&self, _ctx: &Context) -> Result<serde_json::Value, ApiError> {
@@ -357,13 +368,13 @@ pub trait Table: Send + Sync {
     fn row_link(&self) -> Option<RowLink>;
 
     /// `GET /api/<table>`: the schema, the stored rows, their derivation, their
-    /// validation errors, any sibling data, and the version of the file the
-    /// rows were read from.
+    /// validation errors, their overview, any sibling data, and the version of
+    /// the file the rows were read from.
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError>;
 
     /// `PUT /api/<table>`: write the posted rows, stamped where the body lists
-    /// edits, and return their derivation, the version the file now has, and
-    /// the rows the stamp changed.
+    /// edits, and return their derivation and overview, the version the file
+    /// now has, and the rows the stamp changed.
     ///
     /// A body that states the version its rows were read at is refused with a
     /// 409 where the file now holds something else, so a client holding a whole
@@ -379,7 +390,8 @@ pub trait Table: Send + Sync {
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError>;
 
     /// `POST /api/<table>/derive`: stamp the posted rows as a preview where
-    /// the body lists edits, then derive and validate them without writing.
+    /// the body lists edits, then derive and validate them and build their
+    /// overview, without writing.
     fn handle_derive(&self, ctx: &Context, body: &str) -> Result<String, ApiError>;
 }
 
@@ -415,11 +427,18 @@ impl<T: TableLogic> Table for T {
         schema.identify(self.name(), self.title());
         schema.link_rows(self.link())?;
 
+        // The values of the headings and the footer are checked against the
+        // columns here, since a read is what builds the schema; a derive or a
+        // write builds none.
+        let (derived, errors, overview) = self.derivation(ctx, &rows)?;
+        overview.check_fields(self.name(), &schema)?;
+
         to_json(&GetPayload {
             schema,
             rows: &rows,
-            derived: self.derive(&rows, ctx)?,
-            errors: self.validate(&rows, ctx)?,
+            derived,
+            errors,
+            overview,
             siblings: self.siblings(ctx)?,
             version: ctx.version(file)?,
         })
@@ -447,10 +466,11 @@ impl<T: TableLogic> Table for T {
         let edits = edits_of(&request.edited, rows.len())?;
         // A preview's sentence is not shown: the write says what it has to.
         let (stamped, _) = self.stamping(ctx, &mut rows, &edits, Stamping::Preview)?;
-        let (derived, errors) = self.derivation(ctx, &rows)?;
+        let (derived, errors, overview) = self.derivation(ctx, &rows)?;
         to_json(&DeriveResponse {
             derived,
             errors,
+            overview,
             stamped,
         })
     }
@@ -488,12 +508,13 @@ fn save<T: TableLogic>(table: &T, ctx: &Context, body: &str) -> Result<PutRespon
     let text = table
         .serialize(&rows)
         .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?;
-    let (derived, errors) = table.derivation(ctx, &rows)?;
+    let (derived, errors, overview) = table.derivation(ctx, &rows)?;
     ctx.write(file, &text)?;
 
     Ok(PutResponse {
         derived,
         errors,
+        overview,
         version: ctx.version(file)?,
         stamped,
         notice,
@@ -521,15 +542,21 @@ fn edits_of(edited: &[EditedLine], rows: usize) -> Result<Edits, ApiError> {
     Ok(edits)
 }
 
-/// The shared tail of a write and a derivation: what the rows in hand derive to,
-/// and what is wrong with them, and before that, what they are stamped with.
+/// The shared tail of a read, a write and a derivation: what the rows in hand
+/// derive to, what is wrong with them, and what is said of them taken
+/// together, all of one set of rows; and before that, for a write and a
+/// derivation, what they are stamped with.
 trait Derivation: TableLogic {
     fn derivation(
         &self,
         ctx: &Context,
         rows: &[Self::Row],
-    ) -> Result<(Vec<serde_json::Value>, Vec<ValidationError>), ApiError> {
-        Ok((self.derive(rows, ctx)?, self.validate(rows, ctx)?))
+    ) -> Result<(Vec<serde_json::Value>, Vec<ValidationError>, Overview), ApiError> {
+        let derived = self.derive(rows, ctx)?;
+        let errors = self.validate(rows, ctx)?;
+        let overview = self.overview(rows, ctx)?;
+        overview.check_keys(self.name())?;
+        Ok((derived, errors, overview))
     }
 
     /// Stamp the rows, and say which the stamp changed, each whole under its
@@ -621,6 +648,10 @@ struct GetPayload<'a, R> {
     rows: &'a [R],
     derived: Vec<serde_json::Value>,
     errors: Vec<ValidationError>,
+    /// Absent where the table's overview says nothing, as it is in the PUT
+    /// and derive answers.
+    #[serde(skip_serializing_if = "Overview::is_empty")]
+    overview: Overview,
     siblings: serde_json::Value,
     /// The version of the file `rows` were read from, which a write states
     /// back.
@@ -632,6 +663,8 @@ struct GetPayload<'a, R> {
 struct PutResponse {
     derived: Vec<serde_json::Value>,
     errors: Vec<ValidationError>,
+    #[serde(skip_serializing_if = "Overview::is_empty")]
+    overview: Overview,
     /// The version the file now has, which the next write states.
     version: String,
     /// The rows the stamp changed, as they were written.
@@ -649,6 +682,8 @@ struct PutResponse {
 struct DeriveResponse {
     derived: Vec<serde_json::Value>,
     errors: Vec<ValidationError>,
+    #[serde(skip_serializing_if = "Overview::is_empty")]
+    overview: Overview,
     /// The rows the preview's stamp changed, as it left them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stamped: Vec<Stamped>,
@@ -674,6 +709,7 @@ mod tests {
 
     use super::*;
     use crate::fixture::{self, BOOKS_FILE, Book, Books, GENRES_FILE, Genre, Genres};
+    use crate::overview::{Footer, RowGroup};
     use crate::schema::Column;
 
     #[test]
@@ -1581,6 +1617,197 @@ mod tests {
             edits_of(&request.edited, request.rows.len()).unwrap(),
             Edits::new().with(0, ["title"]).with(1, ["title", "value"])
         );
+    }
+
+    // ── Overviews ──────────────────────────────────────────────────────────
+
+    const PURCHASES_FILE: &str = "Purchases.jsonl";
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Purchase {
+        branch: String,
+        item: String,
+        cost: f64,
+    }
+
+    /// A table grouped by branch, a group for each of `branches` headed with
+    /// what it spent under `under`, and a footer with what all of them spent.
+    struct Purchases {
+        branches: &'static [&'static str],
+        under: &'static str,
+    }
+
+    impl Default for Purchases {
+        fn default() -> Self {
+            Self {
+                branches: &["cen", "est"],
+                under: "cost",
+            }
+        }
+    }
+
+    impl TableLogic for Purchases {
+        type Row = Purchase;
+
+        fn name(&self) -> &'static str {
+            "purchases"
+        }
+
+        fn file(&self) -> &'static str {
+            PURCHASES_FILE
+        }
+
+        fn title(&self) -> &'static str {
+            "Purchases"
+        }
+
+        fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+            Ok(Schema::new([
+                Column::string("item", "Item"),
+                Column::number("cost", "Cost"),
+            ])
+            .group_by("branch"))
+        }
+
+        fn validate(
+            &self,
+            _rows: &[Purchase],
+            _ctx: &Context,
+        ) -> Result<Vec<ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+
+        fn overview(&self, rows: &[Purchase], _ctx: &Context) -> Result<Overview, ApiError> {
+            let spent = |branch: Option<&str>| -> f64 {
+                rows.iter()
+                    .filter(|row| branch.is_none_or(|b| row.branch == b))
+                    .map(|row| row.cost)
+                    .sum()
+            };
+            Ok(Overview::new()
+                .groups(self.branches.iter().map(|branch| {
+                    RowGroup::new(*branch, branch.to_uppercase())
+                        .value(self.under, spent(Some(branch)))
+                }))
+                .footer(Footer::new("All branches").value(self.under, spent(None))))
+        }
+    }
+
+    const ATLAS: &str = r#"{"branch":"cen","item":"Atlas","cost":40.0}"#;
+    const GLOBE: &str = r#"{"branch":"est","item":"Globe","cost":12.5}"#;
+
+    /// The overview of a central branch that spent `cen` and an eastern one
+    /// that spent `est`.
+    fn spent(cen: f64, est: f64) -> Value {
+        serde_json::json!({
+            "groups": [{ "key": "cen", "title": "CEN", "values": { "cost": cen } },
+                       { "key": "est", "title": "EST", "values": { "cost": est } }],
+            "footer": { "title": "All branches", "values": { "cost": cen + est } } })
+    }
+
+    #[test]
+    fn every_answer_carries_the_overview_of_the_rows_it_is_about() {
+        let dir = fixture::temp_dir();
+        dir.write(PURCHASES_FILE, ATLAS);
+        let table = Purchases::default();
+
+        let got: Value = serde_json::from_str(&table.handle_get(&dir.context()).unwrap()).unwrap();
+        assert_eq!(got["overview"], spent(40.0, 0.0));
+        assert_eq!(got["schema"]["group_by"], "branch");
+
+        // A derive's and a write's are of the rows they were sent, so a total
+        // follows what is typed before anything is written.
+        let body = format!(r#"{{"rows":[{ATLAS},{GLOBE}]}}"#);
+        let derived: Value =
+            serde_json::from_str(&table.handle_derive(&dir.context(), &body).unwrap()).unwrap();
+        assert_eq!(derived["overview"], spent(40.0, 12.5));
+        assert_eq!(dir.read(PURCHASES_FILE), format!("{ATLAS}\n"));
+
+        let put: Value =
+            serde_json::from_str(&table.handle_put(&dir.context(), &body).unwrap()).unwrap();
+        assert_eq!(put["overview"], spent(40.0, 12.5));
+        assert_eq!(dir.read(PURCHASES_FILE), format!("{ATLAS}\n{GLOBE}\n"));
+    }
+
+    #[test]
+    fn an_overview_that_says_nothing_adds_no_key_to_any_answer() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::MOSS);
+        let keys = |answer: String| -> Vec<String> {
+            let v: Value = serde_json::from_str(&answer).unwrap();
+            v.as_object().unwrap().keys().cloned().collect()
+        };
+
+        // The keys a table that leaves `overview` alone answered with before
+        // there were overviews.
+        assert_eq!(
+            keys(Books.handle_get(&dir.context()).unwrap()),
+            ["derived", "errors", "rows", "schema", "siblings", "version"]
+        );
+        assert_eq!(
+            keys(Books.handle_derive(&dir.context(), &body).unwrap()),
+            ["derived", "errors"]
+        );
+        assert_eq!(
+            keys(Books.handle_put(&dir.context(), &body).unwrap()),
+            ["derived", "errors", "version"]
+        );
+
+        // A table with groups to head adds the one key.
+        dir.write(PURCHASES_FILE, ATLAS);
+        let grouped = format!(r#"{{"rows":[{ATLAS}]}}"#);
+        let table = Purchases::default();
+        assert_eq!(
+            keys(table.handle_derive(&dir.context(), &grouped).unwrap()),
+            ["derived", "errors", "overview"]
+        );
+    }
+
+    #[test]
+    fn two_groups_with_one_key_fail_every_request_that_builds_them() {
+        let dir = fixture::temp_dir();
+        dir.write(PURCHASES_FILE, ATLAS);
+        let table = Purchases {
+            branches: &["cen", "est", "cen"],
+            ..Default::default()
+        };
+        let body = format!(r#"{{"rows":[{ATLAS},{GLOBE}]}}"#);
+
+        for failed in [
+            table.handle_get(&dir.context()).unwrap_err(),
+            table.handle_derive(&dir.context(), &body).unwrap_err(),
+            table.handle_put(&dir.context(), &body).unwrap_err(),
+        ] {
+            assert_eq!(failed.status, 500);
+            for named in ["\"purchases\"", "\"cen\""] {
+                assert!(failed.message.contains(named), "{}", failed.message);
+            }
+        }
+        // The write that failed left the file as it was.
+        assert_eq!(dir.read(PURCHASES_FILE), format!("{ATLAS}\n"));
+    }
+
+    #[test]
+    fn a_value_under_a_field_no_column_has_fails_a_read() {
+        let dir = fixture::temp_dir();
+        dir.write(PURCHASES_FILE, ATLAS);
+        let table = Purchases {
+            under: "spent",
+            ..Default::default()
+        };
+
+        let failed = table.handle_get(&dir.context()).unwrap_err();
+        assert_eq!(failed.status, 500);
+        for named in ["\"purchases\"", "\"spent\""] {
+            assert!(failed.message.contains(named), "{}", failed.message);
+        }
+
+        // A derive and a write build no schema to check it against, and are
+        // answered; the page that read the table first was refused.
+        let body = format!(r#"{{"rows":[{ATLAS}]}}"#);
+        assert!(table.handle_derive(&dir.context(), &body).is_ok());
+        assert!(table.handle_put(&dir.context(), &body).is_ok());
     }
 
     #[test]

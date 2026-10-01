@@ -5,6 +5,7 @@ import {
   editEntry,
   editedLines,
   entryRows,
+  insertEntry,
   markEdited,
   moveEntry,
   nextEntryId,
@@ -49,6 +50,17 @@ describe("row identity", () => {
     expect(nextEntryId(entries)).toBe(4);
     expect(added[3].id).toBe(4);
     expect(new Set(added.map((e) => e.id)).size).toBe(4);
+  });
+
+  test("is taken afresh by a row added in the middle, which the rows after make room for", () => {
+    const entries = toEntries(rows);
+    const added = insertEntry(entries, 1, { title: "New" });
+    expect(entryRows(added).map((row) => row.title)).toEqual(["Moss", "New", "Ferns", "Lichen"]);
+    expect(added[1].id).toBe(4);
+    expect(added[2]).toBe(entries[1]);
+    // Before the first row, and past the last, which is the end.
+    expect(insertEntry(entries, 0, { title: "New" })[0].row.title).toBe("New");
+    expect(insertEntry(entries, 9, { title: "New" })[3].row.title).toBe("New");
   });
 });
 

@@ -442,6 +442,19 @@ describe("filtering", () => {
     ).toBe(true);
     expect(rowMatches(row, null, columns, parseFilter("", columns))).toBe(true);
   });
+
+  test("finds a row by the text it is known by beyond its cells", () => {
+    const row: Row = { title: "Moss", year: 1994 };
+    const known = "central lending library cen";
+    expect(rowMatches(row, null, columns, parseFilter("central", columns))).toBe(false);
+    expect(rowMatches(row, null, columns, parseFilter("central", columns), known)).toBe(
+      true,
+    );
+    // A search narrowed to one column searches that column alone.
+    expect(
+      rowMatches(row, null, columns, parseFilter("title: central", columns), known),
+    ).toBe(false);
+  });
 });
 
 describe("muted rows", () => {

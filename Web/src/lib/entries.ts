@@ -109,6 +109,19 @@ export function appendEntry(
   return [...entries, { id: nextEntryId(entries), row }];
 }
 
+/** Add a row at `index`, moving the rows from there on down by one. An index
+ *  past the end adds it at the end. */
+export function insertEntry(
+  entries: readonly RowEntry[],
+  index: number,
+  row: Row,
+): RowEntry[] {
+  const at = Math.max(0, Math.min(index, entries.length));
+  const next = [...entries];
+  next.splice(at, 0, { id: nextEntryId(entries), row });
+  return next;
+}
+
 /** What a deletion leaves behind: the rows that remain, and what was removed
  *  together with where it was, which is what undoing needs. */
 export interface Removal {
@@ -175,20 +188,25 @@ export function moveEntry(
  *  stored order, which is what a write sends. A blank cell sorts last whichever
  *  way the column is pointed, since reversing the order says something about
  *  the values there are, not about the rows that have none. The sort is stable,
- *  so rows that compare equal keep the order they are stored in. */
+ *  so rows that compare equal keep the order they are stored in.
+ *
+ *  `known` gives the text a row is known by beyond its cells, which the
+ *  filter searches as well: in a grouped table, its group's heading. */
 export function visibleIndices(
   entries: readonly RowEntry[],
   derived: readonly unknown[],
   columns: readonly Column[],
   plan: FilterPlan,
   sort: Sort | null,
+  known?: (row: Row) => string,
 ): number[] {
   let indices = entries.map((_, i) => i);
 
   if (plan.terms) {
-    indices = indices.filter((i) =>
-      rowMatches(entries[i].row, derived[i] as Derived, columns, plan),
-    );
+    indices = indices.filter((i) => {
+      const row = entries[i].row;
+      return rowMatches(row, derived[i] as Derived, columns, plan, known?.(row));
+    });
   }
 
   const column = sort ? columns.find((c) => c.field === sort.field) : undefined;

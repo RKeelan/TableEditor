@@ -43,6 +43,8 @@ mod head;
 #[cfg(feature = "server")]
 mod launch;
 #[cfg(feature = "server")]
+mod overview;
+#[cfg(feature = "server")]
 mod page;
 #[cfg(feature = "server")]
 mod probe;
@@ -66,6 +68,8 @@ pub use error::{ApiError, ParseError, ValidationError};
 pub use context::Context;
 #[cfg(feature = "server")]
 pub use head::Icon;
+#[cfg(feature = "server")]
+pub use overview::{Footer, Overview, RowGroup};
 #[cfg(feature = "server")]
 pub use page::{
     Button, Card, CardGroup, Detail, DetailRow, DetailSection, Field, Form, Section, Status, Tone,

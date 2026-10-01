@@ -33,6 +33,8 @@ pub struct Schema {
     muted_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     muted_by_derived: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_by: Option<String>,
     columns: Vec<Column>,
     new_row: NewRow,
     datalists: BTreeMap<String, Datalist>,
@@ -48,6 +50,7 @@ impl Schema {
             sortable: false,
             muted_by: None,
             muted_by_derived: None,
+            group_by: None,
             columns: columns.into_iter().collect(),
             new_row: NewRow::default(),
             datalists: BTreeMap::new(),
@@ -93,6 +96,17 @@ impl Schema {
         self
     }
 
+    /// Draw the rows in groups by what they hold in `field`, under the
+    /// headings the table's overview gives, in the order it gives them. The
+    /// field need not be one of the columns: the heading says what it is.
+    ///
+    /// See [`crate::TableLogic::overview`] for the headings, and
+    /// [`crate::RowGroup`] for what one says.
+    pub fn group_by(mut self, field: impl Into<String>) -> Self {
+        self.group_by = Some(field.into());
+        self
+    }
+
     pub fn new_row(mut self, new_row: NewRow) -> Self {
         self.new_row = new_row;
         self
@@ -123,7 +137,7 @@ impl Schema {
     pub(crate) fn link_rows(&mut self, link: Option<RowLink>) -> Result<(), ApiError> {
         if let Some(link) = &link {
             for (param, field) in link.args() {
-                if !self.columns.iter().any(|column| column.field == field) {
+                if !self.has_column(field) {
                     return Err(ApiError::server(format!(
                         "table \"{}\" links its rows to the view \"{}\" with \"{param}\" taken                          from the field \"{field}\", which is none of the table's columns",
                         self.table,
@@ -134,6 +148,11 @@ impl Schema {
         }
         self.link = link;
         Ok(())
+    }
+
+    /// Whether one of the columns is the field `field`.
+    pub(crate) fn has_column(&self, field: &str) -> bool {
+        self.columns.iter().any(|column| column.field == field)
     }
 }
 
@@ -1132,6 +1151,18 @@ mod tests {
         let muted = serde_json::to_value(Schema::new([]).muted_by_derived("stale")).unwrap();
         assert_eq!(muted["muted_by_derived"], "stale");
         assert!(muted.get("muted_by").is_none());
+    }
+
+    #[test]
+    fn group_by_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Schema::new([])).unwrap();
+        assert!(plain.get("group_by").is_none());
+
+        // The field need not be a column: the heading says what it is.
+        let grouped =
+            serde_json::to_value(Schema::new([Column::string("item", "Item")]).group_by("branch"))
+                .unwrap();
+        assert_eq!(grouped["group_by"], "branch");
     }
 
     #[test]
