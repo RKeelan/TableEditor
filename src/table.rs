@@ -247,9 +247,10 @@ pub trait TableLogic: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// The headings of the table's groups and its footer. Rebuilt with every
-    /// read, derive and write, from the rows each is about, so its figures
-    /// follow the rows as they are typed. The default is neither.
+    /// The headings of the table's groups, its footer, and the cards and
+    /// sections above it. Rebuilt with every read, derive and write, from the
+    /// rows each is about, so its figures follow the rows as they are typed.
+    /// The default is none of them.
     ///
     /// Two groups with one key fail the request, and so, on a read, does a
     /// value under a field none of the columns is.

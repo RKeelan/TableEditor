@@ -1,11 +1,11 @@
-{"branch":"cen","item":"Ordnance atlas of the coast","cost":184.0,"ordered":"2026-08-03"}
-{"branch":"cen","item":"A Field Guide to Moss, third edition","cost":42.5,"ordered":"2026-08-03"}
-{"branch":"cen","item":"Rolling shelving, one bay","cost":1240.0,"ordered":"2026-08-14"}
-{"branch":"cen","item":"Lichens of the Cold Coast","cost":38.75,"ordered":"2026-08-21"}
+{"branch":"cen","item":"Ordnance atlas of the coast","cost":184.0,"ordered":"2026-08-03","received":true}
+{"branch":"cen","item":"A Field Guide to Moss, third edition","cost":42.5,"ordered":"2026-08-03","received":true}
+{"branch":"cen","item":"Rolling shelving, one bay","cost":1240.0,"ordered":"2026-08-14","received":true}
+{"branch":"cen","item":"Lichens of the Cold Coast","cost":38.75,"ordered":"2026-08-21","received":true}
 {"branch":"cen","item":"Tide tables for 2027","cost":12.0,"ordered":"2026-09-02"}
-{"branch":"cen","item":"The Harbour Road, large print","cost":29.95,"ordered":"2026-09-02"}
+{"branch":"cen","item":"The Harbour Road, large print","cost":29.95,"ordered":"2026-09-02","received":true}
 {"branch":"cen","item":"Archival boxes, ten","cost":61.2}
-{"branch":"est","item":"A picture atlas for children","cost":24.99,"ordered":"2026-08-11"}
-{"branch":"est","item":"Nine Doors","cost":18.5,"ordered":"2026-08-11"}
-{"branch":"est","item":"Reading lamps, two","cost":87.4,"ordered":"2026-09-08"}
-{"branch":"est","item":"Bird Songs of the Shore, audio","cost":31.0,"ordered":"2026-09-20"}
+{"branch":"est","item":"A picture atlas for children","cost":24.99,"ordered":"2026-08-11","received":true}
+{"branch":"est","item":"Nine Doors","cost":18.5,"ordered":"2026-08-11","received":true}
+{"branch":"est","item":"Reading lamps, two","cost":87.4,"ordered":"2026-09-08","received":true}
+{"branch":"est","item":"Bird Songs of the Shore, audio","cost":31.0,"ordered":"2026-09-20","received":false}

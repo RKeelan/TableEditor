@@ -7,7 +7,7 @@
 // button and the form are on the page; what the form is posted to, and what
 // the write does, are the server's.
 
-import type { Column, Row, RowLink, SelectOption } from "./schema";
+import type { Column, NumberFormat, Row, RowLink, SelectOption } from "./schema";
 import { cellText, unitChars } from "./rows";
 
 export interface ViewParam {
@@ -92,10 +92,18 @@ export interface CardRow {
   value: string;
 }
 
+/** The number a card is about, drawn large under its title. A value that is
+ *  not finite arrives as null and is drawn empty. */
+export interface Figure {
+  value: number | null;
+  format: NumberFormat;
+}
+
 export interface Card {
   statuses?: Status[];
   identifier?: string;
   title: string;
+  figure?: Figure;
   subtitle?: string;
   rows?: CardRow[];
   sentence?: string;

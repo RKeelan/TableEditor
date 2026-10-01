@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getView } from "../lib/api";
 import { describeError } from "../lib/errors";
-import { numberParts } from "../lib/format";
-import { cellValue, formatOf, isFigure } from "../lib/rows";
 import type { Column, Row } from "../lib/schema";
 import {
   type ViewParam,
@@ -11,17 +9,15 @@ import {
   announce,
   backLink,
   bodyOf,
-  controlWidthOfColumn,
   correctedHref,
-  hrefFor,
   isEmptySection,
   rowCardFor,
-  viewCellText,
   viewHref,
 } from "../lib/view";
 import { CardGrid } from "./CardGrid";
 import { DetailPage } from "./DetailPage";
 import { OutsideLink } from "./parts";
+import { SectionTable } from "./SectionTable";
 
 interface Props {
   view: string;
@@ -288,36 +284,7 @@ function SectionBlock({ section }: { section: ViewSection }) {
           </div>
 
           {/* Wide: the same rows as a table. */}
-          <div className="mt-2 hidden overflow-x-auto rounded-lg border border-border bg-surface sm:block">
-            <table className="border-collapse text-left">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-[0.18em] text-muted">
-                  {section.columns.map((column, i) => (
-                    <th
-                      key={`${i}-${column.field}`}
-                      scope="col"
-                      className="whitespace-nowrap border-b border-border px-3 py-2 font-medium"
-                    >
-                      {column.label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {section.rows.map((row, i) => (
-                  <tr key={i} className="border-b border-border last:border-0">
-                    {section.columns.map((column, j) => (
-                      <ViewCell
-                        key={`${j}-${column.field}`}
-                        column={column}
-                        row={row}
-                      />
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SectionTable section={section} className="mt-2 hidden sm:block" />
         </div>
       )}
     </section>
@@ -357,42 +324,5 @@ function RowCard({ columns, row }: { columns: readonly Column[]; row: Row }) {
         </dl>
       )}
     </div>
-  );
-}
-
-function ViewCell({ column, row }: { column: Column; row: Row }) {
-  const text = viewCellText(column, row);
-  const href = hrefFor(column, row);
-  const numeric = isFigure(column) || column.type === "number";
-  // A formatted number draws its unit in a span of its own; anything else,
-  // formatted column or not, reads as its text.
-  const format = formatOf(column);
-  const value = cellValue(column, row, row);
-  const parts =
-    format && typeof value === "number"
-      ? numberParts(value, format)
-      : { number: text, unit: null };
-  const shown = (
-    <>
-      {parts.number}
-      {parts.unit && <span className="unit">{parts.unit}</span>}
-    </>
-  );
-  return (
-    <td
-      className={
-        "px-3 py-1.5 align-top" +
-        (numeric ? " text-right tabular-nums" : "") +
-        (column.wide ? "" : " whitespace-nowrap")
-      }
-    >
-      <span
-        className="inline-block max-w-full overflow-hidden text-ellipsis align-top"
-        style={{ width: controlWidthOfColumn(column) }}
-        title={text || undefined}
-      >
-        {href ? <OutsideLink href={href}>{shown}</OutsideLink> : shown}
-      </span>
-    </td>
   );
 }

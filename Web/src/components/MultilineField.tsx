@@ -9,7 +9,8 @@ interface Props {
   onEditing?: (editing: boolean) => void;
   ariaLabel: string;
   title?: string;
-  width?: string;
+  /** How wide the cell is at rest. */
+  size?: React.CSSProperties;
   spellCheck: boolean;
 }
 
@@ -32,7 +33,7 @@ export function MultilineField({
   onEditing,
   ariaLabel,
   title,
-  width,
+  size,
   spellCheck,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -81,7 +82,7 @@ export function MultilineField({
 
   return (
     <span className="flex items-center gap-1">
-      <span ref={cell} className="lines-cell" style={{ width }}>
+      <span ref={cell} className="lines-cell" style={size}>
         <textarea
           ref={box}
           rows={1}
@@ -133,16 +134,23 @@ function rootFontSize(): number {
 }
 
 /** The part of the screen a cell's open box can be seen in: the nearest
- *  ancestor that scrolls, less its sticky header where it has one, or the
- *  window where no ancestor scrolls. */
+ *  ancestor that scrolls, cut to every ancestor on the way to it that clips,
+ *  less the table's sticky header; or the window where no ancestor scrolls.
+ *  Under a summary the table's box clips without scrolling, and the body it
+ *  sits in scrolls. */
 function visibleArea(el: HTMLElement): { top: number; bottom: number } {
+  let top = 0;
+  let bottom = window.innerHeight;
   for (let node = el.parentElement; node; node = node.parentElement) {
     const { overflowY } = getComputedStyle(node);
-    if (overflowY !== "auto" && overflowY !== "scroll") continue;
-    const rect = node.getBoundingClientRect();
-    const top = rect.top + node.clientTop;
-    const header = node.querySelector("thead")?.getBoundingClientRect().height ?? 0;
-    return { top: top + header, bottom: top + node.clientHeight };
+    if (overflowY === "visible") continue;
+    const inner = node.getBoundingClientRect().top + node.clientTop;
+    top = Math.max(top, inner);
+    bottom = Math.min(bottom, inner + node.clientHeight);
+    if (overflowY === "auto" || overflowY === "scroll") {
+      const header = el.closest("table")?.tHead?.getBoundingClientRect().height ?? 0;
+      return { top: top + header, bottom };
+    }
   }
   return { top: 0, bottom: window.innerHeight };
 }

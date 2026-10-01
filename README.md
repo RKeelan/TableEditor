@@ -225,6 +225,9 @@ A view answers with one of three bodies. `sections` is the one above and is alwa
                 "cards": [ { "statuses": [{ "word": "Open", "tone": "good" }],
                              "identifier": "cen",
                              "title": "Central Lending Library",
+                             "figure": { "value": 48250,
+                                         "format": { "decimals": 2, "grouped": true,
+                                                     "unit": "CAD" } },
                              "subtitle": "Ada Ferreira, 6 staff",
                              "rows": [{ "label": "Books here", "value": "4" }],
                              "sentence": "No opening hours are recorded.",
@@ -232,7 +235,7 @@ A view answers with one of three bodies. `sections` is the one above and is alwa
                                        "args": { "branch": "cen" } } } ] } ] }
 ```
 
-A card carries only what it was given; `title` is the one field always there. `tone` is one of `good`, `warning`, `bad`, `neutral`, and `info`. A `link` names another of this app's views and the arguments to ask it with, rather than an address, because where the app is served from is the page's business.
+A card carries only what it was given; `title` is the one field always there. A `figure` is a number and the `format` it reads by, in the shape a column's takes, and a figure that is not finite is sent with a `value` of null. `tone` is one of `good`, `warning`, `bad`, `neutral`, and `info`. A `link` names another of this app's views and the arguments to ask it with, rather than an address, because where the app is served from is the page's business.
 
 ```json
 { "detail": {
@@ -443,7 +446,7 @@ The page takes a preview's stamps into the rows on screen when the derive answer
 
 ## Overviews
 
-A table can say things about its rows taken together: headings for its groups, and a footer. `TableLogic::overview` builds them from the rows a read, a derive or a write is about, so they are rebuilt with every derive and their figures follow what is typed:
+A table can say things about its rows taken together: headings for its groups, a footer, and cards and small tables above it. `TableLogic::overview` builds them from the rows a read, a derive or a write is about, so they are rebuilt with every derive and their figures follow what is typed:
 
 ```rust
 fn overview(&self, rows: &[Book], ctx: &Context) -> Result<Overview, ApiError> {
@@ -467,6 +470,23 @@ fn overview(&self, rows: &[Book], ctx: &Context) -> Result<Overview, ApiError> {
 A group's key is what its rows hold in the `group_by` field. Its heading is a title, facts drawn after it, a note at its end, and values, each drawn under the column its field names and read the way that column reads, so a formatted column's subtotal is formatted as its cells are. The title takes the first column and every column after it up to the first that has a value, so a value under the first column is not drawn. A footer is a title and values in the same shape, pinned to the foot of the table so it stays in view while the rows scroll, and drawn under the last row where the rows end first; a table with a footer and no groups has its control for adding a row as the last row of the body, so that the footer is the one thing pinned. A corner of the header or the footer rounds only where it sits at a corner of the box the table is drawn in, so it is square where the table stops short of the box or the rows pass under it. The parts an overview leaves out are left out of its JSON, and an overview that says nothing is not sent, so a table that implements none answers as it always did.
 
 Two groups with one key is a 500 naming the table and the key, on a read, a derive and a write alike. A value under a field no column has is a 500 naming the table and the field on a read, which is what builds the schema the field is checked against; a derive and a write build none, and a value that got past the read is simply not drawn.
+
+An overview's cards and sections are drawn above the table: the cards in one row, the sections in a row beneath them, and the table under both. A card is the card a view draws, and `Card::figure` gives it a number to be about, drawn large under its title and read by a `Format`. A section is a view's section, with its heading and its note where it has them; a summary's sections usually go without, since their first column's header says what each breaks down:
+
+```rust
+Ok(Overview::new()
+    .card(Card::new("Copies").figure(copies_in_all(rows) as f64, Format::fixed(0)))
+    .section(Section::new(columns).rows(copies_by_genre(rows))?))
+```
+
+```json
+"overview": {
+  "cards": [ { "title": "Copies",
+               "figure": { "value": 12, "format": { "decimals": 0 } } } ],
+  "sections": [ { "columns": [ … ], "rows": [ … ] } ] }
+```
+
+The three rows are as wide as the widest of them and no wider than the page. The cards share one width and one height, set by the one that needs most, and each section is as wide as its content. The table takes whatever width the block has beyond its columns' own through its `wide` columns, or its first column where none is wide. Below 860px each row stacks at the page's width, and a section is drawn as a table at every width rather than as the cards a view's section becomes on a phone. The summary and the table scroll together, with the table's header held at the top and its footer at the foot, unless the table is wider than the page, when its box scrolls sideways instead. A card's link leaves the table the way a row's does, once what was typed has been written. Without cards or sections, the table's box scrolls on its own, as it does for a table with no overview.
 
 ## What the editor does with the table
 
@@ -539,6 +559,7 @@ ViewData::new().group(CardGroup::new("Open").cards(branches.iter().map(|branch| 
     Card::new(branch.name.as_str())
         .status(Status::new("Open", Tone::Good))
         .identifier(branch.code.as_str())
+        .figure(branch.budget, Format::money().unit("CAD"))
         .subtitle("Ada Ferreira, 6 staff")
         .row("Books here", 4)
         .sentence("No opening hours are recorded.")
@@ -546,7 +567,7 @@ ViewData::new().group(CardGroup::new("Open").cards(branches.iter().map(|branch| 
 })))
 ```
 
-A card carries a title and whatever else it is given: any number of statuses, since a thing can stand two ways at once; an identifier, the short name it is filed under; a subtitle; label-and-value rows, whose values are anything that prints; a sentence for what a label and a value cannot say; and a link to another of this app's views, asked a particular question. A group of no cards is dropped rather than drawn, so a view can name every group it knows about and let the data decide which of them the page has.
+A card carries a title and whatever else it is given: any number of statuses, since a thing can stand two ways at once; an identifier, the short name it is filed under; a figure, the number the card is about, which `Card::figure` takes with the `Format` it reads by and which is drawn large under the title, empty where the number is not finite; a subtitle; label-and-value rows, whose values are anything that prints; a sentence for what a label and a value cannot say; and a link to another of this app's views, asked a particular question. A group of no cards is dropped rather than drawn, so a view can name every group it knows about and let the data decide which of them the page has.
 
 `Status` is a word and a `Tone`, and the tones are `Good`, `Warning`, `Bad`, `Neutral`, and `Info` and nothing else. A repository never names a colour: the two themes use different ones, and they are chosen for contrast against the page and against a card, which is a decision to make once rather than per consumer.
 
@@ -789,7 +810,7 @@ A release never ships the placeholder. `./Release.ps1` builds the bundle, packag
 
 `examples/library` is a consumer to develop against: an app called Library with four tables carrying every column type and modifier between them, four views over those tables, and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
 
-The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and one action, Lend it out, whose form carries all four kinds of field and writes to `Books.jsonl`; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it. Book is a detail page with one hidden parameter, a title, and two sections, and names no way back of its own; its one action, Write the inscription, opens in a side panel headed with the book's title, carries an argument naming the book so that the panel and its draft follow the row when a save retitles it, and has a copyable multi-line field, filled with the book's inscription or a draft of one, and writes it back exactly as it stands in the box. The Books table links each row to Book and the Branches table links each row to Branch, so a row link is checked against a page with no way back of its own and against one whose own is replaced by the table's. The Books table mutes a book whose Withdrawn cell is true, and one of the books is withdrawn, so a muted row can be looked at in both themes and brought back by setting the cell. The Genres table, which the Books table's genres and subgenres are chosen from, is left out of the top bar and reached by its address, `?table=genres`, so the heading a hidden table's page carries can be looked at. The Purchases table is grouped by branch, a group for each branch in the Branches table's order, each headed with the branch's name, its code and what it spent, with what every branch spent in its footer; Harbour Branch, closed and with no budget, has bought nothing, so its group is empty, carries a second fact and a note, and is where a first row is added to a group.
+The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page and, where the branch has a budget, carrying it as its figure; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and one action, Lend it out, whose form carries all four kinds of field and writes to `Books.jsonl`; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it. Book is a detail page with one hidden parameter, a title, and two sections, and names no way back of its own; its one action, Write the inscription, opens in a side panel headed with the book's title, carries an argument naming the book so that the panel and its draft follow the row when a save retitles it, and has a copyable multi-line field, filled with the book's inscription or a draft of one, and writes it back exactly as it stands in the box. The Books table links each row to Book and the Branches table links each row to Branch, so a row link is checked against a page with no way back of its own and against one whose own is replaced by the table's. The Books table mutes a book whose Withdrawn cell is true, and one of the books is withdrawn, so a muted row can be looked at in both themes and brought back by setting the cell. The Genres table, which the Books table's genres and subgenres are chosen from, is left out of the top bar and reached by its address, `?table=genres`, so the heading a hidden table's page carries can be looked at. The Purchases table is grouped by branch, a group for each branch in the Branches table's order, each headed with the branch's name, its code and what it spent, with what every branch spent in its footer; Harbour Branch, closed and with no budget, has bought nothing, so its group is empty, carries a second fact and a note, and is where a first row is added to a group. Above its rows are a card of what was spent, which links to the front page, where the budgets are, and one of what is on order, which is what has not been received, and a small table of each branch's share of the spending, so the summary's figures can be watched following a cost as it is typed.
 
 Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width. The second is lent from the Central branch, so its refused link is on that branch's page as well as in a table. Three more fields hold line breaks for the same reason: two inscriptions in the Inscription column, one written with `\n` and one with `\r\n`, and a note of two lines in the one-line Notes column.
 

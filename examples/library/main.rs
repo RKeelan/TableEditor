@@ -112,6 +112,9 @@ struct Purchase {
     /// The day it was ordered, as `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     ordered: String,
+    /// Whether it has arrived. Until it has, it is on order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    received: Option<bool>,
 }
 
 // ── Books ───────────────────────────────────────────────────────────────────
@@ -546,7 +549,8 @@ impl TableLogic for Branches {
 // ── Purchases ───────────────────────────────────────────────────────────────
 
 /// What each branch bought, in a group of its own under a heading with what
-/// it spent, and what every branch spent pinned at the foot.
+/// it spent, and what every branch spent pinned at the foot, under a summary
+/// of the spending and of each branch's share of it.
 struct Purchases;
 
 impl TableLogic for Purchases {
@@ -573,6 +577,7 @@ impl TableLogic for Purchases {
                 .format(Format::money())
                 .width_ch(8),
             Column::date("ordered", "Ordered"),
+            Column::boolean("received", "Received"),
         ])
         .group_by("branch")
         .sortable()
@@ -597,6 +602,9 @@ impl TableLogic for Purchases {
     /// that has not can be added. Each heading carries the branch's name, its
     /// code, and what it spent; a closed branch says so, and one with no
     /// budget notes that what it spent was spent without one.
+    ///
+    /// Above the table, a card of what was spent and one of what has not
+    /// arrived yet, and a small table of each branch's share of the spending.
     fn overview(&self, rows: &[Purchase], ctx: &Context) -> Result<Overview, ApiError> {
         let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
         let spent = |code: Option<&str>| -> f64 {
@@ -605,6 +613,27 @@ impl TableLogic for Purchases {
                 .filter_map(|row| row.cost)
                 .sum()
         };
+        let total = spent(None);
+        let waiting: Vec<&Purchase> = rows
+            .iter()
+            .filter(|row| row.received != Some(true))
+            .collect();
+        let on_order: f64 = waiting.iter().filter_map(|row| row.cost).sum();
+        let in_cad = || Format::money().unit("CAD");
+
+        // A branch's name may wrap, so the table fits a phone.
+        let by_branch = Section::new([
+            Column::string("branch", "Branch").wide(),
+            Column::number("spent", "Spent").format(Format::money()),
+            Column::number("share", "Share of all spending").format(Format::percent(1)),
+        ])
+        .rows(branches.iter().map(|branch| {
+            let here = spent(Some(&branch.code));
+            // A share of nothing is no share at all, and is left empty.
+            let share = (total > 0.0).then(|| here / total);
+            json!({ "branch": branch.name, "spent": here, "share": share })
+        }))?;
+
         Ok(Overview::new()
             .groups(branches.iter().map(|branch| {
                 let mut group = RowGroup::new(&branch.code, &branch.name)
@@ -618,7 +647,23 @@ impl TableLogic for Purchases {
                 }
                 group
             }))
-            .footer(Footer::new("All branches").value("cost", spent(None))))
+            .footer(Footer::new("All branches").value("cost", total))
+            // What was spent is read against the budgets, which the front
+            // page's cards carry.
+            .card(
+                Card::new("Spent")
+                    .figure(total, in_cad())
+                    .link(ViewLink::new("all-branches")),
+            )
+            .card(
+                Card::new("On order")
+                    .figure(on_order, in_cad())
+                    .subtitle(match waiting.len() {
+                        1 => "1 purchase not yet received".to_string(),
+                        n => format!("{n} purchases not yet received"),
+                    }),
+            )
+            .section(by_branch))
     }
 }
 
@@ -898,6 +943,11 @@ impl ViewLogic for BranchCards {
                 .row("Books here", here)
                 .row("Out on loan", out)
                 .link(ViewLink::new("branch").arg("branch", &branch.code));
+            // What a branch may spend is the number its card is about, where
+            // it has a budget at all.
+            if let Some(budget) = branch.budget {
+                card = card.figure(budget, Format::money().unit("CAD"));
+            }
             if branch.hours.is_empty() {
                 card = card.sentence(
                     "No opening hours are recorded, so nothing here says when it can be visited.",

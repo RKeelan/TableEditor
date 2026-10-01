@@ -2,9 +2,13 @@
 //!
 //! A schema says that a table is grouped and by which field, which does not
 //! change while the page is open. An [`Overview`] says which groups there are,
-//! in what order, what each heading reads and what the footer reads, which
-//! change as the reader types: [`crate::TableLogic::overview`] builds it from
-//! the rows a read, a derive or a write is about, so its figures follow them.
+//! in what order, what each heading reads and what the footer reads, and what
+//! the cards and sections above the table say, all of which change as the
+//! reader types: [`crate::TableLogic::overview`] builds it from the rows a
+//! read, a derive or a write is about, so its figures follow them.
+//!
+//! The cards and sections are a view's [`Card`] and [`Section`], so a summary
+//! above a table is drawn with the vocabulary a view already has.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -12,17 +16,22 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::error::ApiError;
+use crate::page::{Card, Section};
 use crate::schema::Schema;
 
 /// What the page shows about a table's rows taken together: the headings of
-/// its groups and a footer. Rebuilt with every read, derive and write, from
-/// the rows each of those is about.
+/// its groups, a footer, and cards and sections above it. Rebuilt with every
+/// read, derive and write, from the rows each of those is about.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Overview {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     groups: Vec<RowGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     footer: Option<Footer>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cards: Vec<Card>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sections: Vec<Section>,
 }
 
 impl Overview {
@@ -50,10 +59,35 @@ impl Overview {
         self
     }
 
+    /// A card in the row above the table, after those already given. The
+    /// cards share that row, so a summary is a handful of them.
+    pub fn card(mut self, card: Card) -> Self {
+        self.cards.push(card);
+        self
+    }
+
+    /// Cards after those already given, in the order the iterator gives them.
+    pub fn cards(mut self, cards: impl IntoIterator<Item = Card>) -> Self {
+        self.cards.extend(cards);
+        self
+    }
+
+    /// A small table in the row between the cards and the table, after those
+    /// already given. Its heading and note are drawn where given; a summary's
+    /// sections usually go without, since their first column's header says
+    /// what each breaks down.
+    pub fn section(mut self, section: Section) -> Self {
+        self.sections.push(section);
+        self
+    }
+
     /// Whether the overview says nothing, in which case an answer leaves it
     /// out.
     pub(crate) fn is_empty(&self) -> bool {
-        self.groups.is_empty() && self.footer.is_none()
+        self.groups.is_empty()
+            && self.footer.is_none()
+            && self.cards.is_empty()
+            && self.sections.is_empty()
     }
 
     /// Refuse two groups with one key, which would claim the same rows twice.
@@ -171,7 +205,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::schema::Column;
+    use crate::schema::{Column, Format};
 
     #[test]
     fn an_overview_serializes_to_the_documented_shape() {
@@ -223,6 +257,65 @@ mod tests {
         assert_eq!(
             serde_json::to_value(footed).unwrap(),
             json!({ "footer": { "title": "All branches" } })
+        );
+    }
+
+    #[test]
+    fn a_summarys_cards_and_sections_serialize_in_the_order_given() {
+        let spent = Card::new("Spent").figure(1320.75, Format::money().unit("CAD"));
+        let on_order = Card::new("On order").figure(86.25, Format::money().unit("CAD"));
+        let by_branch = Section::new([
+            Column::string("branch", "Branch"),
+            Column::number("share", "Share").format(Format::percent(1)),
+        ])
+        .rows([json!({ "branch": "Central", "share": 0.75 })])
+        .unwrap();
+        let overview = Overview::new()
+            .card(spent)
+            .cards([on_order, Card::new("Unbudgeted")])
+            .section(by_branch)
+            .section(Section::new([Column::string("month", "Month")]).heading("By month"))
+            .footer(Footer::new("All branches").value("cost", 1320.75));
+
+        assert_eq!(
+            serde_json::to_value(overview).unwrap(),
+            json!({
+              "footer": { "title": "All branches", "values": { "cost": 1320.75 } },
+              "cards": [
+                { "title": "Spent",
+                  "figure": { "value": 1320.75,
+                              "format": { "decimals": 2, "grouped": true, "unit": "CAD" } } },
+                { "title": "On order",
+                  "figure": { "value": 86.25,
+                              "format": { "decimals": 2, "grouped": true, "unit": "CAD" } } },
+                { "title": "Unbudgeted" } ],
+              "sections": [
+                { "columns": [
+                    { "field": "branch", "label": "Branch", "type": "string" },
+                    { "field": "share", "label": "Share", "type": "number",
+                      "format": { "decimals": 1, "percent": true } } ],
+                  "rows": [ { "branch": "Central", "share": 0.75 } ] },
+                { "heading": "By month",
+                  "columns": [ { "field": "month", "label": "Month", "type": "string" } ],
+                  "rows": [] } ] })
+        );
+    }
+
+    #[test]
+    fn a_summary_alone_is_something_to_say() {
+        let carded = Overview::new().card(Card::new("Spent"));
+        assert!(!carded.is_empty());
+        assert_eq!(
+            serde_json::to_value(carded).unwrap(),
+            json!({ "cards": [{ "title": "Spent" }] })
+        );
+
+        let sectioned = Overview::new().section(Section::new([Column::string("branch", "Branch")]));
+        assert!(!sectioned.is_empty());
+        assert_eq!(
+            serde_json::to_value(sectioned).unwrap(),
+            json!({ "sections": [{ "columns": [
+                { "field": "branch", "label": "Branch", "type": "string" } ], "rows": [] }] })
         );
     }
 

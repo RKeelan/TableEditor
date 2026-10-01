@@ -2,6 +2,8 @@
 // for field. The server rebuilds it on every GET, so everything the editor
 // needs to render a table is data here and nothing is held in the browser.
 
+import type { Card, ViewSection } from "./view";
+
 /** One choice in a select, a map key, or a map value. */
 export interface SelectOption {
   value: string;
@@ -137,10 +139,13 @@ export interface Footer {
 }
 
 /** What a table says about its rows taken together, rebuilt with every read,
- *  derive and write. A part it does not say is absent. */
+ *  derive and write: the headings of its groups, its footer, and the cards and
+ *  sections above it, which are a view's. A part it does not say is absent. */
 export interface Overview {
   groups?: RowGroup[];
   footer?: Footer;
+  cards?: Card[];
+  sections?: ViewSection[];
 }
 
 /** A row as the editor handles it: the object the server sent, untouched but

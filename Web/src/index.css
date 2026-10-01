@@ -459,8 +459,10 @@
     left: 0;
     z-index: 30;
   }
-  /* A row brought into view by the keyboard is not left under the footer. */
-  .table-box.has-footer {
+  /* A row brought into view by the keyboard is not left under the footer,
+     whichever of the box and the body under a summary is scrolling it. */
+  .table-box.has-footer,
+  .summary-body.has-footer {
     scroll-padding-bottom: 3.75rem;
   }
 
@@ -486,6 +488,83 @@
   }
   .table-box:not(.foot-stuck):not(.narrow) tr.total > td:last-child {
     border-bottom-right-radius: calc(0.5rem - 1px);
+  }
+
+  /* A table with a summary above it: the cards in one row, the sections in a
+     row beneath them, and the table's box under both, the three one block as
+     wide as the widest of them and no wider than the page. The cards are
+     equal columns, which makes each as wide as the widest needs and all of
+     them one height; the sections are columns as wide as their content,
+     sharing whatever width the block has beyond that; and the table is as
+     wide as the block, the width beyond its columns' own going to the
+     columns that fill. Below 860px the rows do not fit beside one another,
+     so each is a stack at the page's width. */
+  @media (min-width: 860px) {
+    .summary-block {
+      width: max-content;
+      max-width: 100%;
+    }
+  }
+  /* The cards and the sections' headings are in the page's own face, at its
+     size, inside an editor set in the monospaced one. */
+  .summary {
+    display: grid;
+    gap: 1.75rem;
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+  }
+  .summary-cards {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+  }
+  .summary-sections {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 1.25rem 2rem;
+  }
+  @media (min-width: 860px) {
+    .summary-cards {
+      grid-template-columns: none;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+    }
+    .summary-sections {
+      grid-template-columns: none;
+      grid-auto-flow: column;
+      grid-auto-columns: auto;
+    }
+  }
+
+  /* Under a summary the table's box is not a scroll container of its own, so
+     its header sticks to the top of the body the summary and the table
+     scroll in, and its footer to that body's foot. Where the table is wider
+     than the box, which the component measures, the box scrolls sideways
+     instead: that gives up the sticking, and keeps the controls and the first
+     column in place as the rest scrolls under them. */
+  .summary-block > .table-box {
+    margin-top: 2.25rem;
+    overflow: clip;
+  }
+  .summary-block > .table-box.too-wide {
+    overflow-x: auto;
+  }
+
+  /* The number a card is about, large under its title. Its numerals are
+     proportional, which read better at this size than the tabular ones a
+     column of figures needs to line up. */
+  .card-figure {
+    margin-top: 0.375rem;
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    font-variant-numeric: proportional-nums;
+    overflow-wrap: anywhere;
+  }
+  .card-figure .unit {
+    font-size: 0.75rem;
   }
 
   .btn {
