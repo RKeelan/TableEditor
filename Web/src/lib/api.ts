@@ -2,7 +2,7 @@
 // schema, the validation, and the derivation; the browser reads and writes over
 // the API and renders whatever the schema describes.
 import { ApiError } from "./errors";
-import type { Row, Schema, ValidationError } from "./schema";
+import type { Overview, Row, Schema, ValidationError } from "./schema";
 import type { ActionResult, TableEntry, ViewEntry, ViewPayload } from "./view";
 
 /** `GET api/app`: the shell's name, what it serves, and what a bare address
@@ -16,12 +16,14 @@ export interface AppPayload {
 }
 
 /** `GET api/<table>`. `version` is the file the rows were read from, as it was
- *  when they were read; a write states it back. */
+ *  when they were read; a write states it back. `overview` is absent where
+ *  the table says nothing about its rows taken together. */
 export interface TableGet {
   schema: Schema;
   rows: Row[];
   derived: unknown[];
   errors: ValidationError[];
+  overview?: Overview;
   siblings: unknown;
   version: string;
 }
@@ -41,10 +43,12 @@ export interface StampedRow {
 }
 
 /** `POST api/<table>/derive`, which writes nothing. `stamped` is absent
- *  where the stamp changed no row. */
+ *  where the stamp changed no row, and `overview` where the table says
+ *  nothing about its rows taken together. */
 export interface DeriveResult {
   derived: unknown[];
   errors: ValidationError[];
+  overview?: Overview;
   stamped?: StampedRow[];
 }
 

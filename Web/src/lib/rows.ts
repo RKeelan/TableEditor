@@ -630,11 +630,16 @@ export function parseFilter(
   return { field: null, terms: trimmed.toLowerCase() };
 }
 
+/** Whether the filter finds a row. A search of every column also searches
+ *  `extra`, lowercased text the row is known by beyond its own cells: in a
+ *  grouped table, its group's heading, since the group field is usually not a
+ *  column. A search narrowed to one column searches that column alone. */
 export function rowMatches(
   row: Row,
   derived: Derived,
   columns: readonly Column[],
   plan: FilterPlan,
+  extra = "",
 ): boolean {
   if (!plan.terms) return true;
   if (plan.field) {
@@ -643,8 +648,11 @@ export function rowMatches(
       ? cellSearchText(column, row, derived).includes(plan.terms)
       : false;
   }
-  return columns.some((column) =>
-    cellSearchText(column, row, derived).includes(plan.terms),
+  return (
+    extra.includes(plan.terms) ||
+    columns.some((column) =>
+      cellSearchText(column, row, derived).includes(plan.terms),
+    )
   );
 }
 

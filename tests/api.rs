@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
     ApiError, App, Button, Column, Context, Detail, DetailRow, DetailSection, Edits, Field, Fields,
-    Form, Front, NewRow, Param, Schema, Section, Server, ServerArgs, Stamping, Status, Table,
-    TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic,
+    Footer, Form, Front, NewRow, Overview, Param, RowGroup, Schema, Section, Server, ServerArgs,
+    Stamping, Status, Table, TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink,
+    ViewLogic,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -60,6 +61,7 @@ impl TableLogic for Books {
             Column::number("year", "Year"),
             Column::date("checked", "Checked").read_only(),
         ])
+        .group_by("year")
         .new_row(NewRow::new().with("title", "").with("year", 0)))
     }
 
@@ -90,6 +92,20 @@ impl TableLogic for Books {
             .iter()
             .map(|row| json!({ "caption": format!("{} ({})", row.title, row.year) }))
             .collect())
+    }
+
+    /// A group for each year a book was published in, earliest first, with
+    /// its decade beside it, and a count of the books at the foot.
+    fn overview(&self, rows: &[Book], _ctx: &Context) -> Result<Overview, ApiError> {
+        let mut years: Vec<u32> = rows.iter().map(|row| row.year).collect();
+        years.sort_unstable();
+        years.dedup();
+        Ok(Overview::new()
+            .groups(years.into_iter().map(|year| {
+                RowGroup::new(year.to_string(), year.to_string())
+                    .fact(format!("{}s", year / 10 * 10))
+            }))
+            .footer(Footer::new(format!("{} book(s)", rows.len()))))
     }
 }
 
@@ -343,6 +359,13 @@ fn the_api_answers_over_http() {
     assert_eq!(get["rows"][0]["title"], "A Field Guide to Moss");
     assert_eq!(get["derived"][0]["caption"], "A Field Guide to Moss (1994)");
     assert_eq!(get["siblings"], json!({}));
+    assert_eq!(get["schema"]["group_by"], "year");
+    assert_eq!(
+        get["overview"],
+        json!({ "groups": [{ "key": "1994", "title": "1994", "facts": ["1990s"] },
+                           { "key": "2001", "title": "2001", "facts": ["2000s"] }],
+                "footer": { "title": "2 book(s)" } })
+    );
 
     let one = r#"{"rows":[{"title":"The Harbour Road","year":2003}]}"#;
     let (status, body) = request(port, "POST", "/api/books/derive", one);
@@ -350,6 +373,12 @@ fn the_api_answers_over_http() {
     assert_eq!(
         json(&body)["derived"][0]["caption"],
         "The Harbour Road (2003)"
+    );
+    // The overview is of the rows the derive was sent, not of the file's.
+    assert_eq!(
+        json(&body)["overview"],
+        json!({ "groups": [{ "key": "2003", "title": "2003", "facts": ["2000s"] }],
+                "footer": { "title": "1 book(s)" } })
     );
     // Derivation leaves the stored rows alone.
     assert_eq!(

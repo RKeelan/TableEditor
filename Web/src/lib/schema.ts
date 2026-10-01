@@ -109,10 +109,38 @@ export interface Schema {
   muted_by?: string;
   /** The key of each row's derivation whose value `true` draws it muted. */
   muted_by_derived?: string;
+  /** The field whose value says which group a row is drawn in, under the
+   *  headings the table's overview gives. */
+  group_by?: string;
   columns: Column[];
   new_row: NewRowSpec;
   datalists: Record<string, Datalist>;
   link?: RowLink;
+}
+
+/** One group of a grouped table: the rows holding `key` in the schema's
+ *  `group_by` field, and the heading drawn above them. Each value is drawn
+ *  under the column its field names, read the way that column reads. */
+export interface RowGroup {
+  key: string;
+  title: string;
+  facts?: string[];
+  note?: string;
+  values?: Record<string, unknown>;
+}
+
+/** A row pinned to the foot of the table: a title and values under columns,
+ *  as a heading has. */
+export interface Footer {
+  title: string;
+  values?: Record<string, unknown>;
+}
+
+/** What a table says about its rows taken together, rebuilt with every read,
+ *  derive and write. A part it does not say is absent. */
+export interface Overview {
+  groups?: RowGroup[];
+  footer?: Footer;
 }
 
 /** A row as the editor handles it: the object the server sent, untouched but

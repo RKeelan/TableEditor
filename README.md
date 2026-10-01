@@ -151,7 +151,7 @@ fn main() -> anyhow::Result<()> {
 
 The consumer brings its own `anyhow`, `clap`, `serde`, and `serde_json`; the crate re-exports none of them.
 
-`parse` and `serialize` default to plain JSONL, so a table whose row type serializes the way it is stored implements neither. `derive`, `stamp` and `siblings` default to nothing.
+`parse` and `serialize` default to plain JSONL, so a table whose row type serializes the way it is stored implements neither. `derive`, `stamp`, `overview` and `siblings` default to nothing.
 
 `Table` is the object-safe façade the router dispatches through. A blanket implementation covers every `TableLogic`, so nothing outside the crate implements `Table` directly—doing so would collide with the blanket implementation.
 
@@ -187,9 +187,9 @@ A `subtitle` is included when the app supplies one, and omitted otherwise. So ar
 
 Three endpoints serve each table:
 
-* `GET /api/<table>` returns `{ "schema": …, "rows": [ … ], "derived": [ … ], "errors": [ … ], "siblings": …, "version": "…" }`. `rows` is the stored table, `derived` parallels it index for index, `errors` is the validation, `siblings` is whatever cross-table data the table supplies, and `version` is the file the rows were read from, as it was when they were read.
-* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…", "edited": [ { "line": 2, "fields": ["year"] } ] }`, stamps and writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`. `edited` says which fields of which rows the reader typed into, and a body without it is not stamped (see Stamps). The answer carries `"stamped": [ … ]` after the version where the stamp changed any row, and a `"notice": "…"` after that where the stamp or the app's `after_write` had a sentence for the reader about the write (see Hooks). A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `stamp`, `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
-* `POST /api/<table>/derive` takes the same rows and `edited`, stamps the rows as a preview, and answers with the derivation and the errors alone, and `stamped` where the stamp changed a row. It writes nothing, so it states no version and is answered with none; a version in its body is ignored.
+* `GET /api/<table>` returns `{ "schema": …, "rows": [ … ], "derived": [ … ], "errors": [ … ], "siblings": …, "version": "…" }`. `rows` is the stored table, `derived` parallels it index for index, `errors` is the validation, `siblings` is whatever cross-table data the table supplies, and `version` is the file the rows were read from, as it was when they were read. Where the table's overview says anything, an `"overview": { … }` follows `errors` (see Overviews).
+* `PUT /api/<table>` takes `{ "rows": [ … ], "version": "…", "edited": [ { "line": 2, "fields": ["year"] } ] }`, stamps and writes those rows, and returns `{ "derived": [ … ], "errors": [ … ], "version": "…" }`, with the `overview` of the rows as written after `errors` where it says anything. `edited` says which fields of which rows the reader typed into, and a body without it is not stamped (see Stamps). The answer carries `"stamped": [ … ]` after the version where the stamp changed any row, and a `"notice": "…"` after that where the stamp or the app's `after_write` had a sentence for the reader about the write (see Hooks). A validation error never refuses the write: the editor persists what it is given and shows the errors beside the cells. A `stamp`, `derive` or `validate` that cannot run at all is a different thing and is a 500, with nothing written.
+* `POST /api/<table>/derive` takes the same rows and `edited`, stamps the rows as a preview, and answers with the derivation and the errors alone, the `overview` of the rows it was sent where it says anything, and `stamped` where the stamp changed a row. It writes nothing, so it states no version and is answered with none; a version in its body is ignored.
 
 A write states the version of the file the rows it is writing were read from. The server compares it against the file as it is now and refuses the write with a 409 where the two differ, so a client holding a whole table cannot write its older rows over a change made since—by an action on a detail page, by a second tab, or by the owner editing the JSONL by hand. The comparison and the write are one request, and the server serves one request at a time, so nothing lands between them: the file compared against is the file replaced. A write that goes through answers with the version it left behind, which the next write states. A write that states no version is written whatever the file holds, which is what a repository's scripts and a client that does not read the version send.
 
@@ -300,6 +300,7 @@ The schema is data, not code: it carries everything the editor needs to render a
   "sortable": true,
   "muted_by": "withdrawn",
   "muted_by_derived": "stale",
+  "group_by": "genre",
   "columns": [
     { "field": "title", "label": "Title", "type": "string" },
     { "field": "genre", "label": "Genre", "type": "select", "allow_empty": true,
@@ -379,6 +380,14 @@ Only a JSON `true` mutes a row: an absent field, `false`, and anything that is n
 Schema::new(columns).muted_by_derived("stale")
 ```
 
+`group_by` names a field, and a bundle draws the rows in groups by what they hold there, under the headings the table's overview gives and in its order (see Overviews). A group can have no rows, so that one can be added to it, and each group has a control of its own for adding a row, which starts the row in that group: after the group's last row in the file, with `carry_forward` taken from the group's rows and the focus in the first of its cells that can be typed into. Rows holding a value no group has are drawn all the same, in a group of their own after the others, headed with the value. The field need not be one of the table's columns, since the heading says what it is. A grouped table's rows are not dragged: a row belongs to its group. Sorting orders the rows within each group, and the filter finds a row by its group's heading as well as by its own cells. A table sets it with `Schema::group_by`:
+
+```rust
+Schema::new(columns).group_by("branch")
+```
+
+A row added to a group holds the group's key as the group's other rows hold it, so a group of rows holding the number 1994 adds another holding 1994, and a group with no rows adds one holding the key as text. Setting the field is not an edit, so a new row is not stamped until something is typed into it.
+
 `new_row` says what the editor adds: the fields in `defaults`, then each field named in `carry_forward` taken from the last row that has a value for it, so a run of rows sharing a genre is typed once. `datalists` are the completion lists columns draw on: `{ "options": [ … ] }` is a list the server computed, and `{ "from_rows": { "fields": [ … ], "separator": " " } }` is built from the rows on screen by trimming each named field, dropping the row when the first is blank, joining the rest, then deduping and sorting. A `speak` column gets a button that fetches its URL with the cell's URL-encoded value in place of `{value}` and plays what comes back, so the service it names has to answer with audio a browser can play. A `localStorage` entry under `storage_key` replaces that URL's origin — scheme, host and port together — so the same bundle can be pointed at a service somewhere else without being rebuilt.
 
 `link` is present where each row of the table opens a page of one of the app's views, asked about that row:
@@ -431,6 +440,33 @@ A derive stamps with `Stamping::Preview` and a write with `Stamping::Write`, so 
 The page takes a preview's stamps into the rows on screen when the derive answers, together with the derivation worked out from them, and they read like any other value. It takes a write's field by field, and only where the reader has not changed that field since the write was sent, so a stamp never lands on something being typed; the rows as stamped are then what the page counts as written, so taking the stamp in does not write again.
 
 `stamp` may return a sentence, which a write's answer carries in its `notice`, before whatever `after_write` has to say (see Hooks). It is for a stamp that is not what it should be—a rate that could not be fetched, taken from the file instead. A preview's sentence is not shown.
+
+## Overviews
+
+A table can say things about its rows taken together: headings for its groups, and a footer. `TableLogic::overview` builds them from the rows a read, a derive or a write is about, so they are rebuilt with every derive and their figures follow what is typed:
+
+```rust
+fn overview(&self, rows: &[Book], ctx: &Context) -> Result<Overview, ApiError> {
+    Ok(Overview::new()
+        .groups(genres(ctx)?.iter().map(|g| {
+            RowGroup::new(&g.code, &g.name).value("copies", copies_in(rows, &g.code))
+        }))
+        .footer(Footer::new("All copies").value("copies", copies_in_all(rows))))
+}
+```
+
+```json
+"overview": {
+  "groups": [ { "key": "ref", "title": "Reference", "facts": ["ref"],
+                "values": { "copies": 12 } },
+              { "key": "trv", "title": "Travel", "facts": ["trv", "closed"],
+                "note": "on order", "values": { "copies": 0 } } ],
+  "footer": { "title": "All copies", "values": { "copies": 12 } } }
+```
+
+A group's key is what its rows hold in the `group_by` field. Its heading is a title, facts drawn after it, a note at its end, and values, each drawn under the column its field names and read the way that column reads, so a formatted column's subtotal is formatted as its cells are. The title takes the first column and every column after it up to the first that has a value, so a value under the first column is not drawn. A footer is a title and values in the same shape, pinned to the foot of the table so it stays in view while the rows scroll, and drawn under the last row where the rows end first; a table with a footer and no groups has its control for adding a row as the last row of the body, so that the footer is the one thing pinned. A corner of the header or the footer rounds only where it sits at a corner of the box the table is drawn in, so it is square where the table stops short of the box or the rows pass under it. The parts an overview leaves out are left out of its JSON, and an overview that says nothing is not sent, so a table that implements none answers as it always did.
+
+Two groups with one key is a 500 naming the table and the key, on a read, a derive and a write alike. A value under a field no column has is a 500 naming the table and the field on a read, which is what builds the schema the field is checked against; a derive and a write build none, and a value that got past the read is simply not drawn.
 
 ## What the editor does with the table
 
@@ -751,9 +787,9 @@ A release never ships the placeholder. `./Release.ps1` builds the bundle, packag
 
 ## Developing the bundle
 
-`examples/library` is a consumer to develop against: an app called Library with three tables carrying every column type and modifier between them, four views over those tables, and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
+`examples/library` is a consumer to develop against: an app called Library with four tables carrying every column type and modifier between them, four views over those tables, and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
 
-The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and one action, Lend it out, whose form carries all four kinds of field and writes to `Books.jsonl`; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it. Book is a detail page with one hidden parameter, a title, and two sections, and names no way back of its own; its one action, Write the inscription, opens in a side panel headed with the book's title, carries an argument naming the book so that the panel and its draft follow the row when a save retitles it, and has a copyable multi-line field, filled with the book's inscription or a draft of one, and writes it back exactly as it stands in the box. The Books table links each row to Book and the Branches table links each row to Branch, so a row link is checked against a page with no way back of its own and against one whose own is replaced by the table's. The Books table mutes a book whose Withdrawn cell is true, and one of the books is withdrawn, so a muted row can be looked at in both themes and brought back by setting the cell. The Genres table, which the Books table's genres and subgenres are chosen from, is left out of the top bar and reached by its address, `?table=genres`, so the heading a hidden table's page carries can be looked at.
+The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and one action, Lend it out, whose form carries all four kinds of field and writes to `Books.jsonl`; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it. Book is a detail page with one hidden parameter, a title, and two sections, and names no way back of its own; its one action, Write the inscription, opens in a side panel headed with the book's title, carries an argument naming the book so that the panel and its draft follow the row when a save retitles it, and has a copyable multi-line field, filled with the book's inscription or a draft of one, and writes it back exactly as it stands in the box. The Books table links each row to Book and the Branches table links each row to Branch, so a row link is checked against a page with no way back of its own and against one whose own is replaced by the table's. The Books table mutes a book whose Withdrawn cell is true, and one of the books is withdrawn, so a muted row can be looked at in both themes and brought back by setting the cell. The Genres table, which the Books table's genres and subgenres are chosen from, is left out of the top bar and reached by its address, `?table=genres`, so the heading a hidden table's page carries can be looked at. The Purchases table is grouped by branch, a group for each branch in the Branches table's order, each headed with the branch's name, its code and what it spent, with what every branch spent in its footer; Harbour Branch, closed and with no budget, has bought nothing, so its group is empty, carries a second fact and a note, and is where a first row is added to a group.
 
 Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width. The second is lent from the Central branch, so its refused link is on that branch's page as well as in a table. Three more fields hold line breaks for the same reason: two inscriptions in the Inscription column, one written with `\n` and one with `\r\n`, and a note of two lines in the one-line Notes column.
 
