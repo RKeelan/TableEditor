@@ -32,6 +32,8 @@ import {
 import type { Pending } from "../lib/save";
 import {
   type Sort,
+  boxInput,
+  boxText,
   cellMismatch,
   cellText,
   cellValue,
@@ -471,7 +473,14 @@ export function TableEditor({ table, views, pending, go }: Props) {
 
   // Each keystroke is recorded as an edit of its column's field, whether or
   // not it changes the value: retyping a figure is how a reader says it still
-  // stands. The number is taken outside the update, which may run twice.
+  // stands. The number is taken outside the update, which may run twice. A
+  // keystroke that leaves its box reading as it did is that and nothing more,
+  // and leaves the row alone (see boxInput).
+  const markCell = useCallback((id: number, column: Column) => {
+    const seq = ++editSeq.current;
+    setEntries((prev) => markEdited(prev, id, column.field, seq));
+  }, []);
+
   const setCell = useCallback(
     (id: number, column: Column, raw: string) => {
       if (!schema) return;
@@ -735,6 +744,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
         linkTitle={linkTitle}
         go={go}
         onCell={setCell}
+        onMark={markCell}
         onMapEntry={setMapEntry}
         onDelete={onDelete}
         onDragStart={() => (dragSource.current = idx)}
@@ -1031,6 +1041,7 @@ interface RowProps {
   linkTitle: string;
   go: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
   onCell: (id: number, column: Column, raw: string) => void;
+  onMark: (id: number, column: Column) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
   onDelete: (id: number) => void;
   onDragStart: () => void;
@@ -1114,6 +1125,7 @@ function TableRow(p: RowProps) {
           sticky={i === 0 ? stuck : null}
           fill={p.fills.has(column.field)}
           onCell={p.onCell}
+          onMark={p.onMark}
           onMapEntry={p.onMapEntry}
         />
       ))}
@@ -1252,6 +1264,9 @@ interface CellProps {
    *  column's own width, which it is then never narrower than. */
   fill: boolean;
   onCell: (id: number, column: Column, raw: string) => void;
+  /** Record that the cell was typed into without changing what its box
+   *  reads. */
+  onMark: (id: number, column: Column) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
 }
 
@@ -1260,22 +1275,28 @@ interface CellProps {
  *  real one replaces it. */
 const KEEP = "\u0000keep";
 
-/** The props that hand every keystroke in a box to `handle`.
+/** The props that hand every keystroke in a box, which read `before` until
+ *  it, to `write` where it changed what the box reads, and to `mark` where it
+ *  did not (see boxInput).
  *
  *  Typing counts as an edit even where it leaves the value as it was, since
  *  retyping a value is how a reader says it still stands. React's change event
  *  fires only where the box's value differs from the one it last saw, so a
  *  value typed over itself in one keystroke—"3" over "3", or a figure pasted
  *  over itself—would go unseen; the input event is not held back that way. An
- *  ordinary keystroke fires both, and the handler writes the same value
- *  twice. A select needs neither, since choosing the option already chosen
- *  fires nothing at all. */
+ *  ordinary keystroke fires both, and the box is written to twice with the
+ *  same value. A select needs neither, since choosing the option already
+ *  chosen fires nothing at all. */
 function typedInto<T extends HTMLInputElement | HTMLTextAreaElement>(
-  handle: (box: T) => void,
+  before: string,
+  write: (box: T) => void,
+  mark: () => void,
 ) {
+  const input = (box: T) =>
+    boxInput(before, box.value) === "mark" ? mark() : write(box);
   return {
-    onChange: (e: React.ChangeEvent<T>) => handle(e.currentTarget),
-    onInput: (e: React.FormEvent<T>) => handle(e.currentTarget),
+    onChange: (e: React.ChangeEvent<T>) => input(e.currentTarget),
+    onInput: (e: React.FormEvent<T>) => input(e.currentTarget),
   };
 }
 
@@ -1288,6 +1309,7 @@ function Cell({
   sticky,
   fill,
   onCell,
+  onMark,
   onMapEntry,
 }: CellProps) {
   const row = entry.row;
@@ -1384,6 +1406,7 @@ function Cell({
           label={label}
           title={mismatched ? oddTitle : undefined}
           onWrite={(raw) => onCell(entry.id, column, raw)}
+          onMark={() => onMark(entry.id, column)}
         />
       </td>
     );
@@ -1463,6 +1486,7 @@ function Cell({
           size={size}
           label={label}
           onWrite={(raw) => onCell(entry.id, column, raw)}
+          onMark={() => onMark(entry.id, column)}
         />
       </td>
     );
@@ -1473,18 +1497,18 @@ function Cell({
     // text box: a number box would show nothing and invite an edit that
     // overwrote it. A formatted column's is the same box, since a format
     // never applies to what is not a number.
-    const shown = mismatched
-      ? cellText(column, row, derived)
-      : typeof value === "number"
-        ? String(value)
-        : "";
+    const shown = boxText(column, row);
     return (
       <td className={tdCls}>
         <input
           type={mismatched ? "text" : "number"}
           step={column.int_only ? 1 : "any"}
           value={shown}
-          {...typedInto<HTMLInputElement>((box) => onCell(entry.id, column, box.value))}
+          {...typedInto<HTMLInputElement>(
+            shown,
+            (box) => onCell(entry.id, column, box.value),
+            () => onMark(entry.id, column),
+          )}
           // A wheel over a focused number box would otherwise change it while
           // the user is only scrolling past.
           onWheel={(e) => e.currentTarget.blur()}
@@ -1517,9 +1541,11 @@ function Cell({
       >
         <span className="flex items-center gap-1">
           <MultilineField
-            value={linesText(value)}
+            value={boxText(column, row)}
             onChange={(raw) =>
-              onCell(entry.id, column, withLineBreaksOf(raw, breaksFrom.current))
+              boxInput(boxText(column, row), raw) === "mark"
+                ? onMark(entry.id, column)
+                : onCell(entry.id, column, withLineBreaksOf(raw, breaksFrom.current))
             }
             onEditing={(now) => {
               if (now) breaksFrom.current = value;
@@ -1545,7 +1571,7 @@ function Cell({
   }
 
   // string, text, and spaced-string all edit as one line of text.
-  const shown = value == null ? "" : String(value);
+  const shown = boxText(column, row);
   return (
     <td className={tdCls}>
       <span className="flex items-center gap-1">
@@ -1553,7 +1579,11 @@ function Cell({
           type="text"
           value={shown}
           list={column.datalist ? `dl-${column.datalist}` : undefined}
-          {...typedInto<HTMLInputElement>((box) => onCell(entry.id, column, box.value))}
+          {...typedInto<HTMLInputElement>(
+            shown,
+            (box) => onCell(entry.id, column, box.value),
+            () => onMark(entry.id, column),
+          )}
           spellCheck={column.type === "text"}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
@@ -1577,6 +1607,8 @@ interface NumberFieldProps {
   size: React.CSSProperties;
   label: string;
   onWrite: (raw: string) => void;
+  /** Record a keystroke that left the box reading as it did. */
+  onMark: () => void;
 }
 
 /** A number cell whose column has a format. At rest it shows the number as
@@ -1585,7 +1617,14 @@ interface NumberFieldProps {
  *  old. Each keystroke writes what the box reads as; text that reads as no
  *  number writes nothing, and the box is marked until it reads as one or is
  *  left, when it shows the stored number again. */
-function NumberField({ value, format, size, label, onWrite }: NumberFieldProps) {
+function NumberField({
+  value,
+  format,
+  size,
+  label,
+  onWrite,
+  onMark,
+}: NumberFieldProps) {
   // What is being typed, shown in place of the stored number until the box is
   // left; null at rest.
   const [typed, setTyped] = useState<string | null>(null);
@@ -1608,12 +1647,16 @@ function NumberField({ value, format, size, label, onWrite }: NumberFieldProps) 
             if (document.activeElement === box) box.select();
           }, 0);
         }}
-        {...typedInto<HTMLInputElement>((box) => {
-          setTyped(box.value);
-          const read = parseEditText(box.value, format);
-          if (read.kind === "clear") onWrite("");
-          else if (read.kind === "number") onWrite(String(read.value));
-        })}
+        {...typedInto<HTMLInputElement>(
+          shown,
+          (box) => {
+            setTyped(box.value);
+            const read = parseEditText(box.value, format);
+            if (read.kind === "clear") onWrite("");
+            else if (read.kind === "number") onWrite(String(read.value));
+          },
+          onMark,
+        )}
         onBlur={() => setTyped(null)}
         aria-label={label}
         aria-invalid={invalid || undefined}
@@ -1639,6 +1682,8 @@ interface DateFieldProps {
   label: string;
   title: string | undefined;
   onWrite: (raw: string) => void;
+  /** Record a keystroke that left the box reading as it did. */
+  onMark: () => void;
 }
 
 /** A date cell: the browser's own date box, which shows the day however the
@@ -1656,6 +1701,7 @@ function DateField({
   label,
   title,
   onWrite,
+  onMark,
 }: DateFieldProps) {
   // What is being typed, shown in place of the stored value until the box is
   // left; null at rest.
@@ -1665,6 +1711,7 @@ function DateField({
   const [asText, setAsText] = useState(mismatched);
   const text = typed === null ? mismatched : asText;
   const stored = value == null ? "" : String(value);
+  const shown = typed ?? stored;
   const edited = (box: HTMLInputElement) => {
     setTyped(box.value);
     const edit = dateEdit(box.value, box.validity.badInput);
@@ -1674,9 +1721,9 @@ function DateField({
   return (
     <input
       type={text ? "text" : "date"}
-      value={typed ?? stored}
+      value={shown}
       onFocus={() => setAsText(mismatched)}
-      {...typedInto<HTMLInputElement>(edited)}
+      {...typedInto<HTMLInputElement>(shown, edited, onMark)}
       onBlur={(e) => {
         // A date box half typed and one emptied both hold "", so a browser
         // says nothing when the last part of a half-typed date is emptied.

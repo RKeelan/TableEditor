@@ -473,6 +473,38 @@ export function cellText(column: Column, row: Row, derived: Derived): string {
   }
 }
 
+// ── Typing ──────────────────────────────────────────────────────────────────
+
+/** What a cell's own box holds for the row before anything is typed into it:
+ *  a number as JavaScript writes it, text as it is stored, the lines of a cell
+ *  of several lines as a box of several lines holds them, a value its column
+ *  does not describe as the cell reads it, and nothing for an absent field. A
+ *  formatted number's box and a date's hold what is being typed while they are
+ *  focused, and keep that themselves. */
+export function boxText(column: Column, row: Row): string {
+  const value = row[column.field];
+  if (column.type === "number") {
+    if (cellMismatch(column, row)) return cellText(column, row, null);
+    return typeof value === "number" ? String(value) : "";
+  }
+  if (editsAsLines(column, value)) return linesText(value);
+  return value == null ? "" : String(value);
+}
+
+/** What an input event in a cell's box asks of the row, given what the box
+ *  read before the event and what it reads after.
+ *
+ *  Every input event marks the field as typed into, since retyping a value is
+ *  how a reader says it still stands. Only one that changed what the box reads
+ *  writes the cell. One that did not—a value typed over itself, or a key an
+ *  empty number box does not take, such as a lone "-", which leaves it reading
+ *  nothing—leaves the row alone: written, the empty box would be a cleared
+ *  cell, and an absent field would come back as the empty string
+ *  `new_row.defaults` gives it, a change nobody made. */
+export function boxInput(before: string, after: string): "mark" | "write" {
+  return after === before ? "mark" : "write";
+}
+
 /** The lowercased text a cell contributes to filtering. A select contributes
  *  what it stores as well as what it shows, and a formatted number its plain
  *  number as well as its formatted one, so either can be searched for: "1234"
