@@ -6,6 +6,7 @@ import {
   editedLines,
   entryRows,
   insertEntry,
+  lastEdit,
   markEdited,
   moveEntry,
   nextEntryId,
@@ -205,6 +206,20 @@ describe("the visible rows", () => {
 });
 
 describe("the fields typed into", () => {
+  test("move the latest keystroke with every edit, a field typed into again included", () => {
+    let entries = toEntries(rows);
+    expect(lastEdit(entries)).toBe(0);
+    entries = markEdited(entries, 1, "title", 1);
+    expect(lastEdit(entries)).toBe(1);
+    // The same field again, as a value typed over itself would: the fields
+    // listed do not change, and the latest keystroke does.
+    const again = markEdited(entries, 1, "title", 2);
+    expect(editedLines(again)).toEqual(editedLines(entries));
+    expect(lastEdit(again)).toBe(2);
+    // Once a write has stored them there are none.
+    expect(lastEdit(settleEdits(again, new Set([1, 2, 3]), 2))).toBe(0);
+  });
+
   test("are recorded against the entry, each with its latest keystroke", () => {
     const entries = toEntries(rows);
     let edited = markEdited(entries, entries[1].id, "year", 1);

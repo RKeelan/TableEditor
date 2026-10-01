@@ -617,26 +617,38 @@ describe("the writes of one table", () => {
     expect(noticeAfter("The rate is from the file.", states.at(-1)!)).toBeNull();
   });
 
-  test("make a write of rows that read as written where a field was typed into since", async () => {
+  test("write nothing for an edit that left the rows as they were written", async () => {
+    const { writes, asked, screen, states } = driven();
+    typed(screen, "Moss");
+    writes.loaded(screen.key, "v0");
+
+    // The reader retyped the title as it was, on a table whose preview
+    // stamped nothing: the rows read as the file holds them, so a write would
+    // put the same bytes back.
+    screen.edited = [{ line: 1, fields: ["title"] }];
+    await writes.save();
+    expect(asked).toHaveLength(0);
+    expect(states.map((s) => s.kind)).toEqual(["idle"]);
+  });
+
+  test("write an edit whose preview stamp changed the row, and carry the edit so the write stamps it", async () => {
     const { writes, asked, screen } = driven();
     typed(screen, "Moss");
     writes.loaded(screen.key, "v0");
 
-    // The reader retyped the title as it was, which is how a value is said to
-    // still stand: the rows are unchanged, and the server stamps it all the
-    // same.
+    // The same retype on a table that stamps: the preview set the day it was
+    // checked, which the rows on screen now hold and the file does not.
+    screen.rows = [{ title: "Moss", checked: "2026-10-01" }];
+    screen.key = JSON.stringify(screen.rows);
     screen.edited = [{ line: 1, fields: ["title"] }];
-    const retyped = writes.save();
+    const stamped = writes.save();
     await settle();
     expect(asked).toHaveLength(1);
+    expect(asked[0]!.write.key).toBe(screen.key);
     expect(asked[0]!.write.edited).toEqual([{ line: 1, fields: ["title"] }]);
     asked[0]!.land("v1");
-    await retyped;
-
-    // Once the edit is forgotten there is nothing left to send.
-    screen.edited = [];
-    await writes.save();
-    expect(asked).toHaveLength(1);
+    await stamped;
+    expect(writes.written()).toBe(screen.key);
   });
 
   test("do not take a refusal that lands after the table has been read again", async () => {

@@ -183,10 +183,11 @@ export interface Writer {
  *  somebody else's change. So the writes queue, and each one reads the
  *  version, the rows and the refusal the write before it left behind.
  *
- *  A write with nothing new to send—rows that read as the last write left
- *  them, and no field typed into since—is dropped rather than made, which is
- *  what turns a burst of edits during one slow write into one write after it
- *  rather than one write per edit.
+ *  A write with nothing new to send is dropped rather than made, which is what
+ *  turns a burst of edits during one slow write into one write after it rather
+ *  than one write per edit. Rows that read as the last write left them are
+ *  nothing new, whatever was typed into them: a value typed over itself that
+ *  the server's preview did not stamp would write the file back as it was.
  *
  *  Nothing is written before the table has been read, because there are no
  *  rows of it to write: a write then would put an empty editor over the stored
@@ -213,10 +214,7 @@ export function writer(parts: WriterParts): Writer {
   const attempt = async (): Promise<void> => {
     if (stated === null || stale) return;
     const write = parts.pending();
-    // A field typed into is something to send even where the rows read as
-    // they were written, since retyping a value is how a reader says it
-    // still stands, and the server stamps it.
-    if (write.key === written && write.edited.length === 0) {
+    if (write.key === written) {
       // There is nothing to write. Where a write had failed, what it was
       // trying to write is what the file already holds — the reader has typed
       // back to it, or an edit was undone — so the failure is over and the
