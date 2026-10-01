@@ -331,7 +331,24 @@ describe("which body a page arrived with", () => {
       "detail",
     );
   });
+
+  test("is cards whether or not a card has a figure", () => {
+    expect(bodyOf({ ...bare, groups: [figured] })).toBe("cards");
+  });
 });
+
+/** A group whose one card carries a figure: what a card is about takes
+ *  nothing away from what it is. */
+const figured: CardGroup = {
+  heading: "Open",
+  cards: [
+    {
+      title: "Central",
+      figure: { value: 48250, format: { decimals: 2, grouped: true, unit: "CAD" } },
+    },
+    { title: "Harbour", figure: { value: null, format: { decimals: 2 } } },
+  ],
+};
 
 describe("a link to another view", () => {
   test("is that view's address, asked the question it carries", () => {
@@ -595,6 +612,10 @@ describe("what the page says when it cannot be seen", () => {
     expect(
       announce({ ...bare, groups: [group("Open", 2), group("Shut", 1)] }),
     ).toBe("On loan: Open, 2 cards; Shut, 1 card.");
+  });
+
+  test("counts cards with figures as it counts any others", () => {
+    expect(announce({ ...bare, groups: [figured] })).toBe("On loan: Open, 2 cards.");
   });
 
   test("names the thing a page about one thing is about", () => {

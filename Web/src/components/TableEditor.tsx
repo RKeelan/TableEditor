@@ -72,6 +72,7 @@ import {
   type SaveState,
   type Writer,
   hasUnsavedWork,
+  leave,
   noticeAfter,
   retryDelay,
   saveBanner,
@@ -82,6 +83,7 @@ import { type RowTarget, savedRowTarget } from "../lib/view";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
 import { SpeakButton } from "./SpeakButton";
+import { Summary } from "./Summary";
 
 // A short debounce for the live derive, which redraws validation and computed
 // columns as the user types, and a longer one before the write to disk.
@@ -92,6 +94,7 @@ const SAVE_DELAY = 600;
 const UNDO_WINDOW = 10_000;
 
 const NO_COLUMNS: Column[] = [];
+const NO_FILLS: ReadonlySet<string> = new Set();
 
 // What a table nobody has typed into lists as its edits.
 const NO_EDITS = "[]";
@@ -124,8 +127,8 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const [entries, setEntries] = useState<RowEntry[]>([]);
   const [derived, setDerived] = useState<unknown[]>([]);
   const [errors, setErrors] = useState<ValidationError[]>([]);
-  // The headings of the groups and the footer, which follow the derivation:
-  // they are of the same rows.
+  // The headings of the groups, the footer, and the summary above the table,
+  // which follow the derivation: they are of the same rows.
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -564,8 +567,29 @@ export function TableEditor({ table, views, pending, go }: Props) {
     [schema, overview, plan.terms],
   );
 
+  // The box the table is drawn in, and, under a summary, the body the summary
+  // and the box scroll in together.
   const paneRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  // The cards and sections above the table. Where there are any, the table
+  // shares a block with them, and the box it is drawn in stops being a
+  // scroll container of its own.
+  const cards = overview?.cards ?? [];
+  const sections = overview?.sections ?? [];
+  const summarised = cards.length > 0 || sections.length > 0;
+
+  /** A card's link leaves the table the way the switcher does: once what was
+   *  typed has been written, and not at all while a save is failing. */
+  const leaveTo = useCallback(
+    (href: string) => {
+      void leave(pending.current).then((left) => {
+        if (left) window.location.assign(href);
+      });
+    },
+    [pending],
+  );
 
   useEffect(() => {
     const id = focusEntry.current;
@@ -584,20 +608,42 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // not at its bottom edge, and the table narrow when it stops short of the
   // box's right-hand edge. A scrollbar is inside the box, so a row held
   // against one is not at the box's edge either.
+  //
+  // Where the box scrolls, the header's and the footer's own rows move with
+  // the table and their cells are held at the box's edges. Under a summary
+  // the box moves with the table instead, and the cells are held at the edges
+  // of the body it scrolls in. Either is away from the box's edge, so each is
+  // measured: the row as laid out, and its first cell as drawn. The table is
+  // too wide when it is wider than the box, which under a summary then
+  // scrolls sideways instead.
   const [headStuck, setHeadStuck] = useState(false);
   const [footStuck, setFootStuck] = useState(false);
   const [narrow, setNarrow] = useState(false);
+  const [tooWide, setTooWide] = useState(false);
   const markStuck = useCallback(() => {
     const pane = paneRef.current;
     const grid = tableRef.current;
     if (!pane || !grid) return;
     const box = pane.getBoundingClientRect();
-    const head = grid.tHead?.getBoundingClientRect();
-    const foot = grid.tFoot?.getBoundingClientRect();
+    const table = grid.getBoundingClientRect();
+    const top = box.top + pane.clientTop;
+    const bottom = box.bottom - pane.clientTop;
     const away = (from: number, edge: number) => Math.abs(from - edge) > 0.5;
-    setHeadStuck(head !== undefined && away(head.top, box.top + pane.clientTop));
-    setFootStuck(foot !== undefined && away(foot.bottom, box.bottom - pane.clientTop));
-    setNarrow(grid.getBoundingClientRect().right < box.right - pane.clientLeft - 0.5);
+    const head = grid.tHead;
+    const foot = grid.tFoot;
+    const drawn = (section: HTMLTableSectionElement) =>
+      (section.rows[0]?.cells[0] ?? section).getBoundingClientRect();
+    setHeadStuck(
+      head !== null &&
+        (away(head.getBoundingClientRect().top, top) || away(drawn(head).top, top)),
+    );
+    setFootStuck(
+      foot !== null &&
+        (away(foot.getBoundingClientRect().bottom, bottom) ||
+          away(drawn(foot).bottom, bottom)),
+    );
+    setNarrow(table.right < box.right - pane.clientLeft - 0.5);
+    setTooWide(table.width > pane.clientWidth + 1);
   }, []);
 
   const loaded = schema !== null;
@@ -606,12 +652,17 @@ export function TableEditor({ table, views, pending, go }: Props) {
     const grid = tableRef.current;
     if (!loaded || !pane || !grid) return;
     markStuck();
-    // The rows growing or shrinking moves the foot as surely as a scroll.
+    // The rows growing or shrinking moves the foot as surely as a scroll, and
+    // under a summary so does the body changing size, or the summary.
     const observer = new ResizeObserver(markStuck);
     observer.observe(pane);
     observer.observe(grid);
+    const body = bodyRef.current;
+    const block = body?.firstElementChild;
+    if (body) observer.observe(body);
+    if (block) observer.observe(block);
     return () => observer.disconnect();
-  }, [loaded, markStuck]);
+  }, [loaded, summarised, markStuck]);
 
   // ── Reordering, which a sorted view has no order to reorder ───────────────
   const dragSource = useRef<number | null>(null);
@@ -659,6 +710,10 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const footer = overview?.footer;
   const headCls =
     "sticky top-0 z-20 border-b border-border bg-raised py-2 font-medium";
+  // Under a summary the table is as wide as the block it shares with it, and
+  // the width it has beyond its columns' own goes to its wide columns, or to
+  // its first where none is wide.
+  const fills = summarised ? fillFields(columns) : NO_FILLS;
 
   const rowAt = (idx: number) => {
     const entry = entries[idx];
@@ -669,6 +724,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
         entry={entry}
         position={idx}
         columns={columns}
+        fills={fills}
         derived={derived[idx] as Derived}
         errFields={new Set(errs.map((e) => e.field ?? ""))}
         errTitle={errs
@@ -699,6 +755,118 @@ export function TableEditor({ table, views, pending, go }: Props) {
       + Add row
     </button>
   );
+
+  const grid = (
+    <table
+      ref={tableRef}
+      className={"border-collapse text-left" + (summarised ? " w-full" : "")}
+      style={{ "--controls": `${controls}px` } as React.CSSProperties}
+    >
+      <thead>
+        <tr className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
+          <th
+            scope="col"
+            className={headCls + " sticky left-0 z-30 w-[var(--controls)] bg-raised pl-3"}
+          >
+            <span className="sr-only">Row controls</span>
+          </th>
+          {columns.map((column, i) => (
+            <th
+              key={column.field}
+              scope="col"
+              className={
+                headCls +
+                " whitespace-nowrap pr-3" +
+                (i === 0 ? " sticky left-[var(--controls)] z-30 bg-raised" : "") +
+                // A column that does not fill is as narrow as its cells
+                // let it be, which leaves the rest to those that do.
+                (summarised && !fills.has(column.field) ? " w-[1%]" : "")
+              }
+            >
+              {schema.sortable ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSort((current) => nextSort(current, column.field))
+                  }
+                  title={`Sort by ${column.label}`}
+                  className="flex h-8 items-center uppercase tracking-[0.18em] hover:text-ink"
+                >
+                  {column.label}
+                  <span className="ml-1 text-accent">
+                    {sort?.field === column.field
+                      ? sort.direction === "asc"
+                        ? "▲"
+                        : "▼"
+                      : ""}
+                  </span>
+                </button>
+              ) : (
+                column.label
+              )}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      {groups ? (
+        // Each group is a body of its own: its heading, its rows, and its
+        // control for adding a row, which is the only way one is added.
+        groups.map((group) => (
+          <tbody key={`group:${group.key}`}>
+            <GroupHead group={group} columns={columns} fills={fills} />
+            {group.indices.map(rowAt)}
+            <tr className="group-add">
+              <td colSpan={columns.length + 1}>
+                <button
+                  type="button"
+                  onClick={() => addToGroup(group.key)}
+                  aria-label={`Add a row to ${group.heading?.title ?? fallbackTitle(group.key)}`}
+                >
+                  + Add row
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        ))
+      ) : (
+        <tbody>
+          {visible.map(rowAt)}
+          {/* With a footer pinned at the foot, adding a row is the last
+              row of the body, so the footer is the one thing pinned. */}
+          {footer && (
+            <tr>
+              <td colSpan={columns.length + 1}>{addRowButton}</td>
+            </tr>
+          )}
+        </tbody>
+      )}
+      {footer ? (
+        <tfoot>
+          <tr className="total">
+            <td />
+            <LineCells columns={columns} fills={fills} values={footer.values}>
+              {footer.title}
+            </LineCells>
+          </tr>
+        </tfoot>
+      ) : (
+        !grouped && (
+          <tfoot>
+            <tr>
+              <td colSpan={columns.length + 1}>{addRowButton}</td>
+            </tr>
+          </tfoot>
+        )
+      )}
+    </table>
+  );
+
+  // The corners of the header and the footer, which round only where they sit
+  // at the box's own corners.
+  const boxState =
+    (headStuck ? " head-stuck" : "") +
+    (footStuck ? " foot-stuck" : "") +
+    (narrow ? " narrow" : "");
 
   // A table is data, and its widths are counted in characters, so the whole of
   // it is set in the monospaced face at the size the grid was designed around.
@@ -769,119 +937,50 @@ export function TableEditor({ table, views, pending, go }: Props) {
         </div>
       )}
 
-      {/* The pane is the only thing that scrolls sideways, and it takes
-          whatever height the header and the bars leave it. */}
-      <div
-        ref={paneRef}
-        onScroll={markStuck}
-        className={
-          "table-box mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40" +
-          (headStuck ? " head-stuck" : "") +
-          (footStuck ? " foot-stuck" : "") +
-          (narrow ? " narrow" : "") +
-          (footer ? " has-footer" : "")
-        }
-      >
-        <table
-          ref={tableRef}
-          className="border-collapse text-left"
-          style={{ "--controls": `${controls}px` } as React.CSSProperties}
+      {summarised ? (
+        // The summary and the table scroll as one body, which holds the
+        // table's header at its top and its footer at its foot. The box the
+        // table is drawn in is not a scroll container of its own, unless the
+        // table is wider than it, when it scrolls sideways instead and gives
+        // up the holding.
+        <div
+          ref={bodyRef}
+          onScroll={markStuck}
+          className={
+            "summary-body mt-3 min-h-0 flex-1 overflow-y-auto" +
+            (footer ? " has-footer" : "")
+          }
         >
-          <thead>
-            <tr className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
-              <th
-                scope="col"
-                className={headCls + " sticky left-0 z-30 w-[var(--controls)] bg-raised pl-3"}
-              >
-                <span className="sr-only">Row controls</span>
-              </th>
-              {columns.map((column, i) => (
-                <th
-                  key={column.field}
-                  scope="col"
-                  className={
-                    headCls +
-                    " whitespace-nowrap pr-3" +
-                    (i === 0 ? " sticky left-[var(--controls)] z-30 bg-raised" : "")
-                  }
-                >
-                  {schema.sortable ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSort((current) => nextSort(current, column.field))
-                      }
-                      title={`Sort by ${column.label}`}
-                      className="flex h-8 items-center uppercase tracking-[0.18em] hover:text-ink"
-                    >
-                      {column.label}
-                      <span className="ml-1 text-accent">
-                        {sort?.field === column.field
-                          ? sort.direction === "asc"
-                            ? "▲"
-                            : "▼"
-                          : ""}
-                      </span>
-                    </button>
-                  ) : (
-                    column.label
-                  )}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          {groups ? (
-            // Each group is a body of its own: its heading, its rows, and its
-            // control for adding a row, which is the only way one is added.
-            groups.map((group) => (
-              <tbody key={`group:${group.key}`}>
-                <GroupHead group={group} columns={columns} />
-                {group.indices.map(rowAt)}
-                <tr className="group-add">
-                  <td colSpan={columns.length + 1}>
-                    <button
-                      type="button"
-                      onClick={() => addToGroup(group.key)}
-                      aria-label={`Add a row to ${group.heading?.title ?? fallbackTitle(group.key)}`}
-                    >
-                      + Add row
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            ))
-          ) : (
-            <tbody>
-              {visible.map(rowAt)}
-              {/* With a footer pinned at the foot, adding a row is the last
-                  row of the body, so the footer is the one thing pinned. */}
-              {footer && (
-                <tr>
-                  <td colSpan={columns.length + 1}>{addRowButton}</td>
-                </tr>
-              )}
-            </tbody>
-          )}
-          {footer ? (
-            <tfoot>
-              <tr className="total">
-                <td />
-                <LineCells columns={columns} values={footer.values}>
-                  {footer.title}
-                </LineCells>
-              </tr>
-            </tfoot>
-          ) : (
-            !grouped && (
-              <tfoot>
-                <tr>
-                  <td colSpan={columns.length + 1}>{addRowButton}</td>
-                </tr>
-              </tfoot>
-            )
-          )}
-        </table>
-      </div>
+          <div className="summary-block">
+            <Summary cards={cards} sections={sections} onAsk={leaveTo} />
+            <div
+              ref={paneRef}
+              onScroll={markStuck}
+              className={
+                "table-box rounded-lg border border-border bg-surface/40" +
+                boxState +
+                (tooWide ? " too-wide" : "")
+              }
+            >
+              {grid}
+            </div>
+          </div>
+        </div>
+      ) : (
+        // The pane is the only thing that scrolls sideways, and it takes
+        // whatever height the header and the bars leave it.
+        <div
+          ref={paneRef}
+          onScroll={markStuck}
+          className={
+            "table-box mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40" +
+            boxState +
+            (footer ? " has-footer" : "")
+          }
+        >
+          {grid}
+        </div>
+      )}
 
       <p className="mt-2 flex-none font-mono text-[11px] text-muted">
         {filtering
@@ -906,11 +1005,21 @@ export function TableEditor({ table, views, pending, go }: Props) {
   );
 }
 
+/** The fields of the columns that take what width a table has beyond its
+ *  columns' own: its wide columns, or its first where none is wide. */
+function fillFields(columns: readonly Column[]): ReadonlySet<string> {
+  const wide = columns.filter((column) => column.wide);
+  return new Set((wide.length > 0 ? wide : columns.slice(0, 1)).map((c) => c.field));
+}
+
 // ── Row ─────────────────────────────────────────────────────────────────────
 interface RowProps {
   entry: RowEntry;
   position: number;
   columns: readonly Column[];
+  /** The fields whose cells fill their column, which under a summary takes
+   *  whatever width the table has beyond its columns' own. */
+  fills: ReadonlySet<string>;
   derived: Derived;
   errFields: Set<string>;
   errTitle: string;
@@ -1007,6 +1116,7 @@ function TableRow(p: RowProps) {
           derived={p.derived}
           error={p.errFields.has(column.field)}
           sticky={i === 0 ? stuck : null}
+          fill={p.fills.has(column.field)}
           onCell={p.onCell}
           onMapEntry={p.onMapEntry}
         />
@@ -1023,15 +1133,17 @@ function TableRow(p: RowProps) {
 function GroupHead({
   group,
   columns,
+  fills,
 }: {
   group: DrawnGroup;
   columns: readonly Column[];
+  fills: ReadonlySet<string>;
 }) {
   const heading = group.heading;
   return (
     <tr className="group-head">
       <td />
-      <LineCells columns={columns} values={heading?.values} header>
+      <LineCells columns={columns} fills={fills} values={heading?.values} header>
         <span className="group-title">
           {heading?.title ?? fallbackTitle(group.key)}
         </span>
@@ -1053,11 +1165,13 @@ function GroupHead({
  *  for a screen reader. */
 function LineCells({
   columns,
+  fills,
   values,
   header = false,
   children,
 }: {
   columns: readonly Column[];
+  fills: ReadonlySet<string>;
   values: Readonly<Record<string, unknown>> | undefined;
   header?: boolean;
   children: ReactNode;
@@ -1080,7 +1194,11 @@ function LineCells({
         if (cell.kind === "empty") return <td key={i} />;
         return (
           <td key={i}>
-            <LineValue column={cell.column} value={cell.value} />
+            <LineValue
+              column={cell.column}
+              value={cell.value}
+              fill={fills.has(cell.column.field)}
+            />
           </td>
         );
       })}
@@ -1089,8 +1207,17 @@ function LineCells({
 }
 
 /** A heading's or the footer's value, read the way its column reads its own
- *  cells and drawn as a right-aligned read-out as wide as the column's. */
-function LineValue({ column, value }: { column: Column; value: unknown }) {
+ *  cells and drawn as a right-aligned read-out as wide as the column's cells
+ *  are. */
+function LineValue({
+  column,
+  value,
+  fill,
+}: {
+  column: Column;
+  value: unknown;
+  fill: boolean;
+}) {
   const text = lineValueText(column, value);
   const format = formatOf(column);
   const parts =
@@ -1100,7 +1227,7 @@ function LineValue({ column, value }: { column: Column; value: unknown }) {
   return (
     <span
       className="readout figure text-right tabular-nums"
-      style={{ width: controlWidth(column) }}
+      style={controlSize(column, fill)}
       title={text || undefined}
     >
       {parts.number}
@@ -1110,6 +1237,13 @@ function LineValue({ column, value }: { column: Column; value: unknown }) {
 }
 
 // ── Cell ────────────────────────────────────────────────────────────────────
+/** How wide a cell's control or read-out is: the column's own width, or, in a
+ *  column that fills, the whole of the cell and never less than that width. */
+function controlSize(column: Column, fill: boolean): React.CSSProperties {
+  const width = controlWidth(column);
+  return fill ? { width: "100%", minWidth: width } : { width };
+}
+
 interface CellProps {
   column: Column;
   entry: RowEntry;
@@ -1118,6 +1252,9 @@ interface CellProps {
   error: boolean;
   /** The background to keep the first column readable as the rest scrolls. */
   sticky: string | null;
+  /** Whether the cell's control fills its column rather than taking the
+   *  column's own width, which it is then never narrower than. */
+  fill: boolean;
   onCell: (id: number, column: Column, raw: string) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
 }
@@ -1153,10 +1290,12 @@ function Cell({
   derived,
   error,
   sticky,
+  fill,
   onCell,
   onMapEntry,
 }: CellProps) {
   const row = entry.row;
+  const size = controlSize(column, fill);
   const [editing, setEditing] = useState(false);
   // The value as it was when the cell was focused, whose line breaks what is
   // typed keeps even through a moment with none: see withLineBreaksOf.
@@ -1191,7 +1330,7 @@ function Cell({
         <td className={tdCls}>
           <span
             className="readout figure text-right tabular-nums"
-            style={{ width: controlWidth(column) }}
+            style={size}
             title={text || undefined}
           >
             {parts.number}
@@ -1204,7 +1343,7 @@ function Cell({
       <td className={tdCls}>
         <span
           className="readout font-mono text-[11px] text-muted"
-          style={{ width: controlWidth(column) }}
+          style={size}
           title={text || undefined}
         >
           {text}
@@ -1229,7 +1368,7 @@ function Cell({
           className={
             "readout stored" + (format ? " figure text-right tabular-nums" : "")
           }
-          style={{ width: controlWidth(column) }}
+          style={size}
           title={mismatched ? oddTitle : text || undefined}
         >
           {parts.number}
@@ -1245,7 +1384,7 @@ function Cell({
         <DateField
           value={value}
           mismatched={mismatched}
-          width={controlWidth(column)}
+          size={size}
           label={label}
           title={mismatched ? oddTitle : undefined}
           onWrite={(raw) => onCell(entry.id, column, raw)}
@@ -1283,7 +1422,7 @@ function Cell({
           }}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={{ width: controlWidth(column) }}
+          style={size}
           className="field h-8"
         >
           {mismatched && <option value={KEEP}>{cellText(column, row, derived)}</option>}
@@ -1305,7 +1444,7 @@ function Cell({
           onChange={(e) => onCell(entry.id, column, e.target.value)}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={{ width: controlWidth(column) }}
+          style={size}
           className="field h-8"
         >
           {(column.allow_empty || shown === "") && <option value="" />}
@@ -1325,7 +1464,7 @@ function Cell({
         <NumberField
           value={typeof value === "number" ? value : null}
           format={format}
-          width={controlWidth(column)}
+          size={size}
           label={label}
           onWrite={(raw) => onCell(entry.id, column, raw)}
         />
@@ -1355,7 +1494,7 @@ function Cell({
           onWheel={(e) => e.currentTarget.blur()}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={{ width: controlWidth(column) }}
+          style={size}
           className={
             "field h-8 text-right tabular-nums" +
             (column.width_ch === undefined ? " w-20" : "")
@@ -1398,7 +1537,7 @@ function Cell({
                   ? "Holds line breaks, which this one-line column does not expect; edited as several lines so they are kept"
                   : undefined
             }
-            width={controlWidth(column)}
+            size={size}
             spellCheck={column.type !== "string" && column.type !== "spaced-string"}
           />
           {column.speak && (
@@ -1422,7 +1561,7 @@ function Cell({
           spellCheck={column.type === "text"}
           aria-label={label}
           title={mismatched ? oddTitle : undefined}
-          style={{ width: controlWidth(column) }}
+          style={size}
           className="field h-8"
         />
         {column.speak && (
@@ -1438,7 +1577,8 @@ interface NumberFieldProps {
   /** The stored number, or null where the cell holds none. */
   value: number | null;
   format: NumberFormat;
-  width: string | undefined;
+  /** How wide the box and its unit are together: see controlSize. */
+  size: React.CSSProperties;
   label: string;
   onWrite: (raw: string) => void;
 }
@@ -1449,14 +1589,14 @@ interface NumberFieldProps {
  *  old. Each keystroke writes what the box reads as; text that reads as no
  *  number writes nothing, and the box is marked until it reads as one or is
  *  left, when it shows the stored number again. */
-function NumberField({ value, format, width, label, onWrite }: NumberFieldProps) {
+function NumberField({ value, format, size, label, onWrite }: NumberFieldProps) {
   // What is being typed, shown in place of the stored number until the box is
   // left; null at rest.
   const [typed, setTyped] = useState<string | null>(null);
   const invalid = typed !== null && parseEditText(typed, format).kind === "invalid";
   const shown = typed ?? (value === null ? "" : formatNumber(value, format));
   return (
-    <span className="inline-flex items-baseline" style={{ width }}>
+    <span className="inline-flex items-baseline" style={size}>
       <input
         type="text"
         inputMode="decimal"
@@ -1484,7 +1624,7 @@ function NumberField({ value, format, width, label, onWrite }: NumberFieldProps)
         title={invalid ? "Reads as no number, so nothing is written" : undefined}
         className={
           "field h-8 text-right tabular-nums" +
-          (width === undefined ? " w-20" : " min-w-0 flex-1") +
+          (size.width === undefined ? " w-20" : " min-w-0 flex-1") +
           (invalid ? " cell-error" : "")
         }
       />
@@ -1499,7 +1639,7 @@ interface DateFieldProps {
   value: unknown;
   /** Whether the stored value is not a day written `YYYY-MM-DD`. */
   mismatched: boolean;
-  width: string | undefined;
+  size: React.CSSProperties;
   label: string;
   title: string | undefined;
   onWrite: (raw: string) => void;
@@ -1516,7 +1656,7 @@ interface DateFieldProps {
 function DateField({
   value,
   mismatched,
-  width,
+  size,
   label,
   title,
   onWrite,
@@ -1552,7 +1692,7 @@ function DateField({
       }}
       aria-label={label}
       title={title}
-      style={{ width }}
+      style={size}
       className="field h-8 tabular-nums"
     />
   );

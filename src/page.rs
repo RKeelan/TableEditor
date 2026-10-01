@@ -20,7 +20,7 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::error::ApiError;
-use crate::schema::{Column, SelectOption};
+use crate::schema::{Column, Format, SelectOption};
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -34,7 +34,7 @@ fn is_false(value: &bool) -> bool {
 /// differ: a section of what is overdue wants a column of how late, and a
 /// section of what is merely out does not. Sections that should line up are
 /// given the same columns.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Section {
     #[serde(skip_serializing_if = "Option::is_none")]
     heading: Option<String>,
@@ -162,19 +162,28 @@ pub struct CardRow {
     value: String,
 }
 
-/// One thing, as a card says it: how it stands, what it is called, a few facts
-/// about it, and where to read more.
+/// The number a card is about, and how it reads.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct Figure {
+    value: f64,
+    format: Format,
+}
+
+/// One thing, as a card says it: how it stands, what it is called, the number
+/// it is about, a few facts about it, and where to read more.
 ///
 /// Everything but the title is optional, and what is not given is left out
 /// rather than drawn empty, because a card is read down the page and a blank
 /// line in one is noise.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Card {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     statuses: Vec<Status>,
     #[serde(skip_serializing_if = "Option::is_none")]
     identifier: Option<String>,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    figure: Option<Figure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     subtitle: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -191,6 +200,7 @@ impl Card {
             statuses: Vec::new(),
             identifier: None,
             title: title.into(),
+            figure: None,
             subtitle: None,
             rows: Vec::new(),
             sentence: None,
@@ -209,6 +219,13 @@ impl Card {
     /// The short name the thing is filed under, shown beside the status.
     pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
         self.identifier = Some(identifier.into());
+        self
+    }
+
+    /// The number the card is about, drawn large under its title and read by
+    /// `format`. A figure that is not finite is sent as null and drawn empty.
+    pub fn figure(mut self, value: f64, format: Format) -> Self {
+        self.figure = Some(Figure { value, format });
         self
     }
 
@@ -717,7 +734,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::schema::Format;
 
     #[test]
     fn a_section_omits_what_it_was_not_given() {
@@ -862,6 +878,37 @@ mod tests {
             json!([{ "word": "Revisions requested", "tone": "good" },
                    { "word": "Submitted", "tone": "warning" }])
         );
+    }
+
+    #[test]
+    fn a_cards_figure_is_its_value_and_how_it_reads() {
+        let card = Card::new("Spent")
+            .figure(1234567.89, Format::money().unit("CAD"))
+            .subtitle("Every branch");
+        assert_eq!(
+            serde_json::to_value(&card).unwrap(),
+            json!({
+                "title": "Spent",
+                "figure": { "value": 1234567.89,
+                            "format": { "decimals": 2, "grouped": true, "unit": "CAD" } },
+                "subtitle": "Every branch"
+            })
+        );
+    }
+
+    #[test]
+    fn a_figure_that_is_not_finite_is_sent_as_null() {
+        for value in [f64::NAN, f64::INFINITY] {
+            let card = Card::new("Share").figure(value, Format::percent(1));
+            assert_eq!(
+                serde_json::to_value(&card).unwrap()["figure"],
+                json!({ "value": null, "format": { "decimals": 1, "percent": true } })
+            );
+        }
+        // The page reads the answer as text, which says the same.
+        let text =
+            serde_json::to_string(&Card::new("Share").figure(f64::NAN, Format::fixed(0))).unwrap();
+        assert!(text.contains(r#""value":null"#), "{text}");
     }
 
     #[test]

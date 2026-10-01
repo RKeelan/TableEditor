@@ -99,6 +99,22 @@ describe("a formatted value's parts", () => {
   });
 });
 
+describe("a card's figure", () => {
+  test("is the number and its unit, drawn apart", () => {
+    expect(numberParts(1234567.89, cad)).toEqual({
+      number: "1,234,567.89",
+      unit: "CAD",
+    });
+    expect(numberParts(-86.25, cad)).toEqual({ number: `${MINUS}86.25`, unit: "CAD" });
+    expect(numberParts(0.4521, percent(1))).toEqual({ number: "45.2%", unit: null });
+  });
+
+  test("is empty where the server sent a figure that was not finite", () => {
+    // The server sends one as null, and the card draws nothing in its place.
+    expect(numberParts(null, cad)).toEqual({ number: "", unit: null });
+  });
+});
+
 describe("a focused formatted cell", () => {
   test("shows the stored number as JavaScript prints it, without commas", () => {
     expect(editText(1234.5, money)).toBe("1234.5");
