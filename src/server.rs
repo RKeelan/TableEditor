@@ -14,7 +14,7 @@ use crate::context::Context;
 use crate::head;
 use crate::launch::{self, Occupant};
 use crate::routes;
-use crate::table::{App, Front};
+use crate::table::{self, App, Front};
 
 /// The bundle served when the repository does not supply its own.
 ///
@@ -221,7 +221,9 @@ impl Server {
     /// are matched first. Panics, too, when a table's file is not a bare name,
     /// since every file is resolved against the one `Data/` directory. Panics
     /// when a table's rows link to a view the app does not serve, or with a
-    /// parameter that view does not declare.
+    /// parameter that view does not declare. Panics when [`App::switcher`]
+    /// names a page the app does not serve, names one twice, names one its
+    /// `in_switcher` keeps out, or leaves out one its `in_switcher` keeps in.
     pub fn new(app: impl App) -> Self {
         let app: Arc<dyn App> = Arc::new(app);
         for table in app.tables() {
@@ -332,6 +334,35 @@ impl Server {
                 seen.contains(&name),
                 "the front page names the view \"{name}\", which this app does not serve"
             ),
+        }
+
+        // The switcher says where each page `in_switcher` leaves in is
+        // offered, and nothing about which those are. A page it left out
+        // would otherwise be put somewhere nobody chose, or hidden by a
+        // second way of saying what `in_switcher` already says.
+        let listed = table::listed_in_order(&app.views(), &app.tables());
+        let mut placed: Vec<&'static str> = Vec::new();
+        for name in app.switcher() {
+            assert!(
+                tables.contains(&name) || seen.contains(&name),
+                "the switcher names \"{name}\", which this app does not serve"
+            );
+            assert!(
+                !placed.contains(&name),
+                "the switcher names \"{name}\" twice; each page has one place in it"
+            );
+            assert!(
+                listed.contains(&name),
+                "the switcher names \"{name}\", whose in_switcher keeps it out of the switcher"
+            );
+            placed.push(name);
+        }
+        for name in listed {
+            assert!(
+                placed.contains(&name),
+                "the switcher leaves out \"{name}\", which in_switcher keeps in it; give it a \
+                 place, or have its in_switcher say no"
+            );
         }
 
         Self {
@@ -1021,6 +1052,80 @@ mod tests {
             }
         }
         let _ = Server::new(Missing);
+    }
+
+    /// A view the switcher leaves out, as a page about one thing is.
+    struct Unlisted;
+
+    impl ViewLogic for Unlisted {
+        fn name(&self) -> &'static str {
+            "story"
+        }
+        fn title(&self) -> &'static str {
+            "Story"
+        }
+        fn in_switcher(&self) -> bool {
+            false
+        }
+        fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+            Ok(ViewData::new())
+        }
+    }
+
+    /// The fixture's two views and two tables, and one view left out of the
+    /// switcher, offered in whatever order a test names.
+    struct Ordered(Vec<&'static str>);
+
+    impl App for Ordered {
+        fn name(&self) -> &str {
+            "Ordered"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&crate::fixture::Books, &crate::fixture::Genres]
+        }
+        fn views(&self) -> Vec<&dyn View> {
+            vec![&crate::fixture::OnLoan, &Unlisted, &crate::fixture::Shelf]
+        }
+        fn switcher(&self) -> Vec<&'static str> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn the_switcher_may_put_a_table_before_a_view() {
+        let order = vec!["books", "on-loan", "genres", "shelf"];
+        let server = Server::new(Ordered(order.clone()));
+        assert_eq!(server.app.switcher(), order);
+    }
+
+    #[test]
+    #[should_panic(expected = "the switcher names \"nowhere\", which this app does not serve")]
+    fn the_switcher_may_not_name_a_page_the_app_does_not_serve() {
+        let _ = Server::new(Ordered(vec![
+            "books", "on-loan", "nowhere", "genres", "shelf",
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the switcher names \"books\" twice")]
+    fn the_switcher_may_not_name_a_page_twice() {
+        let _ = Server::new(Ordered(vec![
+            "books", "on-loan", "books", "genres", "shelf",
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the switcher names \"story\", whose in_switcher keeps it out")]
+    fn the_switcher_may_not_name_a_page_its_in_switcher_keeps_out() {
+        let _ = Server::new(Ordered(vec![
+            "books", "on-loan", "story", "genres", "shelf",
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "the switcher leaves out \"genres\", which in_switcher keeps in it")]
+    fn the_switcher_may_not_leave_out_a_page_its_in_switcher_keeps_in() {
+        let _ = Server::new(Ordered(vec!["books", "on-loan", "shelf"]));
     }
 
     #[test]

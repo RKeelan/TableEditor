@@ -60,16 +60,48 @@ export function switcherTables(tables: readonly TableEntry[]): TableEntry[] {
   return tables.filter((entry) => entry.in_switcher !== false);
 }
 
-/** What the top bar offers, views first. An app that offers nothing gets no
- *  switcher at all, which leaves its name and the theme button. */
+/** One page the top bar offers: which kind it is, its name, and its title. */
+export interface Offer {
+  kind: "view" | "table";
+  name: string;
+  title: string;
+}
+
+/** What the top bar offers, in order. Where the app orders it, `switcher`
+ *  names the pages, each looked up among the views and then the tables, and a
+ *  name that is neither is skipped. Otherwise it is the views and then the
+ *  tables, each as `in_switcher` lists them: the views are where the reading
+ *  happens, and the tables where the typing happens. An app that offers
+ *  nothing gets no switcher at all, which leaves its name and the theme
+ *  button. */
 export function offered(app: {
   views?: readonly ViewEntry[];
   tables: readonly TableEntry[];
-}): { views: ViewEntry[]; tables: TableEntry[] } {
-  return {
-    views: switcherViews(app.views ?? []),
-    tables: switcherTables(app.tables),
-  };
+  switcher?: readonly string[];
+}): Offer[] {
+  const views = app.views ?? [];
+  const asView = (v: ViewEntry): Offer => ({
+    kind: "view",
+    name: v.view,
+    title: v.title,
+  });
+  const asTable = (t: TableEntry): Offer => ({
+    kind: "table",
+    name: t.table,
+    title: t.title,
+  });
+  if (app.switcher) {
+    return app.switcher.flatMap((name) => {
+      const view = views.find((v) => v.view === name);
+      if (view) return [asView(view)];
+      const table = app.tables.find((t) => t.table === name);
+      return table ? [asTable(table)] : [];
+    });
+  }
+  return [
+    ...switcherViews(views).map(asView),
+    ...switcherTables(app.tables).map(asTable),
+  ];
 }
 
 /** How a status reads. The bundle maps these five to colours; nothing outside

@@ -103,7 +103,7 @@ export function App() {
   // heads its own page either way.
   const unlisted =
     target?.kind === "table" &&
-    !offer.tables.some((t) => t.table === target.name);
+    !offer.some((o) => o.kind === "table" && o.name === target.name);
 
   useEffect(() => {
     if (!app) return;
@@ -130,28 +130,21 @@ export function App() {
             <span className="text-sm text-muted">{app.subtitle}</span>
           )}
           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-            {offer.views.length + offer.tables.length > 0 && (
+            {offer.length > 0 && (
               <nav
                 aria-label="Views and tables"
                 className="-mx-1 flex max-w-full items-center gap-1 overflow-x-auto px-1"
               >
-                {/* Views first: they are where the reading happens, and the
-                    tables are where the typing happens. */}
-                {offer.views.map((v) => (
+                {offer.map((o) => (
                   <Switch
-                    key={`view-${v.view}`}
-                    href={viewHref(v.view, {})}
-                    title={v.title}
-                    active={target?.kind === "view" && target.name === v.view}
-                    go={go}
-                  />
-                ))}
-                {offer.tables.map((t) => (
-                  <Switch
-                    key={`table-${t.table}`}
-                    href={tableHref(t.table)}
-                    title={t.title}
-                    active={target?.kind === "table" && target.name === t.table}
+                    key={`${o.kind}-${o.name}`}
+                    href={
+                      o.kind === "view"
+                        ? viewHref(o.name, {})
+                        : tableHref(o.name)
+                    }
+                    title={o.title}
+                    active={target?.kind === o.kind && target.name === o.name}
                     go={go}
                   />
                 ))}

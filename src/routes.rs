@@ -31,7 +31,7 @@ use tiny_http::{Header, Method, Request, Response};
 use crate::context::Context;
 use crate::error::ApiError;
 use crate::head;
-use crate::table::{App, Front, Table};
+use crate::table::{App, Front, Table, listed_in_order};
 
 const JSON: &str = "application/json";
 const HTML: &str = "text/html; charset=utf-8";
@@ -517,9 +517,9 @@ fn health_payload(app: &dyn App) -> Result<String, ApiError> {
 }
 
 /// `GET /api/app`: what the shell needs to draw its header, its switcher, and
-/// whatever a bare address opens. An app with no views and no declared front
-/// page sends neither key, so its payload is `name`, `subtitle` and `tables`
-/// alone.
+/// whatever a bare address opens. An app with no views, no order of its own
+/// for the switcher, and no declared front page sends none of those keys, so
+/// its payload is `name`, `subtitle` and `tables` alone.
 #[derive(Serialize)]
 struct AppPayload<'a> {
     name: &'a str,
@@ -528,6 +528,8 @@ struct AppPayload<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     views: Vec<ViewEntry<'a>>,
     tables: Vec<TableEntry<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    switcher: Option<Vec<&'static str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     front: Option<FrontEntry<'a>>,
 }
@@ -564,11 +566,17 @@ enum FrontEntry<'a> {
 }
 
 fn app_payload(app: &dyn App) -> Result<String, ApiError> {
+    let views = app.views();
+    let tables = app.tables();
+    // Views then tables, each as `in_switcher` lists them, is an order a page
+    // works out from the two lists, so the switcher is sent only where the
+    // app orders it otherwise.
+    let switcher = app.switcher();
+    let switcher = (switcher != listed_in_order(&views, &tables)).then_some(switcher);
     to_json(&AppPayload {
         name: app.name(),
         subtitle: app.subtitle(),
-        views: app
-            .views()
+        views: views
             .iter()
             .map(|v| ViewEntry {
                 view: v.route(),
@@ -576,8 +584,7 @@ fn app_payload(app: &dyn App) -> Result<String, ApiError> {
                 in_switcher: v.listed(),
             })
             .collect(),
-        tables: app
-            .tables()
+        tables: tables
             .iter()
             .map(|t| TableEntry {
                 table: t.route(),
@@ -585,6 +592,7 @@ fn app_payload(app: &dyn App) -> Result<String, ApiError> {
                 in_switcher: t.listed(),
             })
             .collect(),
+        switcher,
         front: match app.front() {
             // The first table is what an app that says nothing gets, and
             // saying so would only repeat what the list already shows.
@@ -929,6 +937,61 @@ mod tests {
 
         let v: Value = serde_json::from_str(&app_payload(&Fronted(Books)).unwrap()).unwrap();
         assert_eq!(v["front"], json!({ "table": "books" }));
+    }
+
+    /// The fixture's two views and two tables, offered in whatever order a
+    /// test names.
+    struct Reordered(Vec<&'static str>);
+
+    impl App for Reordered {
+        fn name(&self) -> &str {
+            "Reordered"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&Books, &crate::fixture::Genres]
+        }
+        fn views(&self) -> Vec<&dyn View> {
+            vec![&crate::fixture::OnLoan, &crate::fixture::Shelf]
+        }
+        fn switcher(&self) -> Vec<&'static str> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn an_app_that_orders_its_switcher_sends_the_order() {
+        // Asserted as text, since the order of the keys is part of what a
+        // consumer reads.
+        assert_eq!(
+            app_payload(&Reordered(vec!["books", "on-loan", "genres", "shelf"])).unwrap(),
+            concat!(
+                r#"{"name":"Reordered","#,
+                r#""views":[{"view":"on-loan","title":"On loan"},{"view":"shelf","title":"Shelf"}],"#,
+                r#""tables":[{"table":"books","title":"Books"},{"table":"genres","title":"Genres"}],"#,
+                r#""switcher":["books","on-loan","genres","shelf"]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn an_app_whose_switcher_is_in_the_default_order_sends_none() {
+        let v: Value = serde_json::from_str(
+            &app_payload(&Reordered(vec!["on-loan", "shelf", "books", "genres"])).unwrap(),
+        )
+        .unwrap();
+        assert!(v.get("switcher").is_none(), "{v}");
+
+        // Nor does one that says nothing, asserted as text so that no key is
+        // added to its payload unnoticed.
+        assert_eq!(
+            app_payload(&Library::new()).unwrap(),
+            concat!(
+                r#"{"name":"Library","subtitle":"Fixture","#,
+                r#""views":[{"view":"on-loan","title":"On loan"},{"view":"shelf","title":"Shelf"}],"#,
+                r#""tables":[{"table":"books","title":"Books"},{"table":"genres","title":"Genres"}],"#,
+                r#""front":{"view":"on-loan"}}"#
+            )
+        );
     }
 
     #[test]

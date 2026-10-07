@@ -39,14 +39,28 @@ pub trait App: Send + Sync + 'static {
         None
     }
 
-    /// The tables in the order the shell lists them. The first is what the
-    /// editor opens when nothing else is named.
+    /// The tables in the order the shell lists them, unless
+    /// [`App::switcher`] orders them otherwise. The first is what the editor
+    /// opens when nothing else is named.
     fn tables(&self) -> Vec<&dyn Table>;
 
-    /// The views in the order the shell lists them, before the tables. An app
-    /// of tables alone leaves this alone and serves none.
+    /// The views in the order the shell lists them, before the tables, unless
+    /// [`App::switcher`] orders them otherwise. An app of tables alone leaves
+    /// this alone and serves none.
     fn views(&self) -> Vec<&dyn View> {
         Vec::new()
+    }
+
+    /// The names of the pages the top bar offers, in the order it offers
+    /// them. The default is each view its `in_switcher` leaves in, in the
+    /// order of [`App::views`], then each such table, in the order of
+    /// [`App::tables`].
+    ///
+    /// `in_switcher` says which pages are offered, and this says only where,
+    /// so an app ordering them otherwise names each of those pages once and
+    /// nothing else. A name is enough, since no view shares a table's.
+    fn switcher(&self) -> Vec<&'static str> {
+        listed_in_order(&self.views(), &self.tables())
     }
 
     /// What a bare address opens.
@@ -94,6 +108,22 @@ pub trait App: Send + Sync + 'static {
     fn view(&self, route: &str) -> Option<&dyn View> {
         self.views().into_iter().find(|v| v.route() == route)
     }
+}
+
+/// The pages a top bar offers where the app does not order them: each view
+/// that is listed, then each table that is.
+pub(crate) fn listed_in_order(views: &[&dyn View], tables: &[&dyn Table]) -> Vec<&'static str> {
+    views
+        .iter()
+        .filter(|view| view.listed())
+        .map(|view| view.route())
+        .chain(
+            tables
+                .iter()
+                .filter(|table| table.listed())
+                .map(|table| table.route()),
+        )
+        .collect()
 }
 
 /// What one request wrote, as [`App::after_write`] is told it.
@@ -712,6 +742,7 @@ mod tests {
     use crate::fixture::{self, BOOKS_FILE, Book, Books, GENRES_FILE, Genre, Genres};
     use crate::overview::{Footer, RowGroup};
     use crate::schema::Column;
+    use crate::view::{ViewArgs, ViewData, ViewLogic};
 
     #[test]
     fn get_shapes_schema_rows_derived_errors_and_siblings() {
@@ -1828,5 +1859,67 @@ mod tests {
             }
         }
         assert!(checked > 0, "the fixture has no computed column to check");
+    }
+
+    #[test]
+    fn the_switcher_defaults_to_the_listed_views_then_the_listed_tables() {
+        struct Story;
+        impl ViewLogic for Story {
+            fn name(&self) -> &'static str {
+                "story"
+            }
+            fn title(&self) -> &'static str {
+                "Story"
+            }
+            fn in_switcher(&self) -> bool {
+                false
+            }
+            fn render(&self, _args: &ViewArgs, _ctx: &Context) -> Result<ViewData, ApiError> {
+                Ok(ViewData::new())
+            }
+        }
+
+        struct Lookup;
+        impl TableLogic for Lookup {
+            type Row = Genre;
+            fn name(&self) -> &'static str {
+                "lookup"
+            }
+            fn file(&self) -> &'static str {
+                GENRES_FILE
+            }
+            fn title(&self) -> &'static str {
+                "Lookup"
+            }
+            fn in_switcher(&self) -> bool {
+                false
+            }
+            fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+                Ok(Schema::new([Column::string("genre", "Genre")]))
+            }
+            fn validate(
+                &self,
+                _rows: &[Genre],
+                _ctx: &Context,
+            ) -> Result<Vec<ValidationError>, ApiError> {
+                Ok(Vec::new())
+            }
+        }
+
+        struct Mixed;
+        impl App for Mixed {
+            fn name(&self) -> &str {
+                "Mixed"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&Books, &Lookup, &Genres]
+            }
+            fn views(&self) -> Vec<&dyn View> {
+                vec![&Story, &fixture::OnLoan, &fixture::Shelf]
+            }
+        }
+
+        assert_eq!(Mixed.switcher(), ["on-loan", "shelf", "books", "genres"]);
+        assert_eq!(fixture::Plain::new().switcher(), ["books"]);
     }
 }
