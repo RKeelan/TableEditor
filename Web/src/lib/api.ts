@@ -5,13 +5,16 @@ import { ApiError } from "./errors";
 import type { Overview, Row, Schema, ValidationError } from "./schema";
 import type { ActionResult, TableEntry, ViewEntry, ViewPayload } from "./view";
 
-/** `GET api/app`: the shell's name, what it serves, and what a bare address
- *  opens. `views` and `front` are absent from an app that has neither. */
+/** `GET api/app`: the shell's name, what it serves, the order its switcher
+ *  offers them in, and what a bare address opens. `views`, `switcher` and
+ *  `front` are absent from an app that has none, and `switcher` from one
+ *  whose order is the views and then the tables. */
 export interface AppPayload {
   name: string;
   subtitle?: string;
   views?: ViewEntry[];
   tables: TableEntry[];
+  switcher?: string[];
   front?: { view: string } | { table: string };
 }
 

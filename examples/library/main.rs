@@ -1386,6 +1386,12 @@ impl App for Library {
         ]
     }
 
+    /// The top bar goes by subject rather than by kind: the branches and what
+    /// they bought, then what is out on loan and the books themselves.
+    fn switcher(&self) -> Vec<&'static str> {
+        vec!["all-branches", "branches", "purchases", "on-loan", "books"]
+    }
+
     /// The reading happens on the views, so one of them is what a bare address
     /// opens; the tables are where the typing happens.
     fn front(&self) -> Front {

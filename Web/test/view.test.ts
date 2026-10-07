@@ -729,10 +729,58 @@ describe("what the top bar offers", () => {
         { table: "genres", title: "Genres", in_switcher: false },
       ],
     };
-    expect(offered(app)).toEqual({
-      views: [{ view: "all-branches", title: "All branches" }],
+    expect(offered(app)).toEqual([
+      { kind: "view", name: "all-branches", title: "All branches" },
+      { kind: "table", name: "books", title: "Books" },
+    ]);
+  });
+
+  test("is the app's own order where it names one", () => {
+    const app: AppPayload = {
+      name: "Finance",
+      views: [{ view: "retirement", title: "Retirement" }],
+      tables: [
+        { table: "assets", title: "Assets" },
+        { table: "accounts", title: "Accounts", in_switcher: false },
+      ],
+      switcher: ["assets", "retirement"],
+      front: { table: "assets" },
+    };
+    expect(offered(app)).toEqual([
+      { kind: "table", name: "assets", title: "Assets" },
+      { kind: "view", name: "retirement", title: "Retirement" },
+    ]);
+  });
+
+  test("puts tables and views wherever the app's order puts them", () => {
+    const app: AppPayload = {
+      name: "Library",
+      views: [
+        { view: "all-branches", title: "All branches" },
+        { view: "on-loan", title: "On loan" },
+      ],
+      tables: [
+        { table: "books", title: "Books" },
+        { table: "branches", title: "Branches" },
+      ],
+      switcher: ["all-branches", "branches", "on-loan", "books"],
+    };
+    expect(offered(app).map((o) => `${o.kind}:${o.name}`)).toEqual([
+      "view:all-branches",
+      "table:branches",
+      "view:on-loan",
+      "table:books",
+    ]);
+  });
+
+  test("skips a name in the app's order that it serves nothing under", () => {
+    const app: AppPayload = {
+      name: "Library",
+      views: [{ view: "on-loan", title: "On loan" }],
       tables: [{ table: "books", title: "Books" }],
-    });
+      switcher: ["books", "nowhere", "on-loan"],
+    };
+    expect(offered(app).map((o) => o.name)).toEqual(["books", "on-loan"]);
   });
 
   test("is nothing for an app that lists nothing", () => {
@@ -744,11 +792,9 @@ describe("what the top bar offers", () => {
       ],
       front: { table: "assets" },
     };
-    expect(offered(hidden)).toEqual({ views: [], tables: [] });
-    expect(offered({ tables: [] })).toEqual({
-      views: [],
-      tables: [],
-    });
+    expect(offered(hidden)).toEqual([]);
+    expect(offered({ tables: [] })).toEqual([]);
+    expect(offered({ tables: [], switcher: [] })).toEqual([]);
     // The front page is served though nothing offers it.
     expect(resolveTarget(hidden, { kind: "none" })).toEqual({
       kind: "table",
