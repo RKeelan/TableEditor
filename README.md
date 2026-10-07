@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.7.0"
+table-editor = "=0.7.1"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.7.0", default-features = false }
+table-editor = { version = "=0.7.1", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -856,6 +856,8 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 `0.6.0` lets a table mute rows: `Schema::muted_by` names a field, and a row holding `true` there is drawn in the muted tone. It adds that builder and a `muted_by` key the schema sends only where a table sets it, so a consumer of `0.5.1` compiles against it unchanged apart from the pin and gets the page it had. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 `0.7.0` lets a `number` or `computed` column take a `Format`—fixed places, grouped thousands, a percentage, a unit—in a table and in a view, and edits a formatted number cell as the number it stores. A table can have `date` columns and `read_only` ones, and can stamp the fields an edit implies: the page says which fields the reader typed into, `TableLogic::stamp` sets what follows from them, a derive shows the stamp and a write stores it. A table can group its rows under headings, pin a footer beneath them, and put cards and small tables above itself, all built by `TableLogic::overview` from the rows each read, derive and write is about, so its figures follow the typing; `Card::figure` gives a card, in a view or above a table, the number it is about. A row can be muted by its derivation, and a table can stay out of the switcher. `Server::data_dir` names the directory the tables are in, and `App::before_write`, `App::after_write` and `App::page_opened` are called before a save or an action reads anything, once it has written, and when the page loads, which is what a repository committing its saves needs; `after_write` may return a sentence for the reader, which a save's answer carries as its `notice` and an action's after its own sentence. A consumer that uses none of this still gets a different page: the theme is chosen from one button that opens the three choices, a computed column of numbers sorts numerically, and a value typed over itself is derived again and not written; its top bar keeps its switcher, which goes only where nothing is listed. To the Rust API it adds `Format`, `Edits`, `Stamping`, `Overview`, `RowGroup`, `Footer`, `Written`, `ColumnType::Date`, the builders `Column::format`, `Column::date`, `Column::read_only`, `Schema::group_by`, `Schema::muted_by_derived`, `Card::figure` and `Server::data_dir`, the defaulted `TableLogic::in_switcher`, `TableLogic::stamp`, `TableLogic::overview` and `Table::listed`, the three defaulted `App` hooks, and `PartialEq` for `Card` and `Section`. It reserves no new name. The one break is theoretical: a type implementing both `TableLogic` and `ViewLogic` that calls `in_switcher`, or calls `listed` with `Table` and `View` both in scope, by method syntax now has to say which it means. Nothing else changes there, so a consumer of `0.6.0` compiles against it unchanged apart from the pin. Every answer keeps the keys it had and gains the new ones only where a table or the app uses them, and a write that lists no edits is not stamped, so a repository's scripts write as they did. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
+
+`0.7.1` lets an app order its top bar: the defaulted `App::switcher` names the pages it offers, in order, and `Server::new` panics on an order that names a page the app does not serve, names one twice, or disagrees with `in_switcher` about which pages are offered. `GET /api/app` carries the order as `switcher` only where it differs from the views before the tables. It changes nothing else in the Rust API, so a consumer of `0.7.0` compiles against it unchanged apart from the pin, and one that does not override `switcher` gets the page it had.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 
