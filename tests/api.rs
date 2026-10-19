@@ -762,7 +762,7 @@ fn the_api_answers_over_http() {
     let (status, _) = request(port, "GET", "/api/nothing", "");
     assert_eq!(status, 404);
 
-    // The UI is Vite's to serve in `--api-only`.
+    // The UI is Bun's dev server's to serve in `--api-only`.
     let (status, _) = request(port, "GET", "/", "");
     assert_eq!(status, 404);
 }

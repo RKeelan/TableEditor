@@ -2,8 +2,9 @@
 //! and for seeing every column type on a page at once.
 //!
 //! Run it with `cargo run --example library -- web --api-only`, which serves
-//! the API in the foreground on port 8791, where the Vite dev server proxies
-//! it. Without `--api-only` it launches a browser on the embedded bundle.
+//! the API in the foreground on port 8791, where Bun's dev server
+//! (`Web/scripts/dev.ts`) proxies it. Without `--api-only` it launches a
+//! browser on the embedded bundle.
 //!
 //! The tables it serves live in `examples/library/Data`, and the example moves
 //! into that directory itself, so it can be run from anywhere in the checkout.

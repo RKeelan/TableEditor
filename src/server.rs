@@ -68,7 +68,7 @@ pub struct ServerArgs {
     pub restart: bool,
 
     /// Development mode: serve only `/api` in the foreground (no embedded UI,
-    /// no browser). Vite serves the UI and proxies `/api` here.
+    /// no browser). Bun's dev server serves the UI and proxies `/api` here.
     #[arg(long)]
     pub api_only: bool,
 }
@@ -480,7 +480,7 @@ impl Server {
         }
 
         // Dev mode serves the API in the foreground so logs and Ctrl-C work;
-        // Vite owns the UI and proxies `/api` here.
+        // Bun's dev server owns the UI and proxies `/api` here.
         if args.api_only {
             return self.serve(port, args.api_only);
         }
