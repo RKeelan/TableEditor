@@ -18,11 +18,12 @@ Run from the repository root.
 - `cargo test --no-default-features` — test the file-format-only build (CI gate)
 - `bun install --cwd Web` — install the bundle's dependencies
 - `bun test --cwd Web` — test the bundle's helpers (CI gate)
-- `bun run --cwd Web check` — type-check the bundle
+- `bun check --cwd Web` — type-check the bundle
 - `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
 - `./Deploy.ps1` — install and build the bundle in one step
 - `./Release.ps1` — build, package, check the packaged page, and dry-run the publish (CI gate)
-- `cargo run --example library -- web --api-only` — the example consumer's API on 8791, for Vite to proxy
+- `cargo run --example library -- web --api-only` — the example consumer's API on 8791, for the dev server to proxy
+- `bun run --cwd Web dev` — the dev server: the bundle with hot reloading on 5173, proxying `/api` to 8791
 
 CI runs the Rust gates on Linux and the clippy and test gates on Windows, which is where the editor is used, the web gates on Linux, and the release dry run on Linux. The Rust jobs install no bun and build no bundle, so they prove the crate builds on a checkout that has never run it.
 

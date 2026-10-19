@@ -5,8 +5,8 @@ examples/library/Data/*.jsonl text eol=lf
 
 # The bundle is built from these sources, and the page it builds is what a
 # release publishes, so the build must not vary with the platform it ran on. A
-# source checked out with CRLF carries those line endings into the page—Vite
-# copies the body of index.html through verbatim—and the page a release ships
+# source checked out with CRLF carries those line endings into the page—Bun
+# copies the markup of index.html through verbatim—and the page a release ships
 # then depends on whose machine built it. Pin them to LF so every checkout
 # builds the same bytes.
 Web/** text eol=lf

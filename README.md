@@ -290,7 +290,7 @@ What is posted is checked against the page rather than taken on trust: the serve
 
 Two further rules hold for every endpoint that writes—`PUT /api/<table>`, `POST /api/<table>/derive`, and an action. The body has to be sent as `application/json`, which is a 415 otherwise; and the request has to say it came from a page this server served, which is a 403 otherwise. Together they mean a write comes from the editor's own page: a cross-origin `fetch` carrying that content type is preflighted and never arrives, and the shapes a browser sends without asking first—a form post—can neither claim that type nor hide where they came from.
 
-Where the request came from is read from `Sec-Fetch-Site`, which has to be `same-origin`. That is the browser's own answer, worked out from the address the page was loaded at before anything in between sees the request, so it survives a proxy: Vite serves the bundle at one address and forwards `/api` to the editor, and a request the page makes to itself is `same-origin` all the same. A browser old enough to send no `Sec-Fetch-Site` falls back to `Origin`, compared against the host the request was addressed to. A request with neither is no browser's—`curl`, the launcher's own probes, a repository's scripts—and is held to the content type alone. Neither rule is asked of a read. A body larger than 16 MiB is refused with a 413 rather than read into memory.
+Where the request came from is read from `Sec-Fetch-Site`, which has to be `same-origin`. That is the browser's own answer, worked out from the address the page was loaded at before anything in between sees the request, so it survives a proxy: the dev server serves the bundle at one address and forwards `/api` to the editor, and a request the page makes to itself is `same-origin` all the same. A browser old enough to send no `Sec-Fetch-Site` falls back to `Origin`, compared against the host the request was addressed to. A request with neither is no browser's—`curl`, the launcher's own probes, a repository's scripts—and is held to the content type alone. Neither rule is asked of a read. A body larger than 16 MiB is refused with a 413 rather than read into memory.
 
 `GET /api/health` returns `{"status":"ok","app":"<name>"}` and `POST /api/shutdown` returns `{"status":"stopping"}` and exits. Health names the app so that a launch can tell its own server from another one on the same port. A body of `{"status":"ok"}` with no `app` is read as a table editor built before health bodies carried the name, which `stop` and `--restart` act on but a launch never adopts.
 
@@ -748,7 +748,7 @@ An app without one answers each of those with a 404. `/favicon.ico` is not serve
 
 The page's links to those files are relative (`icon.svg`, `manifest.json`), and so are the manifest's icons (`android-chrome-192x192.png`), which resolve against the manifest's address. A repository may be served behind a reverse proxy under a path prefix, where `/icon.svg` would reach the proxy's root rather than the app. Relative links work because the page is served at the root and the bundle never changes its path, only its query string. Under a prefix, the page has to be reached with the closing slash: from `/prefix/` the links resolve to `/prefix/icon.svg`, but from `/prefix` they resolve against the proxy's root.
 
-The page is one file built before any app is known, so the server writes the app into it once, when it starts. Its `<title>` starts `Table Editor`, and that is replaced with the app's name. Its head carries the comment `<!-- table-editor:head -->`, and that is replaced with the links to the icon's files and a `<meta name="theme-color">`, or with nothing for an app without an icon. The placeholder page carries both as well. Once the page has loaded, the bundle sets `document.title` itself, to the name `GET /api/app` sends followed by the heading of the page it is on, which is also what titles the page when Vite serves it in development.
+The page is one file built before any app is known, so the server writes the app into it once, when it starts. Its `<title>` starts `Table Editor`, and that is replaced with the app's name. Its head carries the comment `<!-- table-editor:head -->`, and that is replaced with the links to the icon's files and a `<meta name="theme-color">`, or with nothing for an app without an icon. The placeholder page carries both as well. Once the page has loaded, the bundle sets `document.title` itself, to the name `GET /api/app` sends followed by the heading of the page it is on, which is also what titles the page when the dev server serves it in development.
 
 ## Reserved names
 
@@ -758,7 +758,7 @@ A table or a view may not be named `app`, `derive`, `health`, `shutdown`, `stop`
 
 `ServerArgs` carries the arguments the editor's subcommand takes. A repository whose subcommand takes arguments of its own flattens `ServerArgs` into its own `Args` struct and adds them alongside.
 
-Launching reuses this app's server already running on the port, which is why running the command twice opens a second browser window rather than a second server; `--restart` shuts the old one down first. A port held by another app's editor, or by anything else, is an error naming both apps rather than a reuse, and `stop` leaves such a server running. The server itself runs as a detached worker process, so the command that starts it returns at once, and it holds none of that command's standard handles: piping the launch into something — `app web | tail`, a script, a CI step — reaches the end of the output as soon as the launch is done rather than when the server eventually stops. The worker is marked by an environment variable, which is how it knows to bind rather than spawn another copy of itself. `--api-only` skips all of that and serves the API in the foreground, for running the UI from Vite.
+Launching reuses this app's server already running on the port, which is why running the command twice opens a second browser window rather than a second server; `--restart` shuts the old one down first. A port held by another app's editor, or by anything else, is an error naming both apps rather than a reuse, and `stop` leaves such a server running. The server itself runs as a detached worker process, so the command that starts it returns at once, and it holds none of that command's standard handles: piping the launch into something — `app web | tail`, a script, a CI step — reaches the end of the output as soon as the launch is done rather than when the server eventually stops. The worker is marked by an environment variable, which is how it knows to bind rather than spawn another copy of itself. `--api-only` skips all of that and serves the API in the foreground, for running the UI from the dev server.
 
 A server answering exactly `{"status":"ok"}` is read as a table editor built before health bodies named the app. It is never reused, because there is no telling whose tables it would serve, but `stop` takes it down and `--restart` replaces it, so upgrading a consumer never leaves a server on the port that the new binary can neither stop nor take the port from. Both say in so many words what they are doing.
 
@@ -810,7 +810,9 @@ This speaks plain HTTP to a local server: no TLS, no redirects, no chunked decod
 
 ## The browser bundle
 
-`Web/` holds the bundle's sources: React and Tailwind, built by Vite into one self-contained page with the script and the styles inlined. `assets/index.html` is what that build writes. It is a build artefact, it is not in the repository, and the build is the only thing that writes it: run `./Deploy.ps1` from the repository root, which installs the dependencies and builds. Never hand-edit it.
+`Web/` holds the bundle's sources: React and Tailwind, built by Bun into one self-contained page with the script and the styles inlined. `assets/index.html` is what that build writes. It is a build artefact, it is not in the repository, and the build is the only thing that writes it: run `./Deploy.ps1` from the repository root, which installs the dependencies and builds. Never hand-edit it.
+
+Tailwind is compiled by bun-plugin-tailwind, which carries its own Tailwind compiler. The `tailwindcss` package supplies only the stylesheet that `@import "tailwindcss"` reads, so upgrading it does not upgrade the compiler.
 
 The published crate carries that page, built at release. A consumer therefore needs no bun, no Node, and no network: `cargo build` gives them the editor.
 
@@ -828,10 +830,10 @@ Two of its books are there to be looked at rather than read: one whose title is 
 
 ```
 cargo run --example library -- web --api-only    # the API on 127.0.0.1:8791
-bun run --cwd Web dev                            # Vite on 5173, proxying /api to 8791
+bun run --cwd Web dev                            # Bun on 5173, proxying /api to 8791
 ```
 
-Vite serves the UI with hot reloading and proxies `/api` to the example, so the editor is exercised against a real server. `cargo run --example library -- web` instead serves the embedded page and opens a browser on it, which is how to check what a consumer will actually get; `cargo run --example library -- web stop` shuts that one down. The page is embedded at build time, so a server started that way serves whatever the binary was built from: build the bundle, then the example, before looking at a change through it. In a checkout that has never built the bundle, what it serves is the placeholder, which says so.
+Bun serves the UI with hot reloading and forwards `/api` to the example, so the editor is exercised against a real server. `cargo run --example library -- web` instead serves the embedded page and opens a browser on it, which is how to check what a consumer will actually get; `cargo run --example library -- web stop` shuts that one down. The page is embedded at build time, so a server started that way serves whatever the binary was built from: build the bundle, then the example, before looking at a change through it. In a checkout that has never built the bundle, what it serves is the placeholder, which says so.
 
 The example writes to its own `Data/*.jsonl`, so edits made while developing show up as changes to those files. They are committed, and reverting them is how to get back to the data the example ships with.
 
@@ -886,7 +888,7 @@ Publishing needs a crates.io token: create one at [crates.io/settings/tokens](ht
 - `cargo test --no-default-features` — test the file-format-only build (CI gate)
 - `bun install --cwd Web` — install the bundle's dependencies
 - `bun test --cwd Web` — test the bundle's helpers (CI gate)
-- `bun run --cwd Web check` — type-check the bundle
+- `bun check --cwd Web` — type-check the bundle
 - `bun run --cwd Web build` — type-check and build, writing `assets/index.html` (CI gate)
 - `./Deploy.ps1` — install and build in one step
 - `./Release.ps1` — build, package, check the packaged page, and dry-run the publish (CI gate)

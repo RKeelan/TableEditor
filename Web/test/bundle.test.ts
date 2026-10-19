@@ -54,7 +54,7 @@ describe.skipIf(!built)("the built bundle", () => {
   });
 
   test("carries no carriage return, so every platform builds the same page", () => {
-    // Vite copies the body of index.html through as it finds it, so a source
+    // Bun copies the markup of index.html through as it finds it, so a source
     // checked out with CRLF puts a carriage return in the page, and the page a
     // release publishes then depends on whose machine built it. The sources
     // are pinned to LF in .gitattributes; this is what notices when they are

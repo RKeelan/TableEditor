@@ -1,4 +1,14 @@
 # Dependencies are pinned to exact versions, here as in Cargo.toml, so an
 # install adds what package.json names and nothing newer.
+#
+# Peer dependencies are skipped because bun-plugin-tailwind names `bun` as one.
+# Installing it would put a second Bun in node_modules/.bin, which package
+# scripts would then run instead of the Bun on PATH.
 [install]
 exact = true
+peer = false
+
+# Tailwind for the dev server. The build loads the same plugin in
+# scripts/build.ts, because `bun build` does not read this file.
+[serve.static]
+plugins = ["bun-plugin-tailwind"]

@@ -147,7 +147,12 @@ pub(crate) fn handle(
     }
     if method == Method::Get && (path == "/" || path == "/index.html") {
         if api_only {
-            return respond(request, 404, TEXT, b"UI is served by Vite in dev mode");
+            return respond(
+                request,
+                404,
+                TEXT,
+                b"UI is served by Bun's dev server in dev mode",
+            );
         }
         return respond(request, 200, HTML, index_html.as_bytes());
     }
@@ -471,10 +476,11 @@ fn is_json(content_type: &str) -> bool {
 /// `Sec-Fetch-Site` is the browser's own answer, and the one to prefer. The
 /// browser works it out from the address the page was loaded at against the
 /// address it is asking, before anything in between sees the request, so it
-/// survives a proxy: the Vite dev server serves the bundle at one address and
-/// forwards `/api` here, and a request the page makes to itself is still
-/// `same-origin`. `same-site` is not enough—that is another host under one
-/// registrable domain—and `cross-site` and `none` are not this page at all.
+/// survives a proxy: Bun's dev server (`Web/scripts/dev.ts`) serves the bundle
+/// at one address and forwards `/api` here, and a request the page makes to
+/// itself is still `same-origin`. `same-site` is not enough—that is another
+/// host under one registrable domain—and `cross-site` and `none` are not this
+/// page at all.
 ///
 /// `Origin` is the older answer, for a browser that sends no `Sec-Fetch-Site`,
 /// and is compared against the host the request was addressed to. It is
@@ -721,9 +727,9 @@ mod tests {
 
         // What a browser says of the editor's own page asking its own server.
         assert!(from_our_page(Some("same-origin"), None, host));
-        // And of the bundle asking through Vite, where the address the browser
-        // was given and the address this server answers at are not the same:
-        // the browser settles it before the proxy rewrites anything.
+        // And of the bundle asking through Bun's dev server, where the address
+        // the browser was given and the address this server answers at are not
+        // the same: the browser settles it before the proxy rewrites anything.
         assert!(from_our_page(
             Some("same-origin"),
             Some("http://localhost:5173"),
