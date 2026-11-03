@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.8.0"
+table-editor = "=0.8.1"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.8.0", default-features = false }
+table-editor = { version = "=0.8.1", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -895,6 +895,8 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 `0.7.1` lets an app order its top bar: the defaulted `App::switcher` names the pages it offers, in order, and `Server::new` panics on an order that names a page the app does not serve, names one twice, or disagrees with `in_switcher` about which pages are offered. `GET /api/app` carries the order as `switcher` only where it differs from the views before the tables. It changes nothing else in the Rust API, so a consumer of `0.7.0` compiles against it unchanged apart from the pin, and one that does not override `switcher` gets the page it had.
 
 `0.8.0` shows and takes dates as `02-Nov-2026`. A `date` column and a `date` form field are shown in that form on every page, whatever the reader's browser or language, and are edited in a text box with a button beside it that opens the browser's calendar, while files and the wire keep ISO. A `date` column can hold a `YYYY-MM` month as well, shown as `Nov-2026`, through the new builder `Column::allow_month`, which sends an `allow_month` key only where a table sets it. A `computed` column's value is shown as it is derived, since its schema does not say it is a date, and a date a server writes into its own text is shown as written. To the Rust API it adds only that builder, so a consumer of `0.7.1` compiles against it unchanged apart from the pin. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
+
+`0.8.1` adds `Form::secondary`, which draws a form button in the plain outlined style, and `Button::undoable` with `Undoable`, a form button with no fields that hides its row, offers Undo in a toast and posts its action only when the wait is over. Gold marks the action a row exists for rather than any button that writes. Existing form buttons are drawn and behave as they were, so a consumer of `0.8.0` compiles against it unchanged apart from the pin.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 
