@@ -3,6 +3,7 @@
 // cell reads as text, how a column sorts, and how the filter matches.
 
 import type { CSSProperties } from "react";
+import { dateText, isStoredDate } from "./dates";
 import { formattedText } from "./format";
 import {
   type Column,
@@ -102,11 +103,11 @@ export function writeCell(
       break;
     }
     case "date": {
-      // A day is stored as ISO text or not at all: anything else is a date
+      // A date is stored as ISO text or not at all: anything else is a date
       // half typed, which writes nothing (see dateEdit).
       if (raw === "") {
         clearField(next, schema, column.field);
-      } else if (isIsoDate(raw)) {
+      } else if (isStoredDate(raw, column.allow_month)) {
         next[column.field] = raw;
       }
       break;
@@ -128,47 +129,6 @@ export function writeCell(
   }
 
   return next;
-}
-
-// ── Dates ───────────────────────────────────────────────────────────────────
-
-/** Whether a value is a day written `YYYY-MM-DD` that exists: 2026-02-28
- *  does and 2026-02-30 does not.
- *
- *  This is stricter than it need be to read a date, on purpose. A browser's
- *  date box handed a day that does not exist shows nothing, and a cell that
- *  looks empty invites an edit over what the file holds, so such a value is
- *  shown as it is stored and marked instead. */
-export function isIsoDate(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return false;
-  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  // A day that does not exist rolls over into the next month, which the round
-  // trip catches. Setting the year separately keeps years below 100 from
-  // being read as 19xx.
-  const date = new Date(Date.UTC(2000, month - 1, day));
-  date.setUTCFullYear(year);
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-  );
-}
-
-/** What a date box asks to write, given what it holds and whether the
- *  browser says what was typed is not yet a date.
- *
- *  A box that has been cleared is a cleared cell. A box whose date is only
- *  half typed also reads as empty, and says so through `validity.badInput`:
- *  it writes nothing, and the stored day stays until a whole one is typed. */
-export function dateEdit(
-  raw: string,
-  badInput: boolean,
-): { kind: "clear" } | { kind: "date"; value: string } | { kind: "none" } {
-  if (raw === "") return badInput ? { kind: "none" } : { kind: "clear" };
-  if (isIsoDate(raw)) return { kind: "date", value: raw };
-  return { kind: "none" };
 }
 
 // ── Lines ───────────────────────────────────────────────────────────────────
@@ -426,7 +386,7 @@ export function cellMismatch(column: Column, row: Row): boolean {
     case "date":
       // An empty string is what a cleared cell holds in a table whose new
       // rows start with one, and an empty box is what it is.
-      return value !== "" && !isIsoDate(value);
+      return value !== "" && !isStoredDate(value, column.allow_month);
     default:
       return typeof value !== "string";
   }
@@ -434,9 +394,9 @@ export function cellMismatch(column: Column, row: Row): boolean {
 
 /** The text a cell shows: a computed column's derived value, a select's label,
  *  a boolean's word, a map's entries, a number as its column's format reads
- *  it, and anything else as it is stored. A value that does not match its
- *  column shows as it is stored, and so does a derived value that is not a
- *  number, format or no format. */
+ *  it, a date in its display form, and anything else as it is stored. A value
+ *  that does not match its column shows as it is stored, and so does a derived
+ *  value that is not a number, format or no format. */
 export function cellText(column: Column, row: Row, derived: Derived): string {
   if (column.type !== "computed" && cellMismatch(column, row)) {
     const value = row[column.field];
@@ -455,6 +415,9 @@ export function cellText(column: Column, row: Row, derived: Derived): string {
     case "boolean": {
       if (typeof value !== "boolean") return "";
       return value ? "Yes" : "No";
+    }
+    case "date": {
+      return typeof value === "string" ? dateText(value, column.allow_month) : "";
     }
     case "map": {
       return mapEntries(value)
@@ -505,17 +468,18 @@ export function boxInput(before: string, after: string): "mark" | "write" {
   return after === before ? "mark" : "write";
 }
 
-/** The lowercased text a cell contributes to filtering. A select contributes
- *  what it stores as well as what it shows, and a formatted number its plain
- *  number as well as its formatted one, so either can be searched for: "1234"
- *  finds 1,234.50. */
+/** The lowercased text a cell contributes to filtering. A select and a date
+ *  contribute what they store as well as what they show, and a formatted number
+ *  its plain number as well as its formatted one, so either can be searched
+ *  for: "1234" finds 1,234.50, and "2026-11" and "nov-2026" both find
+ *  02-Nov-2026. */
 export function cellSearchText(
   column: Column,
   row: Row,
   derived: Derived,
 ): string {
   const shown = cellText(column, row, derived);
-  if (column.type === "select") {
+  if (column.type === "select" || column.type === "date") {
     const stored = row[column.field];
     const storedText = stored == null ? "" : String(stored);
     return `${storedText} ${shown}`.toLowerCase();
@@ -566,7 +530,9 @@ export function isBlankCell(
  *  What is compared is the value the cell shows, which for a computed column
  *  is the derived value. Two genuine numbers compare numerically, so a
  *  computed column of numbers puts 987 before 1234, and two booleans false
- *  before true. Everything else compares by the text the cell shows, which is
+ *  before true. A date compares by the text it stores, since ISO text sorts by
+ *  date where the text a date reads as does not, and a month comes before the
+ *  days in it. Everything else compares by the text the cell shows, which is
  *  what keeps a value that does not match its column sorting where it
  *  appears. */
 export function compareByColumn(
@@ -586,6 +552,7 @@ export function compareByColumn(
   if (typeof left === "boolean" && typeof right === "boolean") {
     return Number(left) - Number(right);
   }
+  if (column.type === "date") return asText(left).localeCompare(asText(right));
   return cellText(column, a.row, a.derived).localeCompare(
     cellText(column, b.row, b.derived),
   );
@@ -809,10 +776,10 @@ export function chipValueStyle(): CSSProperties {
  *  A control is measured by its border box, and what it puts around the text —
  *  padding, border, a select's arrow — comes out of that box. A width of
  *  exactly `n` characters would therefore fit two or three fewer than it says,
- *  which is how a ten-character date column clips every date in it. The
+ *  which is how a ten-character column clips every ten-character value. The
  *  padding and border are one custom property so this and the stylesheet
  *  cannot drift apart; a select adds the room its arrow takes, a date box
- *  the room its picker button takes, and a formatted number the room its
+ *  the room its calendar button takes, and a formatted number the room its
  *  unit takes.
  *
  *  `undefined` means the column named no width and the control keeps whatever
@@ -833,7 +800,7 @@ export function unitChars(column: Column): number {
 
 /** The room a control's own button takes inside its box: a select's arrow,
  *  the arrow browsers give a text input that completes from a datalist, and
- *  a date box's picker button, which with the space around it is wider than
+ *  a date box's calendar button, which with the space beside it is wider than
  *  an arrow. A read-only column draws no control, and so no button. */
 function buttonRoom(column: Column): string {
   if (column.read_only) return "";
@@ -845,9 +812,7 @@ function buttonRoom(column: Column): string {
 }
 
 /** The character count a column asks for, including the default a text column
- *  takes when it names none, and a date column's: 11, which fits a day
- *  however a browser writes it, ISO and 09/30/2026 being 10 and 30-Sep-2026
- *  11. */
+ *  takes when it names none, and a date column's: 11, which fits 30-Sep-2026. */
 export function widthChOf(column: Column): number | undefined {
   if (column.width_ch !== undefined) return column.width_ch;
   switch (column.type) {

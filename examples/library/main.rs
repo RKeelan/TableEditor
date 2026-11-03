@@ -113,6 +113,10 @@ struct Purchase {
     /// The day it was ordered, as `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     ordered: String,
+    /// When it is due, as `YYYY-MM-DD`, or `YYYY-MM` where the supplier has
+    /// named only the month.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    expected: String,
     /// Whether it has arrived. Until it has, it is on order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     received: Option<bool>,
@@ -578,6 +582,7 @@ impl TableLogic for Purchases {
                 .format(Format::money())
                 .width_ch(8),
             Column::date("ordered", "Ordered"),
+            Column::date("expected", "Expected").allow_month(),
             Column::boolean("received", "Received"),
         ])
         .group_by("branch")

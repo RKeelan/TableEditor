@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { type DeriveResult, deriveTable, getTable, putTable } from "../lib/api";
+import { dateEdit } from "../lib/dates";
 import { describeError } from "../lib/errors";
 import { editText, formatNumber, numberParts, parseEditText } from "../lib/format";
 import {
@@ -38,7 +39,6 @@ import {
   cellText,
   cellValue,
   controlWidth,
-  dateEdit,
   datalistOptions,
   editsAsLines,
   formatOf,
@@ -83,8 +83,10 @@ import {
   writer,
 } from "../lib/save";
 import { type RowTarget, savedRowTarget } from "../lib/view";
+import { DateBox } from "./DateBox";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
+import { typedInto } from "./parts";
 import { SpeakButton } from "./SpeakButton";
 import { Summary } from "./Summary";
 
@@ -1275,31 +1277,6 @@ interface CellProps {
  *  real one replaces it. */
 const KEEP = "\u0000keep";
 
-/** The props that hand every keystroke in a box, which read `before` until
- *  it, to `write` where it changed what the box reads, and to `mark` where it
- *  did not (see boxInput).
- *
- *  Typing counts as an edit even where it leaves the value as it was, since
- *  retyping a value is how a reader says it still stands. React's change event
- *  fires only where the box's value differs from the one it last saw, so a
- *  value typed over itself in one keystroke—"3" over "3", or a figure pasted
- *  over itself—would go unseen; the input event is not held back that way. An
- *  ordinary keystroke fires both, and the box is written to twice with the
- *  same value. A select needs neither, since choosing the option already
- *  chosen fires nothing at all. */
-function typedInto<T extends HTMLInputElement | HTMLTextAreaElement>(
-  before: string,
-  write: (box: T) => void,
-  mark: () => void,
-) {
-  const input = (box: T) =>
-    boxInput(before, box.value) === "mark" ? mark() : write(box);
-  return {
-    onChange: (e: React.ChangeEvent<T>) => input(e.currentTarget),
-    onInput: (e: React.FormEvent<T>) => input(e.currentTarget),
-  };
-}
-
 function Cell({
   column,
   entry,
@@ -1329,7 +1306,9 @@ function Cell({
   const label = `${column.label}, row ${position + 1}`;
   const oddTitle =
     column.type === "date" && typeof value === "string"
-      ? "Not a day written YYYY-MM-DD, which is what this column holds"
+      ? column.allow_month
+        ? "Not a day written YYYY-MM-DD or a month written YYYY-MM, which is what this column holds"
+        : "Not a day written YYYY-MM-DD, which is what this column holds"
       : `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
 
   const format = formatOf(column);
@@ -1399,13 +1378,21 @@ function Cell({
   if (column.type === "date") {
     return (
       <td className={tdCls}>
-        <DateField
-          value={value}
-          mismatched={mismatched}
-          size={size}
-          label={label}
+        <DateBox
+          stored={value}
+          displayText={cellText(column, row, derived)}
+          allowMonth={column.allow_month}
+          label={column.label}
+          ariaLabel={label}
           title={mismatched ? oddTitle : undefined}
-          onWrite={(raw) => onCell(entry.id, column, raw)}
+          marked={mismatched}
+          boxClassName="field h-8 tabular-nums"
+          style={size}
+          onEdit={(text) => {
+            const edit = dateEdit(text, column.allow_month);
+            if (edit.kind === "clear") onCell(entry.id, column, "");
+            else if (edit.kind === "date") onCell(entry.id, column, edit.value);
+          }}
           onMark={() => onMark(entry.id, column)}
         />
       </td>
@@ -1669,75 +1656,6 @@ function NumberField({
       />
       {format.unit && <span className="unit">{format.unit}</span>}
     </span>
-  );
-}
-
-// ── Date ────────────────────────────────────────────────────────────────────
-interface DateFieldProps {
-  /** The stored value, whatever it is. */
-  value: unknown;
-  /** Whether the stored value is not a day written `YYYY-MM-DD`. */
-  mismatched: boolean;
-  size: React.CSSProperties;
-  label: string;
-  title: string | undefined;
-  onWrite: (raw: string) => void;
-  /** Record a keystroke that left the box reading as it did. */
-  onMark: () => void;
-}
-
-/** A date cell: the browser's own date box, which shows the day however the
- *  reader's browser writes dates and hands back ISO.
- *
- *  While it is focused the box holds what is typed, so a date half typed
- *  stays in it, writing nothing, until it is a whole date or nothing; a box
- *  held to the stored value would have it put back over the half-typed one
- *  with each keystroke. A stored value that is not a date is shown as it is
- *  in a text box, and is edited as text until the box is left. */
-function DateField({
-  value,
-  mismatched,
-  size,
-  label,
-  title,
-  onWrite,
-  onMark,
-}: DateFieldProps) {
-  // What is being typed, shown in place of the stored value until the box is
-  // left; null at rest.
-  const [typed, setTyped] = useState<string | null>(null);
-  // Whether the box is text, settled when it is focused so that it does not
-  // change under the caret when what is typed becomes a date.
-  const [asText, setAsText] = useState(mismatched);
-  const text = typed === null ? mismatched : asText;
-  const stored = value == null ? "" : String(value);
-  const shown = typed ?? stored;
-  const edited = (box: HTMLInputElement) => {
-    setTyped(box.value);
-    const edit = dateEdit(box.value, box.validity.badInput);
-    if (edit.kind === "clear") onWrite("");
-    else if (edit.kind === "date") onWrite(edit.value);
-  };
-  return (
-    <input
-      type={text ? "text" : "date"}
-      value={shown}
-      onFocus={() => setAsText(mismatched)}
-      {...typedInto<HTMLInputElement>(shown, edited, onMark)}
-      onBlur={(e) => {
-        // A date box half typed and one emptied both hold "", so a browser
-        // says nothing when the last part of a half-typed date is emptied.
-        // Leaving the box is when an emptied one is known to be emptied.
-        const box = e.currentTarget;
-        const left = dateEdit(box.value, box.validity.badInput);
-        if (typed !== null && left.kind === "clear" && stored !== "") onWrite("");
-        setTyped(null);
-      }}
-      aria-label={label}
-      title={title}
-      style={size}
-      className="field h-8 tabular-nums"
-    />
   );
 }
 

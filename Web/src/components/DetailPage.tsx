@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { postAction } from "../lib/api";
+import { dateAnswer, dateText } from "../lib/dates";
 import { describeError } from "../lib/errors";
 import {
   Drafts,
@@ -42,6 +43,7 @@ import {
   safeHref,
 } from "../lib/view";
 import { CopyButton } from "./CopyButton";
+import { DateBox } from "./DateBox";
 import { OutsideLink, PageLink, StatusWord } from "./parts";
 import { SidePanel } from "./SidePanel";
 
@@ -796,12 +798,24 @@ function FieldControl({
     );
   }
 
-  const width =
-    field.type === "number"
-      ? " w-24"
-      : field.type === "date"
-        ? " w-44"
-        : " w-full sm:w-64";
+  if (field.type === "date") {
+    return (
+      <div className="mb-3.5">
+        {heading}
+        <DateBox
+          id={id}
+          stored={value}
+          displayText={dateText(value)}
+          label={field.label}
+          className="w-44"
+          boxClassName="field h-9 border border-border bg-page"
+          onEdit={(text) => onChange(dateAnswer(text))}
+        />
+      </div>
+    );
+  }
+
+  const width = field.type === "number" ? " w-24" : " w-full sm:w-64";
 
   return (
     <div className="mb-3.5">
