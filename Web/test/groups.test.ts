@@ -259,7 +259,7 @@ describe("a heading's value", () => {
   test("reads the way its column reads", () => {
     expect(lineValueText(cost, 1306.45)).toBe("1,306.45 CAD");
     expect(lineValueText(cad, 330029.94)).toBe("330,029.94");
-    expect(lineValueText(ordered, "2026-09-30")).toBe("2026-09-30");
+    expect(lineValueText(ordered, "2026-09-30")).toBe("30-Sep-2026");
     expect(lineValueText(item, "four")).toBe("four");
   });
 

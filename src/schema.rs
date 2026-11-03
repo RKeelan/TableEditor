@@ -265,6 +265,8 @@ pub struct Column {
     from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<Format>,
+    #[serde(skip_serializing_if = "is_false")]
+    allow_month: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     speak: Option<Speak>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -291,6 +293,7 @@ impl Column {
             datalist: None,
             from: None,
             format: None,
+            allow_month: false,
             speak: None,
             href: None,
             map: None,
@@ -371,6 +374,14 @@ impl Column {
     /// A day, stored as a `YYYY-MM-DD` string.
     pub fn date(field: impl Into<String>, label: impl Into<String>) -> Self {
         Self::base(field, label, ColumnType::Date)
+    }
+
+    /// Let a `date` column hold a month, stored as a `YYYY-MM` string, as well
+    /// as a day. It is for a date that is often known only to the month. Other
+    /// column types ignore it.
+    pub fn allow_month(mut self) -> Self {
+        self.allow_month = true;
+        self
     }
 
     /// Offer a blank choice on a select whose value may legitimately be unset.
@@ -969,6 +980,16 @@ mod tests {
             serde_json::to_value(Column::date("checked", "Checked").read_only()).unwrap(),
             json!({ "field": "checked", "label": "Checked", "type": "date", "read_only": true })
         );
+        assert_eq!(
+            serde_json::to_value(Column::date("expected", "Expected").allow_month()).unwrap(),
+            json!({ "field": "expected", "label": "Expected", "type": "date", "allow_month": true })
+        );
+    }
+
+    #[test]
+    fn allow_month_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Column::date("ordered", "Ordered")).unwrap();
+        assert!(plain.get("allow_month").is_none());
     }
 
     #[test]

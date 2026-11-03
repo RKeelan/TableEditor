@@ -97,7 +97,7 @@
   --field-chrome: calc(2 * var(--field-pad-x) + 2px);
   /* The room a select's own arrow takes out of its box. */
   --field-arrow: 1.1rem;
-  /* The room a date box's picker button and the space around it take, which
+  /* The room a date box's calendar button and the space beside it take, which
      is more than an arrow's. */
   --field-picker: 1.6rem;
 }
@@ -250,6 +250,42 @@
   input[type="number"].field::-webkit-inner-spin-button {
     appearance: none;
     margin: 0;
+  }
+
+  /* A date's text box and its calendar button, which share one width. The
+     browser's own date box is laid over the button, unseen and out of reach of
+     the pointer, so that the calendar it opens appears there. */
+  .date-box {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+  }
+  .date-button {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: calc(var(--field-picker) - 0.1rem);
+    height: 2rem;
+    margin-left: 0.1rem;
+    border-radius: 4px;
+    color: var(--muted);
+  }
+  .date-button:hover {
+    color: var(--accent);
+  }
+  .date-picker {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: calc(var(--field-picker) - 0.1rem);
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
   }
 
   /* A computed or read-only column is read, not edited, but it sits in a

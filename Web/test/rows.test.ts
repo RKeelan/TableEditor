@@ -15,13 +15,11 @@ import {
   chipsFor,
   compareByColumn,
   controlWidth,
-  dateEdit,
   datalistOptions,
   editsAsLines,
   firstLine,
   hasLineBreak,
   isFigure,
-  isIsoDate,
   linesText,
   mapEntries,
   newRow,
@@ -39,6 +37,7 @@ import {
   writeMapEntry,
 } from "../src/lib/rows";
 import { apiRoot, rowsBody } from "../src/lib/api";
+import { viewCellText } from "../src/lib/view";
 import { toEntries, visibleIndices } from "../src/lib/entries";
 
 const title: Column = { field: "title", label: "Title", type: "string" };
@@ -987,41 +986,6 @@ describe("where an open cell of several lines goes", () => {
 
 const acquired: Column = { field: "acquired", label: "Acquired", type: "date" };
 
-describe("an ISO date", () => {
-  test("is a day written YYYY-MM-DD that exists", () => {
-    expect(isIsoDate("2026-09-30")).toBe(true);
-    expect(isIsoDate("2024-02-29")).toBe(true);
-    expect(isIsoDate("2000-02-29")).toBe(true);
-    expect(isIsoDate("0099-12-31")).toBe(true);
-  });
-
-  test("is not a day that does not exist", () => {
-    expect(isIsoDate("2026-02-30")).toBe(false);
-    expect(isIsoDate("2023-02-29")).toBe(false);
-    expect(isIsoDate("1900-02-29")).toBe(false);
-    expect(isIsoDate("2026-04-31")).toBe(false);
-    expect(isIsoDate("2026-13-01")).toBe(false);
-    expect(isIsoDate("2026-00-10")).toBe(false);
-    expect(isIsoDate("2026-01-00")).toBe(false);
-  });
-
-  test("is not a day written any other way", () => {
-    expect(isIsoDate("2026-9-1")).toBe(false);
-    expect(isIsoDate("26-09-30")).toBe(false);
-    expect(isIsoDate("2026/09/30")).toBe(false);
-    expect(isIsoDate(" 2026-09-30")).toBe(false);
-    expect(isIsoDate("2026-09-30T00:00")).toBe(false);
-    expect(isIsoDate("")).toBe(false);
-  });
-
-  test("is a string", () => {
-    expect(isIsoDate(20260930)).toBe(false);
-    expect(isIsoDate(null)).toBe(false);
-    expect(isIsoDate(undefined)).toBe(false);
-    expect(isIsoDate(new Date(0))).toBe(false);
-  });
-});
-
 describe("a date cell", () => {
   test("holds a real day, nothing, or an empty string, and anything else is marked", () => {
     expect(cellMismatch(acquired, { acquired: "2026-09-30" })).toBe(false);
@@ -1031,17 +995,22 @@ describe("a date cell", () => {
     expect(cellMismatch(acquired, { acquired: "2026-9-1" })).toBe(true);
     expect(cellMismatch(acquired, { acquired: 20260930 })).toBe(true);
     expect(cellMismatch(acquired, { acquired: null })).toBe(true);
+    // A month is not a day.
+    expect(cellMismatch(acquired, { acquired: "2026-11" })).toBe(true);
     // Shown as it is stored.
     expect(cellText(acquired, { acquired: "2026-9-1" }, null)).toBe("2026-9-1");
+    expect(cellText(acquired, { acquired: "2026-11" }, null)).toBe("2026-11");
+    expect(cellText(acquired, { acquired: null }, null)).toBe("null");
   });
 
-  test("writes a whole date, a clear, or nothing for a date half typed", () => {
-    expect(dateEdit("2026-09-30", false)).toEqual({ kind: "date", value: "2026-09-30" });
-    expect(dateEdit("", false)).toEqual({ kind: "clear" });
-    expect(dateEdit("", true)).toEqual({ kind: "none" });
-    // What a text box holding an odd value hands back as it is retyped.
-    expect(dateEdit("2026-02-3", false)).toEqual({ kind: "none" });
-    expect(dateEdit("2026-02-30", false)).toEqual({ kind: "none" });
+  test("reads as dates read, however it is drawn", () => {
+    expect(cellText(acquired, { acquired: "2026-11-02" }, null)).toBe("02-Nov-2026");
+    expect(cellText({ ...acquired, read_only: true }, { acquired: "2026-11-02" }, null)).toBe(
+      "02-Nov-2026",
+    );
+    expect(viewCellText(acquired, { acquired: "2026-11-02" })).toBe("02-Nov-2026");
+    expect(cellText(acquired, {}, null)).toBe("");
+    expect(cellText(acquired, { acquired: "" }, null)).toBe("");
   });
 
   test("stores the day as ISO text and clears by the usual rule", () => {
@@ -1060,8 +1029,8 @@ describe("a date cell", () => {
     });
   });
 
-  test("fits a day however a browser writes it, with room for the picker, unless it says otherwise", () => {
-    // 30-Sep-2026 is the widest a browser writes a day.
+  test("fits a day with room for the calendar button, unless it says otherwise", () => {
+    // 30-Sep-2026 is eleven characters.
     expect(widthChOf(acquired)).toBe(11);
     expect(controlWidth(acquired)).toBe(
       "calc(11ch + var(--field-chrome) + var(--field-picker))",
@@ -1072,10 +1041,52 @@ describe("a date cell", () => {
     );
   });
 
-  test("sorts by date, since ISO text does", () => {
+  test("sorts by what it stores rather than how it reads", () => {
     const a = { row: { acquired: "2019-12-31" }, derived: null };
     const b = { row: { acquired: "2020-01-01" }, derived: null };
+    // 31-Dec-2019 reads after 01-Jan-2020 as text.
     expect(compareByColumn(acquired, a, b)).toBeLessThan(0);
+    expect(compareByColumn(acquired, b, a)).toBeGreaterThan(0);
+    const blank = { row: {}, derived: null };
+    expect(compareByColumn(acquired, a, blank)).toBeLessThan(0);
+  });
+
+  test("is found by how it reads and by what it stores", () => {
+    const text = cellSearchText(acquired, { acquired: "2026-11-02" }, null);
+    expect(text).toContain("nov-2026");
+    expect(text).toContain("02-nov-2026");
+    expect(text).toContain("2026-11");
+  });
+});
+
+describe("a date cell that allows a month", () => {
+  const expected: Column = { ...acquired, field: "expected", allow_month: true };
+
+  test("holds a month without being marked, and reads as a month", () => {
+    expect(cellMismatch(expected, { expected: "2026-11" })).toBe(false);
+    expect(cellMismatch(expected, { expected: "2026-11-02" })).toBe(false);
+    expect(cellMismatch(expected, { expected: "2026-13" })).toBe(true);
+    expect(cellText(expected, { expected: "2026-11" }, null)).toBe("Nov-2026");
+    expect(cellText(expected, { expected: "2026-11-02" }, null)).toBe("02-Nov-2026");
+  });
+
+  test("stores a month, where a plain date column writes nothing", () => {
+    expect(writeCell({}, expected, "2026-11", schemaOf())).toEqual({ expected: "2026-11" });
+    expect(writeCell({}, acquired, "2026-11", schemaOf())).toEqual({});
+  });
+
+  test("sorts a month before the days in it", () => {
+    const month = { row: { expected: "2026-11" }, derived: null };
+    const day = { row: { expected: "2026-11-02" }, derived: null };
+    const before = { row: { expected: "2026-10-31" }, derived: null };
+    expect(compareByColumn(expected, month, day)).toBeLessThan(0);
+    expect(compareByColumn(expected, before, month)).toBeLessThan(0);
+  });
+
+  test("is found by how it reads and by what it stores", () => {
+    const text = cellSearchText(expected, { expected: "2026-11" }, null);
+    expect(text).toContain("nov-2026");
+    expect(text).toContain("2026-11");
   });
 });
 
@@ -1139,7 +1150,7 @@ describe("a read-only cell", () => {
     expect(cellText(readOnly(genre), row, null)).toBe("Reference");
     expect(cellText(readOnly(edition), row, null)).toBe("Second (2)");
     expect(cellText(readOnly(shelved), row, null)).toBe("Harbour: One, Central: Several");
-    expect(cellText(readOnly(acquired), row, null)).toBe("2026-09-30");
+    expect(cellText(readOnly(acquired), row, null)).toBe("30-Sep-2026");
     const fx: Column = {
       field: "fx",
       label: "FX",

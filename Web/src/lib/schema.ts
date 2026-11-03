@@ -67,6 +67,8 @@ export interface Column {
   /** How the column's numbers read. Honoured on a `number` and a `computed`
    *  column, and ignored on every other type. */
   format?: NumberFormat;
+  /** Let a `date` column hold a month, `YYYY-MM`, as well as a day. */
+  allow_month?: boolean;
   speak?: Speak;
   /** The field of the same row holding this cell's link target. Honoured where
    *  a cell is read rather than edited: a computed column, and every column of
