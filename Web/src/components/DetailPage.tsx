@@ -1,4 +1,11 @@
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import {
+  type FormEvent,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { postAction } from "../lib/api";
 import { dateAnswer, dateText } from "../lib/dates";
 import { describeError } from "../lib/errors";
@@ -31,6 +38,14 @@ import {
   toggled,
   undoReset,
 } from "../lib/form";
+import {
+  type PendingAction,
+  failureOf,
+  hiddenKeys,
+  isDoublePress,
+  pendingActions,
+  pendingKey,
+} from "../lib/pending";
 import type { SelectOption } from "../lib/schema";
 import {
   type Button,
@@ -87,7 +102,21 @@ interface Forms {
   onToggle: (found: Found) => void;
   onSettle: (sentBy: number, next: FormState) => void;
   onClose: () => void;
+  /** The rows of undoable actions that have not landed yet, by pending key,
+   *  and what became of those that were refused. */
+  hidden: ReadonlySet<string>;
+  pending: readonly PendingAction[];
+  /** An undoable button was pressed, by the button itself. */
+  onUndoable: (
+    from: HTMLElement,
+    button: FormButton,
+    row: DetailRow,
+    mark: string,
+  ) => void;
 }
+
+/** A button that writes, which is the only kind that can be held back. */
+type FormButton = Extract<Button, { type: "form" }>;
 
 /** One thing in full: a header saying what it is and how it stands, then its
  *  sections in two columns on a wide screen and one on a phone.
@@ -111,10 +140,20 @@ export function DetailPage({
   const wide = useWide();
   const heading = useRef<HTMLHeadingElement>(null);
   const [opening, setOpening] = useState<Opening | null>(null);
+  const pending = useSyncExternalStore(
+    pendingActions.subscribe,
+    pendingActions.actions,
+  );
+  const lastPress = useRef(Number.NEGATIVE_INFINITY);
   const ordered = detail.sections.map((section, order) => ({ section, order }));
   const main = ordered.filter((s) => s.section.column === "main");
   const side = ordered.filter((s) => s.section.column === "side");
   const open = opening === null ? null : current(detail, opening);
+
+  // The page stays on the screen until a new question's answer arrives, so it
+  // can be pressed after the question changed. Its going is the end of the
+  // chance to undo whatever was.
+  useEffect(() => () => void pendingActions.flush(), []);
 
   // The open form, for a save's answer to be checked against: the answer
   // arrives in a closure from the render the save was sent from.
@@ -185,6 +224,31 @@ export function DetailPage({
     onClose: () => {
       if (opening !== null) returnTo.current = placeOf(opening);
       setOpening(null);
+    },
+    hidden: hiddenKeys(pending),
+    pending,
+    onUndoable: (from, button, row, mark) => {
+      const was = lastPress.current;
+      lastPress.current = performance.now();
+      if (isDoublePress(lastPress.current, was)) return;
+      // A form open under the row goes with it, and its draft is kept.
+      if (opening && rowIdentity(opening.last.row) === rowIdentity(row)) {
+        setOpening(null);
+      }
+      // The focus moves before the row goes, so it is never left on nothing.
+      nextPlaceFor(from, heading.current)?.focus({ preventScroll: true });
+      pendingActions.start({
+        key: pendingKey(view, args, button),
+        request: {
+          view,
+          action: button.action,
+          args: actionArgs(args, button.args),
+        },
+        message: button.undo_message ?? button.label,
+        label: button.label,
+        row: row.title,
+        mark,
+      });
     },
   };
 
@@ -263,6 +327,20 @@ export function DetailPage({
   );
 }
 
+/** Where the focus goes when the row holding `from` is about to vanish: the row
+ *  after it, which is the next one to do something about, then the row before
+ *  it, its section's heading, and the page's heading. */
+function nextPlaceFor(
+  from: HTMLElement,
+  pageHeading: HTMLElement | null,
+): HTMLElement | null {
+  const row = from.closest("li");
+  const neighbour = row?.nextElementSibling ?? row?.previousElementSibling;
+  if (neighbour instanceof HTMLElement) return neighbour;
+  const section = row?.closest("section, details");
+  return section?.querySelector<HTMLElement>("[data-landing]") ?? pageHeading;
+}
+
 /** Whether there is room for both columns. It is asked once for the page and
  *  handed down, so a page of ten sections still listens once. */
 function useWide(): boolean {
@@ -299,7 +377,15 @@ function SectionBlock({
   // is called, so a save that retitles or reorders them draws each in place:
   // see `rowIdentity`. Two rows the page cannot tell apart are numbered.
   const seen = new Map<string, number>();
-  const keyed = section.rows.map((row) => {
+  const showing = section.rows.filter(
+    (row) =>
+      !(row.buttons ?? []).some(
+        (button) =>
+          button.type === "form" &&
+          forms.hidden.has(pendingKey(forms.view, forms.args, button)),
+      ),
+  );
+  const keyed = showing.map((row) => {
     const identity = rowIdentity(row);
     const n = seen.get(identity) ?? 0;
     seen.set(identity, n + 1);
@@ -311,7 +397,7 @@ function SectionBlock({
       {section.note !== undefined && (
         <p className="mb-3 max-w-prose text-sm text-muted">{section.note}</p>
       )}
-      {section.rows.length > 0 && (
+      {showing.length > 0 && (
         <ul className={"detail-rows" + (section.numbered ? " ranked" : "")}>
           {keyed.map(({ row, key }) => (
             <RowBlock
@@ -384,8 +470,16 @@ function RowBlock({
   const facts = row.facts ?? [];
   const notes = row.notes ?? [];
   const href = row.link === undefined ? null : safeHref(row.link);
-  const identityOf = (button: Extract<Button, { type: "form" }>) =>
+  const identityOf = (button: FormButton) =>
     formIdentity(section, row.title, button);
+  const failures = buttons.flatMap((button) => {
+    if (button.type !== "form") return [];
+    const failure = failureOf(
+      forms.pending,
+      pendingKey(forms.view, forms.args, button),
+    );
+    return failure === null ? [] : [failure];
+  });
   // The form open under this row, if the open form is one of its own and is
   // not in a side panel. Two rows offering the same form are one offer to the
   // server, and the form is drawn under the first of them only.
@@ -436,8 +530,16 @@ function RowBlock({
                   button.type === "form" &&
                   forms.opening?.identity === identityOf(button)
                 }
-                onToggle={() => {
-                  if (button.type === "form") {
+                onToggle={(from) => {
+                  if (button.type !== "form") return;
+                  if (button.undo_message !== undefined) {
+                    forms.onUndoable(
+                      from,
+                      button,
+                      row,
+                      buttonMark(identityOf(button)),
+                    );
+                  } else {
                     forms.onToggle({ form: button, section, row });
                   }
                 }}
@@ -445,6 +547,15 @@ function RowBlock({
             ))}
           </div>
         )}
+
+        {/* A held-back action that was refused has no form to show this
+            beside. The toast says the same and is what is read out, since this
+            row may be nowhere near what the reader has moved on to. */}
+        {failures.map((failure, i) => (
+          <p key={i} className="mt-2.5 text-sm text-bad">
+            {failure}
+          </p>
+        ))}
 
         {inline !== undefined && forms.opening !== null && (
           <FormBlock
@@ -470,20 +581,21 @@ function ButtonControl({
   /** Where the focus finds a form button again: see `landing`. */
   mark: string | undefined;
   showing: boolean;
-  onToggle: () => void;
+  onToggle: (from: HTMLElement) => void;
 }) {
   if (button.type === "form") {
     // A form under its row is shown and hidden, which is what `expanded`
     // says; a form in a side panel opens a dialog over the page, which is
-    // what `haspopup` does.
+    // what `haspopup` does; an undoable action opens nothing, so says neither.
+    const reveals = button.undo_message === undefined && !button.panel;
     return (
       <button
         type="button"
-        className="btn btn-primary"
+        className={button.secondary ? "btn" : "btn btn-primary"}
         data-landing={mark}
-        aria-expanded={button.panel ? undefined : showing}
+        aria-expanded={reveals ? showing : undefined}
         aria-haspopup={button.panel ? "dialog" : undefined}
-        onClick={onToggle}
+        onClick={(e) => onToggle(e.currentTarget)}
       >
         {button.label}
       </button>

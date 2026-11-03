@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { type AppPayload, getApp } from "./lib/api";
 import { describeError } from "./lib/errors";
+import { holdsTable, pendingActions } from "./lib/pending";
 import { type PendingSave, leave } from "./lib/save";
 import {
   type Target,
@@ -11,6 +12,7 @@ import {
   viewHref,
 } from "./lib/view";
 import { TableEditor } from "./components/TableEditor";
+import { UndoToasts } from "./components/UndoToasts";
 import { ThemeMenu } from "./components/ThemeMenu";
 import { ViewPage } from "./components/ViewPage";
 
@@ -84,6 +86,20 @@ export function App() {
 
   const asked = parseTarget(search);
   const target = app ? resolveTarget(app, asked) : null;
+
+  // A table reached in place from a detail page waits for what was pressed
+  // there: read before the post lands, it would hold rows older than the file,
+  // and its next save would be refused. Once it has read, that read is the page
+  // an action with no answer was waiting to have checked.
+  const actions = useSyncExternalStore(
+    pendingActions.subscribe,
+    pendingActions.actions,
+  );
+  const tableWaits = target?.kind === "table" && holdsTable(actions);
+  const tableReads = target?.kind === "table" && !tableWaits;
+  useEffect(() => {
+    if (tableReads) pendingActions.fetched(pendingActions.ticket());
+  }, [tableReads]);
   // What the switcher offers, which is not everything the app serves: a page
   // about one thing is reached from the card that says which one, and a
   // lookup table by its address.
@@ -112,10 +128,12 @@ export function App() {
 
   /** Leave a table only once what was typed in it is written, whether through
    *  the switcher or a row's link. See `leave` for what is waited for and what
-   *  is not. */
+   *  is not. An undoable action held back is sent and waited for the same way,
+   *  since this page is what can show a refusal of it. */
   const go = async (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     if (!isPageClick(event)) return;
     event.preventDefault();
+    if (!(await pendingActions.flush())) return;
     if (await leave(pending.current)) window.location.assign(href);
   };
 
@@ -176,6 +194,8 @@ export function App() {
             tables={app.tables}
             onAsk={ask}
           />
+        ) : tableWaits ? (
+          <p className="text-sm text-muted">Saving…</p>
         ) : target?.kind === "table" ? (
           <>
             {unlisted && heading && (
@@ -193,6 +213,8 @@ export function App() {
           <Banner message={`${app.name} serves nothing.`} />
         )}
       </main>
+
+      <UndoToasts />
     </div>
   );
 }

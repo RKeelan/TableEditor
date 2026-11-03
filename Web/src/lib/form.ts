@@ -59,7 +59,7 @@ export interface FormRef {
   args?: Record<string, string>;
 }
 
-function sortedArgs(args: Record<string, string> | undefined) {
+export function sortedArgs(args: Record<string, string> | undefined) {
   return Object.entries(args ?? {}).sort(([a], [b]) =>
     a < b ? -1 : a > b ? 1 : 0,
   );

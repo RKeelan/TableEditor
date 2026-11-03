@@ -636,7 +636,8 @@
     border-color: var(--border);
   }
 
-  /* The one button on a page that writes something. */
+  /* The action a row exists for, of which a row has at most one. It says
+     nothing about writing: a plain `.btn` on a form writes all the same. */
   .btn-primary {
     background: var(--gold);
     border-color: var(--gold);
@@ -786,6 +787,57 @@
   }
   .theme-menu svg * {
     vector-effect: non-scaling-stroke;
+  }
+
+  /* What an undoable action shows while it can still be undone, and what it
+     shows if it was refused. They sit along the bottom of the screen over the
+     page; the page's scrolling body is given `--toast-room` beneath its last
+     row, so no row has to stay covered. On a phone they take the width less
+     the page's gutter, and several scroll rather than fill the screen. */
+  .toast-stack {
+    position: fixed;
+    left: 1rem;
+    right: 1rem;
+    bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    z-index: 40;
+    max-height: 40dvh;
+    overflow-y: auto;
+    pointer-events: none;
+  }
+  .toast {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--raised);
+    color: var(--ink);
+    font-size: 0.875rem;
+    box-shadow: 0 2px 8px var(--panel-shadow);
+    margin-top: 0.5rem;
+    pointer-events: auto;
+  }
+  .toast-failed {
+    border-color: var(--bad);
+  }
+  .toast > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .toast > .btn {
+    flex: none;
+  }
+  @media (min-width: 640px) {
+    .toast-stack {
+      left: auto;
+      right: 1.25rem;
+      width: 26rem;
+    }
+  }
+  .view-body {
+    padding-bottom: var(--toast-room, 0);
   }
 
   /* The rows of a detail section. A ranked one counts them, since its order is
