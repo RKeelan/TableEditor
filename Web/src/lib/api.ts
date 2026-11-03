@@ -135,12 +135,15 @@ export function getView(
  *  The arguments travel in the address, exactly as they do for a render, so
  *  the server settles them the same way and the action is about the same thing
  *  the page was. The body is the form's answers, all of them text, which is
- *  what a control on a page produces. */
+ *  what a control on a page produces. `keepalive` lets the request outlive the
+ *  page that sent it, which is what an action sent on the way out needs, and
+ *  `signal` stops waiting for it. */
 export function postAction(
   view: string,
   action: string,
   args: Record<string, string>,
   fields: Record<string, string>,
+  options: { keepalive?: boolean; signal?: AbortSignal } = {},
 ): Promise<ActionResult> {
   const query = new URLSearchParams(args).toString();
   const suffix = query === "" ? "" : `?${query}`;
@@ -149,6 +152,7 @@ export function postAction(
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ fields }),
+    ...options,
   }).then((r) => asJson<ActionResult>(r));
 }
 

@@ -18,8 +18,8 @@ use table_editor::{
     ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
     DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec, NewRow, OptionsBy,
     Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server, ServerArgs, Speak,
-    Stamping, Status, Table, TableLogic, Tone, ValidationError, View, ViewArgs, ViewData, ViewLink,
-    ViewLogic, Written,
+    Stamping, Status, Table, TableLogic, Tone, Undoable, ValidationError, View, ViewArgs, ViewData,
+    ViewLink, ViewLogic, Written,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -1083,17 +1083,26 @@ impl ViewLogic for BranchDetail {
                 Some(days) => row.fact(format!("{} day(s) to go", -days)),
                 None => row.note("No due date is recorded."),
             };
-            lent = lent.row(row.button(Button::disabled("Chase the borrower", "Not built yet")));
+            lent = lent.row(
+                row.button(Button::disabled("Chase the borrower", "Not built yet"))
+                    .button(Button::undoable(
+                        "Mark returned",
+                        Undoable::new("return-a-book", format!("Marked {} returned.", book.title))
+                            .arg("title", book.title.as_str()),
+                    )),
+            );
         }
         if out == 0 {
             lent = lent.note("Everything this branch holds is on the shelf.");
         }
 
-        // What can go out, ranked, with the one action this example offers.
+        // What can go out, ranked. Lending is what the row is for, so that
+        // button is gold; withdrawing a book writes too, and is drawn plain.
         let mut shelf = DetailSection::main("On the shelf")
             .numbered()
             .note("Best rated first.");
-        for book in BranchDetail::by_rating(&books, code, false) {
+        let shelved = BranchDetail::by_rating(&books, code, false);
+        for book in shelved.iter().filter(|b| !b.withdrawn.unwrap_or(false)) {
             let mut row = DetailRow::new(book.title.as_str());
             if let Some(rating) = book.rating {
                 row = row.fact(format!("rated {rating}"));
@@ -1109,6 +1118,12 @@ impl ViewLogic for BranchDetail {
                     .button(Button::form(
                         "Lend it out",
                         BranchDetail::loan_form(&book.title),
+                    ))
+                    .button(Button::undoable(
+                        "Withdraw",
+                        Undoable::new("withdraw-book", format!("Withdrew {}.", book.title))
+                            .arg("title", book.title.as_str())
+                            .secondary(),
                     )),
             );
         }
@@ -1168,6 +1183,8 @@ impl ViewLogic for BranchDetail {
     ) -> Result<String, ApiError> {
         match name {
             "lend-a-book" => BranchDetail::lend(fields, args, ctx),
+            "return-a-book" => BranchDetail::mark_returned(args, ctx),
+            "withdraw-book" => BranchDetail::withdraw(args, ctx),
             _ => Err(ApiError::new(
                 404,
                 format!("this page has no action called \"{name}\""),
@@ -1234,6 +1251,52 @@ impl BranchDetail {
         ctx.write(BOOKS_FILE, &text)?;
 
         Ok(format!("\"{title}\" is out to {borrower} until {due}."))
+    }
+
+    /// Put a lent book back on the shelf, which ends the loan the note was
+    /// about.
+    fn mark_returned(args: &ViewArgs, ctx: &Context) -> Result<String, ApiError> {
+        BranchDetail::change_book(args, ctx, |book| {
+            if !book.lent.unwrap_or(false) {
+                return Err(format!("\"{}\" is not out", book.title));
+            }
+            book.lent = Some(false);
+            book.due.clear();
+            book.notes.clear();
+            Ok(format!("\"{}\" is back on the shelf.", book.title))
+        })
+    }
+
+    /// Take a book out of the collection. It stays in the table as a record.
+    fn withdraw(args: &ViewArgs, ctx: &Context) -> Result<String, ApiError> {
+        BranchDetail::change_book(args, ctx, |book| {
+            if book.withdrawn.unwrap_or(false) {
+                return Err(format!("\"{}\" is already withdrawn", book.title));
+            }
+            book.withdrawn = Some(true);
+            Ok(format!("\"{}\" is withdrawn.", book.title))
+        })
+    }
+
+    /// Change the book the action's `title` argument names and write the table
+    /// back. What `change` refuses is a 400 carrying its reason.
+    fn change_book(
+        args: &ViewArgs,
+        ctx: &Context,
+        change: impl FnOnce(&mut Book) -> Result<String, String>,
+    ) -> Result<String, ApiError> {
+        let title = args.get_or("title", "");
+        let mut books: Vec<Book> = ctx.rows(BOOKS_FILE)?;
+        let book = books
+            .iter_mut()
+            .find(|b| b.title == title)
+            .ok_or_else(|| ApiError::bad_request(format!("no book is called \"{title}\"")))?;
+        let sentence = change(book).map_err(ApiError::bad_request)?;
+        let text = Books
+            .serialize(&books)
+            .map_err(|e| ApiError::server(format!("could not serialize {BOOKS_FILE}: {e}")))?;
+        ctx.write(BOOKS_FILE, &text)?;
+        Ok(sentence)
     }
 }
 

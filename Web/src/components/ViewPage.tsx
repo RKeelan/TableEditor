@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getView } from "../lib/api";
 import { describeError } from "../lib/errors";
+import { pendingActions } from "../lib/pending";
 import type { Column, Row } from "../lib/schema";
 import {
   type ViewParam,
@@ -42,7 +43,8 @@ interface Props {
  *  Nothing here edits, sorts, or drags. The one thing that writes is a form on
  *  a detail page: it posts to the action its button named, says what the server
  *  answered, and fetches the page again, so what the write changed shows
- *  without the page being told how. */
+ *  without the page being told how. An undoable button does the same a few
+ *  seconds later: see `lib/pending.ts`. */
 export function ViewPage({ view, args, views, tables, onAsk }: Props) {
   const [page, setPage] = useState<ViewPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,14 +57,21 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
   // Answers can arrive in an order the questions were not asked in, so only
   // the latest question's answer is allowed to land.
   const asked = useRef(0);
+  // The latest answer that has landed, as a ticket from the pending actions,
+  // so the rows of actions that have landed are hidden until a page fetched
+  // after them is on the screen.
+  const [drawn, setDrawn] = useState(0);
+  useEffect(() => pendingActions.fetched(drawn), [drawn]);
 
   const load = useCallback(async () => {
     const mine = ++asked.current;
+    const ticket = pendingActions.ticket();
     setLoading(true);
     try {
       const fresh = await getView(view, args);
       if (mine !== asked.current) return;
       setPage(fresh);
+      setDrawn(ticket);
       setError(null);
       // The view may have settled on something other than what was asked.
       const settled = correctedHref(window.location.search, fresh);
@@ -95,9 +104,27 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
     void load();
   };
 
+  // An undoable action that has landed is a write like any other, whichever
+  // page it was pressed on. Where the page cannot be sure of an action, it has
+  // no sentence, and the page is asked again all the same.
+  useEffect(
+    () =>
+      pendingActions.onSettled((sentence) => {
+        if (sentence !== null) wrote(sentence);
+        else void load();
+      }),
+    [load],
+  );
+
   // A question asked of the page is a different question from the one the
   // write answered, so the sentence goes.
   useEffect(() => setWritten(null), [view, JSON.stringify(args)]);
+
+  // Moving on is the end of the chance to undo what was pressed here.
+  useEffect(
+    () => () => void pendingActions.flush(),
+    [view, JSON.stringify(args)],
+  );
 
   // Nothing has ever arrived, so there is nothing to keep showing.
   if (!page) {

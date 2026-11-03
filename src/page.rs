@@ -495,8 +495,13 @@ impl DetailRow {
 
 // ── Buttons and the actions they reach ──────────────────────────────────────
 
-/// Something a row offers: a page to open, a form to fill in, or a reason it
-/// cannot be done yet.
+/// Something a row offers: a page to open, a form to fill in, an action that
+/// can be undone for a few seconds, or a reason it cannot be done yet.
+///
+/// A form button is drawn gold unless it is marked plain. Gold marks the action
+/// a row exists for, and a row has at most one; a plain form button writes just
+/// as a gold one does. Nothing enforces one gold button per row, since which
+/// action a row exists for is the repository's to say.
 #[derive(Debug, Clone, Serialize)]
 pub struct Button {
     label: String,
@@ -528,6 +533,13 @@ impl Button {
             label: label.into(),
             kind: ButtonKind::Form(form),
         }
+    }
+
+    /// An action that writes once the chance to undo it has passed: see
+    /// [`Undoable`]. On the wire it is a form with no fields and an
+    /// `undo_message`.
+    pub fn undoable(label: impl Into<String>, undoable: Undoable) -> Self {
+        Self::form(label, undoable.form)
     }
 
     /// A button that cannot be pressed, and why. It is drawn rather than left
@@ -568,6 +580,10 @@ pub struct Form {
     panel: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     heading: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    secondary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    undo_message: Option<String>,
 }
 
 impl Form {
@@ -578,6 +594,8 @@ impl Form {
             fields: Vec::new(),
             panel: false,
             heading: None,
+            secondary: false,
+            undo_message: None,
         }
     }
 
@@ -626,12 +644,60 @@ impl Form {
         self
     }
 
+    /// Draw the button that opens this form in the plain outlined style links
+    /// use, rather than gold. Gold marks the action a row exists for, so every
+    /// other form button on the row is plain. It says nothing about whether the
+    /// button writes: it writes all the same.
+    pub fn secondary(mut self) -> Self {
+        self.secondary = true;
+        self
+    }
+
     pub(crate) fn action(&self) -> &str {
         &self.action
     }
 
     pub(crate) fn args(&self) -> &BTreeMap<String, String> {
         &self.args
+    }
+}
+
+/// An action with nothing to fill in, which the browser holds back for a few
+/// seconds so that it can be undone without the server hearing of it.
+///
+/// Pressing the button takes the row off the page and shows `message` in a
+/// notice with an Undo button. Undo puts the row back and sends nothing; when
+/// the time is up, or the page is left, the action is posted exactly as a form
+/// is, and checked the same way.
+///
+/// It is its own type rather than a method on [`Form`] so that a form with
+/// fields, or one in a side panel, cannot be made undoable: such a form has a
+/// deliberate step of its own, and trying it does not compile.
+///
+/// `message` is the repository's to write because it has to say what was done
+/// before the server has answered, as in "Marked Solarpunk Magazine closed."
+#[derive(Debug, Clone)]
+pub struct Undoable {
+    form: Form,
+}
+
+impl Undoable {
+    pub fn new(action: impl Into<String>, message: impl Into<String>) -> Self {
+        let mut form = Form::new(action);
+        form.undo_message = Some(message.into());
+        Self { form }
+    }
+
+    /// One argument the action carries, by the rules [`Form::arg`] follows.
+    pub fn arg(mut self, key: impl Into<String>, value: impl fmt::Display) -> Self {
+        self.form = self.form.arg(key, value);
+        self
+    }
+
+    /// Draw the button plain rather than gold: see [`Form::secondary`].
+    pub fn secondary(mut self) -> Self {
+        self.form = self.form.secondary();
+        self
     }
 }
 
@@ -1047,6 +1113,75 @@ mod tests {
                 ("record-answer", vec![]),
                 ("record-submission", vec![("market", "asimovs")]),
             ]
+        );
+    }
+
+    #[test]
+    fn a_form_says_it_is_secondary_only_when_it_is() {
+        assert_eq!(
+            serde_json::to_value(Button::form(
+                "Note a query",
+                Form::new("note-query").secondary()
+            ))
+            .unwrap(),
+            json!({ "label": "Note a query", "type": "form", "action": "note-query",
+                    "fields": [], "secondary": true })
+        );
+        assert!(
+            serde_json::to_value(Button::form("Lend", Form::new("lend")))
+                .unwrap()
+                .get("secondary")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_undoable_button_is_a_form_with_no_fields_and_a_message() {
+        assert_eq!(
+            serde_json::to_value(Button::undoable(
+                "Withdraw",
+                Undoable::new("withdraw-book", "Withdrew Nine Doors.").arg("title", "Nine Doors")
+            ))
+            .unwrap(),
+            json!({ "label": "Withdraw", "type": "form", "action": "withdraw-book",
+                    "args": { "title": "Nine Doors" }, "fields": [],
+                    "undo_message": "Withdrew Nine Doors." })
+        );
+        assert_eq!(
+            serde_json::to_value(Button::undoable(
+                "Withdraw",
+                Undoable::new("withdraw-book", "Withdrew Nine Doors.").secondary()
+            ))
+            .unwrap(),
+            json!({ "label": "Withdraw", "type": "form", "action": "withdraw-book",
+                    "fields": [], "secondary": true,
+                    "undo_message": "Withdrew Nine Doors." })
+        );
+    }
+
+    #[test]
+    fn an_undoable_button_offers_its_action_as_a_form_does() {
+        let detail = Detail::new("Central Lending Library").section(
+            DetailSection::main("On the shelf").row(
+                DetailRow::new("Nine Doors").button(Button::undoable(
+                    "Withdraw",
+                    Undoable::new("withdraw-book", "Withdrew Nine Doors.")
+                        .arg("title", "Nine Doors"),
+                )),
+            ),
+        );
+        let offered: Vec<(&str, Vec<(&str, &str)>)> = detail
+            .actions()
+            .map(|(action, args)| {
+                (
+                    action,
+                    args.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            offered,
+            vec![("withdraw-book", vec![("title", "Nine Doors")])]
         );
     }
 

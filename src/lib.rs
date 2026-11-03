@@ -73,7 +73,7 @@ pub use overview::{Footer, Overview, RowGroup};
 #[cfg(feature = "server")]
 pub use page::{
     Button, Card, CardGroup, Detail, DetailRow, DetailSection, Field, Form, Section, Status, Tone,
-    ViewLink,
+    Undoable, ViewLink,
 };
 #[cfg(feature = "server")]
 pub use probe::{probe, probe_status};

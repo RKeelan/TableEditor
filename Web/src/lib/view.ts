@@ -161,7 +161,9 @@ export interface FormField {
 }
 
 /** Something a row offers: a page to open, a form to fill in, or a reason it
- *  cannot be done yet. */
+ *  cannot be done yet. A form with an `undo_message` has no fields, shows no
+ *  form when pressed, and is held back so that it can be undone: see
+ *  `lib/pending.ts`. */
 export type Button =
   | { label: string; type: "link"; url: string }
   | {
@@ -175,6 +177,10 @@ export type Button =
       /** What a side panel is headed with, where it is not the button's
        *  label. */
       heading?: string;
+      /** Whether the button is drawn plain rather than gold. */
+      secondary?: boolean;
+      /** The sentence shown with the Undo button. */
+      undo_message?: string;
     }
   | { label: string; type: "disabled"; reason: string };
 
