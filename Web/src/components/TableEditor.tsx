@@ -636,7 +636,7 @@ function TableSection({
               className={
                 headCls +
                 " whitespace-nowrap pr-3" +
-                (i === 0 ? " sticky left-[var(--controls)] z-30 bg-raised" : "") +
+                (i === 0 ? " first-column sticky left-[var(--controls)] z-30 bg-raised" : "") +
                 // A column that does not fill is as narrow as its cells
                 // let it be, which leaves the rest to those that do.
                 (stacked && !fills.has(column.field) ? " w-[1%]" : "")
@@ -1244,7 +1244,7 @@ function Cell({
   const mismatched = cellMismatch(column, row);
   const tdCls =
     "py-1 pr-3 whitespace-nowrap" +
-    (sticky ? ` sticky left-[var(--controls)] z-10 ${sticky}` : "") +
+    (sticky ? ` first-column sticky left-[var(--controls)] z-10 ${sticky}` : "") +
     (error ? " cell-error" : "") +
     (mismatched ? " cell-mismatch" : "") +
     (column.strong ? " figure-strong" : "") +

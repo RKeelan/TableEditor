@@ -405,6 +405,8 @@ A cell shows the first three entries and then a chip reading `+N` for however ma
 
 A text column that names no width gets 16 characters, or 40 where it is `wide`, and a `date` column gets 11, which fits a day as a bundle writes it: 30-Sep-2026. Nothing about this is a browser measuring anything: the width is arithmetic on the schema, which is why a server can compute a column's width from its data and have it mean what it says.
 
+A table's first column, and the titles of its group headings and footer, stay put beside the row controls as the rest of the table scrolls sideways. Below 860px that column is held to under half the window, whatever its `width_ch`, so the columns scrolled under it can be read beside it: a longer value is cut short in its box, and a title with an ellipsis.
+
 `sortable` is a view setting only: a bundle sorts what is on screen, ascending then descending then not at all, leaves a blank cell last whichever way the column is pointed, turns row dragging off while a sort is on, and writes rows in their stored order regardless. Absent fields are omitted rather than sent as null, and `table` and `title` are stamped in by the server from the table's own `name` and `title`, so the two cannot disagree.
 
 `muted_by` names a field, and a bundle draws every row holding `true` there muted: greyed out, and otherwise a row like any other. It is for rows a table keeps as a record of something that no longer needs attention—a market that has closed for good, a book withdrawn from the collection—so they stay in the table without competing with the rows that are live. A table sets it with `Schema::muted_by`, and it is omitted where a table sets none:
