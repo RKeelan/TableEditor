@@ -387,6 +387,8 @@ pub struct Column {
     format: Option<Format>,
     #[serde(skip_serializing_if = "is_false")]
     allow_month: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    no_calendar: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     speak: Option<Speak>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -422,6 +424,7 @@ impl Column {
             from: None,
             format: None,
             allow_month: false,
+            no_calendar: false,
             speak: None,
             href: None,
             strong: false,
@@ -518,6 +521,14 @@ impl Column {
     /// column types ignore it.
     pub fn allow_month(mut self) -> Self {
         self.allow_month = true;
+        self
+    }
+
+    /// Draw a `date` column's box with no calendar button beside it, for a
+    /// date typed rather than picked. It reads and is checked as any date
+    /// column's is. Other column types ignore it.
+    pub fn without_calendar(mut self) -> Self {
+        self.no_calendar = true;
         self
     }
 
@@ -1246,6 +1257,16 @@ mod tests {
     fn allow_month_is_omitted_unless_set() {
         let plain = serde_json::to_value(Column::date("ordered", "Ordered")).unwrap();
         assert!(plain.get("allow_month").is_none());
+    }
+
+    #[test]
+    fn no_calendar_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Column::date("ordered", "Ordered")).unwrap();
+        assert!(plain.get("no_calendar").is_none());
+        assert_eq!(
+            serde_json::to_value(Column::date("given", "Given").without_calendar()).unwrap(),
+            json!({ "field": "given", "label": "Given", "type": "date", "no_calendar": true })
+        );
     }
 
     #[test]

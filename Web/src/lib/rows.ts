@@ -838,10 +838,11 @@ export function unitChars(column: Column): number {
 /** The room a control's own button takes inside its box: a select's arrow,
  *  the arrow browsers give a text input that completes from a datalist, and
  *  a date box's calendar button, which with the space beside it is wider than
- *  an arrow. A read-only column draws no control, and so no button. */
+ *  an arrow. A read-only column draws no control, and so no button, and a
+ *  date column without a calendar draws none either. */
 function buttonRoom(column: Column): string {
   if (column.read_only) return "";
-  if (column.type === "date") return " + var(--field-picker)";
+  if (column.type === "date") return column.no_calendar ? "" : " + var(--field-picker)";
   if (column.type === "select" || column.datalist !== undefined) {
     return " + var(--field-arrow)";
   }

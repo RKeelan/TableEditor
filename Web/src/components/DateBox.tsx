@@ -1,5 +1,6 @@
 // The box a date is typed into, in a table's cell and in a form, with a button
-// beside it that opens the browser's own calendar.
+// beside it that opens the browser's own calendar, unless it is drawn without
+// one.
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -18,6 +19,8 @@ interface DateBoxProps {
   /** What the box shows when it is not being typed into. */
   displayText: string;
   allowMonth?: boolean;
+  /** Whether the calendar button is drawn beside the box. */
+  calendar?: boolean;
   /** The name of the field, which the calendar button's name is made from. */
   label: string;
   /** The text box's accessible name, where no `<label>` gives it one. */
@@ -58,6 +61,7 @@ export function DateBox({
   stored,
   displayText,
   allowMonth = false,
+  calendar = true,
   label,
   ariaLabel,
   id,
@@ -116,37 +120,41 @@ export function DateBox({
         title={flagged ? hint : title}
         className={boxClassName + " min-w-0 flex-1" + (flagged ? " cell-error" : "")}
       />
-      <button
-        type="button"
-        aria-label={`Choose ${label} from a calendar`}
-        title="Choose from a calendar"
-        className="date-button"
-        onClick={() => {
-          if (picker.current && !openPicker(picker.current)) text.current?.focus();
-        }}
-      >
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-          <path
-            d="M3 3.5h10a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1ZM2 7h12M5 2v3M11 2v3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
+      {calendar && (
+        <>
+          <button
+            type="button"
+            aria-label={`Choose ${label} from a calendar`}
+            title="Choose from a calendar"
+            className="date-button"
+            onClick={() => {
+              if (picker.current && !openPicker(picker.current)) text.current?.focus();
+            }}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M3 3.5h10a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1ZM2 7h12M5 2v3M11 2v3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <input
+            ref={picker}
+            type="date"
+            tabIndex={-1}
+            aria-hidden="true"
+            className="date-picker"
+            value={pickerDay(stored)}
+            onChange={(e) => {
+              setTyped(null);
+              onEdit(e.currentTarget.value);
+            }}
           />
-        </svg>
-      </button>
-      <input
-        ref={picker}
-        type="date"
-        tabIndex={-1}
-        aria-hidden="true"
-        className="date-picker"
-        value={pickerDay(stored)}
-        onChange={(e) => {
-          setTyped(null);
-          onEdit(e.currentTarget.value);
-        }}
-      />
+        </>
+      )}
     </span>
   );
 }

@@ -78,6 +78,8 @@ export interface Column {
   shaded_within?: string[];
   /** Let a `date` column hold a month, `YYYY-MM`, as well as a day. */
   allow_month?: boolean;
+  /** Draw a `date` column's box with no calendar button. */
+  no_calendar?: boolean;
   speak?: Speak;
   /** The field of the same row holding this cell's link target. Honoured where
    *  a cell is read rather than edited: a computed column, and every column of
