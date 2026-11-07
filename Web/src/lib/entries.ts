@@ -114,6 +114,25 @@ export function settleEdits(
   });
 }
 
+/** Take back an edit abandoned with Esc: the entry becomes what it was when
+ *  its cell was focused, its row and the fields recorded as typed into alike.
+ *  Putting the edits back as well as the row is what keeps an abandoned edit
+ *  from being stamped: a field typed into and then abandoned was, in the end,
+ *  not typed into. A stamp a preview took into the row while the edit was
+ *  being typed goes with it, since that stamp followed from the edit. An entry
+ *  deleted meanwhile is not brought back. */
+export function cancelEdit(
+  entries: readonly RowEntry[],
+  before: RowEntry,
+): RowEntry[] {
+  return entries.map((entry) => {
+    if (entry.id !== before.id) return entry;
+    const restored: RowEntry = { id: entry.id, row: before.row };
+    if (before.edited) restored.edited = before.edited;
+    return restored;
+  });
+}
+
 /** Add a row at the end. */
 export function appendEntry(
   entries: readonly RowEntry[],

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Column, Row } from "../src/lib/schema";
 import {
   appendEntry,
+  cancelEdit,
   editEntry,
   editedLines,
   entryRows,
@@ -291,5 +292,35 @@ describe("the fields typed into", () => {
     const entries = appendEntry(markEdited(toEntries(rows), 1, "title", 1), {});
     expect(entries[3].edited).toBeUndefined();
     expect(toEntries(rows).every((e) => e.edited === undefined)).toBe(true);
+  });
+});
+
+describe("an edit abandoned with Esc", () => {
+  test("puts the row back as it was when its cell was focused", () => {
+    const before = toEntries(rows)[0];
+    let entries = editEntry(toEntries(rows), 1, { title: "Mosses", year: 1994, checked: "2026-11-06" });
+    entries = markEdited(entries, 1, "title", 3);
+    const back = cancelEdit(entries, before);
+    expect(back[0].row).toEqual({ title: "Moss", year: 1994 });
+    expect(back[0].edited).toBeUndefined();
+    expect(editedLines(back)).toEqual([]);
+  });
+
+  test("keeps the edits the row already had", () => {
+    const marked = markEdited(toEntries(rows), 2, "year", 2);
+    const before = marked[1];
+    const typed = markEdited(editEntry(marked, 2, { title: "Fern", year: 2003 }), 2, "title", 5);
+    const back = cancelEdit(typed, before);
+    expect(back[1].row).toEqual({ title: "Ferns", year: 2003 });
+    expect(back[1].edited).toEqual({ year: 2 });
+  });
+
+  test("leaves other rows alone and does not bring back a deleted row", () => {
+    const entries = toEntries(rows);
+    const before = entries[2];
+    const removal = removeEntry(markEdited(entries, 1, "title", 1), 3)!;
+    const back = cancelEdit(removal.entries, before);
+    expect(back).toHaveLength(2);
+    expect(back[0].edited).toEqual({ title: 1 });
   });
 });
