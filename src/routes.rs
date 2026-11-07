@@ -31,7 +31,7 @@ use tiny_http::{Header, Method, Request, Response};
 use crate::context::Context;
 use crate::error::ApiError;
 use crate::head;
-use crate::table::{App, Front, Table, listed_in_order};
+use crate::table::{App, Front, Lower, Placement, Table, listed_in_order};
 use crate::view::ViewArgs;
 
 const JSON: &str = "application/json";
@@ -362,17 +362,122 @@ fn dispatch(
         }
     };
     // The query string is the arguments the table is asked with, which it
-    // settles against its own parameters.
+    // settles against its page's parameters and its own.
     let ctx = context(named)?.with_args(ViewArgs::from_query(&parse_query(request.url())));
+    serve_table(action, route.table, app, ctx, &body)
+}
 
+/// Answer one table's read, write or derive through `ctx`, which carries the
+/// arguments the request was asked with. The table is placed on its page, and
+/// a write or a derive first has the context see the rows the body carries
+/// alongside for the other tables there.
+fn serve_table(
+    action: Action,
+    table: &dyn Table,
+    app: &Arc<dyn App>,
+    ctx: Context,
+    body: &str,
+) -> Result<String, ApiError> {
+    let page = Page::of(app.as_ref(), table);
     match action {
-        Action::Get => route.table.handle_get(&ctx),
+        Action::Get => table.handle_get(&ctx.placed(page.placement(table, &ctx)?)),
         Action::Put => {
             let ctx = writing(ctx, app);
             app.before_write(&ctx);
-            route.table.handle_put(&ctx, &body)
+            page.overlay_alongside(table, &ctx, body)?;
+            table.handle_put(&ctx.placed(page.placement(table, &ctx)?), body)
         }
-        Action::Derive => route.table.handle_derive(&ctx, &body),
+        Action::Derive => {
+            page.overlay_alongside(table, &ctx, body)?;
+            table.handle_derive(&ctx.placed(page.placement(table, &ctx)?), body)
+        }
+    }
+}
+
+/// The tables drawn on one page: the table at its top, and the tables below
+/// it. A table nothing is below, and that is below nothing, is a page alone.
+struct Page<'a> {
+    first: &'a dyn Table,
+    lower: Vec<&'a dyn Table>,
+}
+
+impl<'a> Page<'a> {
+    /// The page `table` is drawn on.
+    fn of(app: &'a dyn App, table: &'a dyn Table) -> Self {
+        let first = app
+            .tables()
+            .into_iter()
+            .find(|t| t.tables_below().iter().any(|b| b.name() == table.route()))
+            .unwrap_or(table);
+        let lower = first
+            .tables_below()
+            .iter()
+            .filter_map(|b| app.table(b.name()))
+            .collect();
+        Self { first, lower }
+    }
+
+    /// Where `table` sits on this page. A table below another is asked the
+    /// page's parameters, which are the first table's, built from what the
+    /// address asked as that table's own would be.
+    fn placement(&self, table: &dyn Table, ctx: &Context) -> Result<Placement, ApiError> {
+        if table.route() == self.first.route() {
+            let below = self
+                .first
+                .tables_below()
+                .iter()
+                .filter_map(|b| {
+                    let lower = self.lower.iter().find(|t| t.route() == b.name())?;
+                    Some(Lower {
+                        table: lower.route(),
+                        title: b.is_titled().then(|| lower.heading()),
+                    })
+                })
+                .collect();
+            return Ok(Placement { above: None, below });
+        }
+        Ok(Placement {
+            above: Some(self.first.controls(ctx)?),
+            below: Vec::new(),
+        })
+    }
+
+    /// Have the context answer reads of each table a body carries rows
+    /// `alongside` for with those rows in its file. A table that is not on
+    /// this page, or is the table the request is about, is a 400.
+    fn overlay_alongside(
+        &self,
+        table: &dyn Table,
+        ctx: &Context,
+        body: &str,
+    ) -> Result<(), ApiError> {
+        // A body that is not JSON at all is the table's own handler's to
+        // refuse, with the message it gives every such body.
+        let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_str(body) else {
+            return Ok(());
+        };
+        let alongside = match fields.remove("alongside") {
+            None => return Ok(()),
+            Some(serde_json::Value::Object(alongside)) => alongside,
+            Some(_) => {
+                return Err(ApiError::bad_request(
+                    "alongside has to be an object of rows by table",
+                ));
+            }
+        };
+        for (name, rows) in alongside {
+            let other = std::iter::once(self.first)
+                .chain(self.lower.iter().copied())
+                .find(|t| t.route() == name && t.route() != table.route())
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "alongside names \"{name}\", which is not another table on the page of \"{}\"",
+                        table.route()
+                    ))
+                })?;
+            other.overlay(&ctx.placed(self.placement(other, ctx)?), rows)?;
+        }
+        Ok(())
     }
 }
 
@@ -629,7 +734,7 @@ mod tests {
     use crate::fixture::{Books, GENRES_FILE, Genre, Library, Plain};
     use crate::schema::{Column, Schema};
     use crate::table::{Front, TableLogic};
-    use crate::view::{View, ViewArgs, ViewData, ViewLogic};
+    use crate::view::{Param, View, ViewArgs, ViewData, ViewLogic};
 
     #[test]
     fn route_maps_every_table() {
@@ -1028,5 +1133,291 @@ mod tests {
     #[test]
     fn error_json_carries_the_message() {
         assert_eq!(error_json("no Data/"), r#"{"error":"no Data/"}"#);
+    }
+
+    // ── A page of several tables ────────────────────────────────────────────
+    // A plan of lines by year, with extra payments below it, titled, and caps
+    // below that, untitled. The plan's footer counts what the extras on its
+    // page add up to, read through the context, so it follows what is typed
+    // into the extras as an overlay would make it.
+
+    const LINES: &str = "Lines.jsonl";
+    const EXTRAS: &str = "Extras.jsonl";
+    const CAPS: &str = "Caps.jsonl";
+
+    fn year_of(row: &Value) -> String {
+        row["year"].to_string()
+    }
+
+    struct Lines;
+    impl TableLogic for Lines {
+        type Row = Value;
+        fn name(&self) -> &'static str {
+            "lines"
+        }
+        fn file(&self) -> &'static str {
+            LINES
+        }
+        fn title(&self) -> &'static str {
+            "Lines"
+        }
+        fn params(&self, _ctx: &Context) -> Result<Vec<Param>, ApiError> {
+            Ok(vec![
+                Param::select("year", "Year", ["2026", "2025"]).default("2026"),
+            ])
+        }
+        fn shows(&self, row: &Value, ctx: &Context) -> bool {
+            Some(year_of(row).as_str()) == ctx.args().get("year")
+        }
+        fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+            Ok(Schema::new([Column::string("name", "Name")]))
+        }
+        fn validate(
+            &self,
+            _rows: &[Value],
+            _ctx: &Context,
+        ) -> Result<Vec<ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+        fn overview(&self, _rows: &[Value], ctx: &Context) -> Result<crate::Overview, ApiError> {
+            let year = ctx.args().get("year").unwrap_or("").to_string();
+            let extras: Vec<Value> = ctx.optional_rows(EXTRAS)?;
+            let total: f64 = extras
+                .iter()
+                .filter(|row| year_of(row) == year)
+                .filter_map(|row| row["amount"].as_f64())
+                .sum();
+            Ok(crate::Overview::new().footer(crate::Footer::new(format!("extras {total}"))))
+        }
+        fn below(&self) -> Vec<crate::Below> {
+            vec![
+                crate::Below::table("extras").titled(),
+                crate::Below::table("caps"),
+            ]
+        }
+    }
+
+    /// Shows the year its page is asked about, with no parameters of its own.
+    struct Extras;
+    impl TableLogic for Extras {
+        type Row = Value;
+        fn name(&self) -> &'static str {
+            "extras"
+        }
+        fn file(&self) -> &'static str {
+            EXTRAS
+        }
+        fn title(&self) -> &'static str {
+            "Extra payments"
+        }
+        fn shows(&self, row: &Value, ctx: &Context) -> bool {
+            Some(year_of(row).as_str()) == ctx.args().get("year")
+        }
+        fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+            Ok(Schema::new([Column::number("amount", "Amount")]))
+        }
+        fn validate(
+            &self,
+            _rows: &[Value],
+            _ctx: &Context,
+        ) -> Result<Vec<ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+        fn overview(&self, _rows: &[Value], ctx: &Context) -> Result<crate::Overview, ApiError> {
+            let lines: Vec<Value> = ctx.optional_rows(LINES)?;
+            Ok(crate::Overview::new().footer(crate::Footer::new(format!("{} lines", lines.len()))))
+        }
+    }
+
+    struct Caps;
+    impl TableLogic for Caps {
+        type Row = Value;
+        fn name(&self) -> &'static str {
+            "caps"
+        }
+        fn file(&self) -> &'static str {
+            CAPS
+        }
+        fn title(&self) -> &'static str {
+            "Caps"
+        }
+        fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+            Ok(Schema::new([Column::number("cap", "Cap")]))
+        }
+        fn validate(
+            &self,
+            _rows: &[Value],
+            _ctx: &Context,
+        ) -> Result<Vec<ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct Plan;
+    impl App for Plan {
+        fn name(&self) -> &str {
+            "Plan"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&Lines, &Extras, &Caps, &Books]
+        }
+    }
+
+    const LINES_TEXT: &str = concat!(
+        r#"{"year":2025,"name":"Rent"}"#,
+        "\n",
+        r#"{"year":2026,"name":"Rent"}"#,
+        "\n",
+    );
+    const EXTRAS_TEXT: &str = concat!(
+        r#"{"year":2025,"amount":10.0}"#,
+        "\n",
+        r#"{"year":2026,"amount":20.0}"#,
+        "\n",
+        r#"{"year":2025,"amount":30.0}"#,
+        "\n",
+    );
+
+    fn plan_dir() -> crate::fixture::TempDir {
+        let dir = crate::fixture::temp_dir();
+        dir.write(LINES, LINES_TEXT);
+        dir.write(EXTRAS, EXTRAS_TEXT);
+        dir.write(CAPS, "{\"cap\":100}\n");
+        dir
+    }
+
+    fn plan() -> Arc<dyn App> {
+        Arc::new(Plan)
+    }
+
+    /// Ask `table` of the Plan what `action` asks, with `query` as its address
+    /// would carry it.
+    fn ask(
+        dir: &crate::fixture::TempDir,
+        action: Action,
+        table: &str,
+        query: &[(&str, &str)],
+        body: &str,
+    ) -> Result<Value, ApiError> {
+        let app = plan();
+        let args = query.iter().fold(ViewArgs::new(), |args, (key, value)| {
+            args.with(*key, *value)
+        });
+        let table = app.table(table).unwrap();
+        let answer = serve_table(action, table, &app, dir.context().with_args(args), body)?;
+        Ok(serde_json::from_str(&answer).unwrap())
+    }
+
+    #[test]
+    fn the_first_table_names_the_tables_below_it() {
+        let dir = plan_dir();
+        let v = ask(&dir, Action::Get, "lines", &[], "").unwrap();
+        assert_eq!(
+            v["below"],
+            json!([{ "table": "extras", "title": "Extra payments" }, { "table": "caps" }])
+        );
+        let extras = ask(&dir, Action::Get, "extras", &[], "").unwrap();
+        assert!(extras.get("below").is_none());
+        let books = ask(&dir, Action::Get, "books", &[], "");
+        assert!(books.is_err() || books.unwrap().get("below").is_none());
+    }
+
+    #[test]
+    fn a_table_below_another_is_asked_what_its_page_is_asked() {
+        let dir = plan_dir();
+        // Opened on its own, with nothing in the address, it takes the page's
+        // default, and offers the page's control.
+        let alone = ask(&dir, Action::Get, "extras", &[], "").unwrap();
+        assert_eq!(alone["args"], json!({ "year": "2026" }));
+        assert_eq!(alone["params"][0]["key"], "year");
+        assert_eq!(alone["rows"], json!([{ "year": 2026, "amount": 20.0 }]));
+
+        let earlier = ask(&dir, Action::Get, "extras", &[("year", "2025")], "").unwrap();
+        assert_eq!(earlier["rows"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_derive_sees_the_rows_alongside_it() {
+        let dir = plan_dir();
+        let body = r#"{"rows":[{"year":2025,"name":"Rent"}],
+                       "alongside":{"extras":[{"year":2025,"amount":5.5}]}}"#;
+        let v = ask(&dir, Action::Derive, "lines", &[("year", "2025")], body).unwrap();
+        // The 2025 extras are what was typed; 2026's are as the file has them.
+        assert_eq!(v["overview"]["footer"]["title"], "extras 5.5");
+        assert_eq!(dir.read(EXTRAS), EXTRAS_TEXT);
+    }
+
+    #[test]
+    fn a_lower_table_sees_the_first_tables_rows_merged_into_its_file() {
+        let dir = plan_dir();
+        let body = r#"{"rows":[],
+                       "alongside":{"lines":[{"year":2025,"name":"Rent"},{"year":2025,"name":"Food"}]}}"#;
+        let v = ask(&dir, Action::Derive, "extras", &[("year", "2025")], body).unwrap();
+        // Two 2025 lines typed, and the one 2026 line the file has.
+        assert_eq!(v["overview"]["footer"]["title"], "3 lines");
+    }
+
+    #[test]
+    fn a_write_sees_the_rows_alongside_it_and_writes_only_its_own() {
+        let dir = plan_dir();
+        let body = r#"{"rows":[{"year":2026,"name":"Rent"}],
+                       "alongside":{"extras":[{"year":2026,"amount":7.0}]}}"#;
+        let v = ask(&dir, Action::Put, "lines", &[("year", "2026")], body).unwrap();
+        assert_eq!(v["overview"]["footer"]["title"], "extras 7");
+        assert_eq!(dir.read(EXTRAS), EXTRAS_TEXT);
+    }
+
+    #[test]
+    fn rows_alongside_for_a_table_not_on_the_page_are_refused() {
+        let dir = plan_dir();
+        for (table, name) in [("lines", "books"), ("lines", "lines"), ("extras", "nobody")] {
+            let body = format!(r#"{{"rows":[],"alongside":{{"{name}":[]}}}}"#);
+            let refused = ask(&dir, Action::Derive, table, &[], &body).unwrap_err();
+            assert_eq!(refused.status, 400, "{table} with {name}");
+        }
+        let body = r#"{"rows":[],"alongside":[]}"#;
+        assert_eq!(
+            ask(&dir, Action::Derive, "lines", &[], body)
+                .unwrap_err()
+                .status,
+            400
+        );
+    }
+
+    #[test]
+    fn rows_alongside_that_are_not_the_tables_rows_are_refused() {
+        let dir = plan_dir();
+        let body = r#"{"rows":[],"alongside":{"extras":"not rows"}}"#;
+        assert_eq!(
+            ask(&dir, Action::Derive, "lines", &[], body)
+                .unwrap_err()
+                .status,
+            400
+        );
+    }
+
+    #[test]
+    fn a_write_from_a_lower_table_keeps_the_other_years() {
+        let dir = plan_dir();
+        let body = r#"{"rows":[{"year":2025,"amount":99.0}]}"#;
+        ask(&dir, Action::Put, "extras", &[("year", "2025")], body).unwrap();
+        assert_eq!(
+            dir.read(EXTRAS),
+            concat!(
+                r#"{"amount":99.0,"year":2025}"#,
+                "\n",
+                r#"{"amount":20.0,"year":2026}"#,
+                "\n",
+            )
+        );
+    }
+
+    #[test]
+    fn a_write_from_an_unscoped_table_on_a_page_is_whole() {
+        let dir = plan_dir();
+        // Caps is below Lines, so it merges; with no `shows` it keeps nothing
+        // of what the file held, which is the whole file replaced.
+        ask(&dir, Action::Put, "caps", &[], r#"{"rows":[{"cap":5}]}"#).unwrap();
+        assert_eq!(dir.read(CAPS), "{\"cap\":5}\n");
     }
 }

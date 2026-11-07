@@ -88,6 +88,6 @@ pub use schema::{
 #[cfg(feature = "server")]
 pub use server::{Server, ServerArgs, ServerCommand};
 #[cfg(feature = "server")]
-pub use table::{App, Edits, Front, Stamping, Table, TableLogic, Written};
+pub use table::{App, Below, Edits, Front, Stamping, Table, TableLogic, Written};
 #[cfg(feature = "server")]
 pub use view::{Fields, Param, View, ViewArgs, ViewData, ViewLogic};

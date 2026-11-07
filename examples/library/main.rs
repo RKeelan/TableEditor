@@ -15,17 +15,19 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
-    Amount, ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
-    DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec, NewRow, OptionsBy,
-    Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server, ServerArgs, Speak,
-    Stamping, Status, Table, TableLogic, Tone, Undoable, ValidationError, View, ViewArgs, ViewData,
-    ViewLink, ViewLogic, Written,
+    Amount, ApiError, App, Below, Button, Card, CardGroup, Column, Context, Datalist, Detail,
+    DetailRow, DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec, NewRow,
+    OptionsBy, Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server,
+    ServerArgs, Speak, Stamping, Status, Table, TableLogic, Tone, Undoable, ValidationError, View,
+    ViewArgs, ViewData, ViewLink, ViewLogic, Written,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
 const GENRES_FILE: &str = "Genres.jsonl";
 const BRANCHES_FILE: &str = "Branches.jsonl";
 const PURCHASES_FILE: &str = "Purchases.jsonl";
+const DONATIONS_FILE: &str = "Donations.jsonl";
+const ALLOCATIONS_FILE: &str = "Allocations.jsonl";
 
 const DEFAULT_PORT: u16 = 8791;
 
@@ -101,6 +103,30 @@ struct Branch {
     open: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     hours: BTreeMap<String, String>,
+}
+
+/// A gift of money towards the year's purchases.
+#[derive(Debug, Serialize, Deserialize)]
+struct Donation {
+    year: i32,
+    #[serde(default)]
+    donor: String,
+    /// The day it was given, as `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    given: String,
+    /// What was given, as a figure or as a sum of several gifts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    amount: Option<Amount>,
+}
+
+/// What a branch may spend on purchases in a budget year.
+#[derive(Debug, Serialize, Deserialize)]
+struct Allocation {
+    year: i32,
+    #[serde(default)]
+    branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    amount: Option<f64>,
 }
 
 /// Something a branch bought, under the code of the branch that bought it
@@ -614,6 +640,15 @@ impl TableLogic for Purchases {
         Self::year(ctx) == Some(row.year)
     }
 
+    /// The year's donations, headed with their title, and what each branch
+    /// may spend, whose column headers say what it is.
+    fn below(&self) -> Vec<Below> {
+        vec![
+            Below::table("donations").titled(),
+            Below::table("allocations"),
+        ]
+    }
+
     /// Grouped by branch, which is not a column: the heading says which
     /// branch a group is, and a row is added to a branch through its group.
     /// A new row is bought out of the year on screen. The cost is what the
@@ -689,8 +724,10 @@ impl TableLogic for Purchases {
     /// code, and what it spent; a closed branch says so, and one with no
     /// budget notes that what it spent was spent without one.
     ///
-    /// Above the table, a card of what was spent and one of what has not
-    /// arrived yet, and a small table of each branch's share of the spending.
+    /// Above the table, a card of what was spent, one of what has not arrived
+    /// yet, and one of what the year's donations came to, read from the
+    /// Donations table below, and a small table of each branch's share of the
+    /// spending.
     /// Where `LIBRARY_DOCK` is set, the cards are docked at the foot of the
     /// window instead.
     fn overview(&self, rows: &[Purchase], ctx: &Context) -> Result<Overview, ApiError> {
@@ -707,6 +744,13 @@ impl TableLogic for Purchases {
             .filter(|row| row.received != Some(true))
             .collect();
         let on_order: f64 = waiting.iter().filter_map(|row| row.spent()).sum();
+        let year = Self::year(ctx);
+        let donated: f64 = ctx
+            .optional_rows::<Donation>(DONATIONS_FILE)?
+            .iter()
+            .filter(|row| Some(row.year) == year)
+            .filter_map(|row| row.amount.as_ref().and_then(Amount::value))
+            .sum();
         let in_cad = || money().unit("CAD");
 
         // A branch's name may wrap, so the table fits a phone.
@@ -750,12 +794,142 @@ impl TableLogic for Purchases {
                         n => format!("{n} purchases not yet received"),
                     },
                 ))
+                .card(Card::new("Donated").figure(donated, in_cad()))
                 .section(by_branch);
         Ok(if std::env::var_os("LIBRARY_DOCK").is_some() {
             overview.dock_cards()
         } else {
             overview
         })
+    }
+}
+
+// ── Donations and Allocations, below Purchases ──────────────────────────────
+
+/// The gifts towards one year's purchases, drawn below Purchases on its page
+/// and asked the year that page is.
+struct Donations;
+
+impl TableLogic for Donations {
+    type Row = Donation;
+
+    fn name(&self) -> &'static str {
+        "donations"
+    }
+
+    fn file(&self) -> &'static str {
+        DONATIONS_FILE
+    }
+
+    fn title(&self) -> &'static str {
+        "Donations"
+    }
+
+    fn in_switcher(&self) -> bool {
+        false
+    }
+
+    fn shows(&self, row: &Donation, ctx: &Context) -> bool {
+        Purchases::year(ctx) == Some(row.year)
+    }
+
+    fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
+        Ok(Schema::new([
+            Column::string("donor", "Donor").width_ch(24),
+            Column::date("given", "Given"),
+            Column::amount("amount", "Amount")
+                .format(money())
+                .width_ch(9),
+        ])
+        .new_row(
+            NewRow::new()
+                .with("donor", "")
+                .with("year", Purchases::year(ctx)),
+        ))
+    }
+
+    fn validate(
+        &self,
+        rows: &[Donation],
+        _ctx: &Context,
+    ) -> Result<Vec<ValidationError>, ApiError> {
+        Ok(rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.donor.trim().is_empty())
+            .map(|(idx, _)| ValidationError::field(idx + 1, "donor", "say who gave it"))
+            .collect())
+    }
+}
+
+/// What each branch may spend in one year, against what its purchases on the
+/// page above come to, which it reads through the context and so follows a
+/// cost as it is typed there.
+struct Allocations;
+
+impl TableLogic for Allocations {
+    type Row = Allocation;
+
+    fn name(&self) -> &'static str {
+        "allocations"
+    }
+
+    fn file(&self) -> &'static str {
+        ALLOCATIONS_FILE
+    }
+
+    fn title(&self) -> &'static str {
+        "Allocations"
+    }
+
+    fn in_switcher(&self) -> bool {
+        false
+    }
+
+    fn shows(&self, row: &Allocation, ctx: &Context) -> bool {
+        Purchases::year(ctx) == Some(row.year)
+    }
+
+    fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let options: Vec<SelectOption> = branches
+            .iter()
+            .map(|b| SelectOption::labelled(&b.code, &b.name))
+            .collect();
+        Ok(Schema::new([
+            Column::select("branch", "Branch", options),
+            Column::number("amount", "Allocated")
+                .format(Format::money())
+                .width_ch(9),
+            Column::computed("spent", "Spent", "spent").format(money()),
+            Column::computed("remaining", "Remaining", "remaining").format(money()),
+        ])
+        .new_row(NewRow::new().with("year", Purchases::year(ctx))))
+    }
+
+    fn validate(
+        &self,
+        _rows: &[Allocation],
+        _ctx: &Context,
+    ) -> Result<Vec<ValidationError>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    fn derive(&self, rows: &[Allocation], ctx: &Context) -> Result<Vec<Value>, ApiError> {
+        let year = Purchases::year(ctx);
+        let purchases: Vec<Purchase> = ctx.optional_rows(PURCHASES_FILE)?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let spent: f64 = purchases
+                    .iter()
+                    .filter(|p| Some(p.year) == year && p.branch == row.branch)
+                    .filter_map(Purchase::spent)
+                    .sum();
+                let remaining = row.amount.map(|amount| amount - spent);
+                json!({ "spent": spent, "remaining": remaining })
+            })
+            .collect())
     }
 }
 
@@ -1641,6 +1815,8 @@ struct Library {
     genres: Genres,
     branches: Branches,
     purchases: Purchases,
+    donations: Donations,
+    allocations: Allocations,
     on_loan: OnLoan,
     spending: Spending,
     branch_cards: BranchCards,
@@ -1658,7 +1834,14 @@ impl App for Library {
     }
 
     fn tables(&self) -> Vec<&dyn Table> {
-        vec![&self.books, &self.genres, &self.branches, &self.purchases]
+        vec![
+            &self.books,
+            &self.genres,
+            &self.branches,
+            &self.purchases,
+            &self.donations,
+            &self.allocations,
+        ]
     }
 
     fn views(&self) -> Vec<&dyn View> {
@@ -1742,6 +1925,8 @@ fn main() -> anyhow::Result<()> {
             genres: Genres,
             branches: Branches,
             purchases: Purchases,
+            donations: Donations,
+            allocations: Allocations,
             on_loan: OnLoan,
             spending: Spending,
             branch_cards: BranchCards,

@@ -682,6 +682,14 @@
     overflow-x: auto;
   }
 
+  /* A table below another on its page is as wide as its columns, no wider
+     than the page, and scrolls sideways in its own box where it is wider. */
+  .lower-box {
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
   /* The number a card is about, large under its title. Its numerals are
      proportional, which read better at this size than the tabular ones a
      column of figures needs to line up. */
