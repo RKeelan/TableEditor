@@ -602,6 +602,30 @@
     left: var(--controls);
     z-index: 30;
   }
+
+  /* Below 860px the first column, which stays put as the rest scrolls
+     sideways, is held to under half the window, so the columns scrolled
+     under it can be read beside it. A longer value is cut short in its box,
+     as a box narrower than its text cuts it anywhere, and a heading's or the
+     footer's title is cut short with an ellipsis. */
+  @media (width < 860px) {
+    .editor-grid .first-column,
+    .editor-grid tr.group-head > :nth-child(2),
+    .editor-grid tr.total > td:nth-child(2) {
+      max-width: 45vw;
+    }
+    .editor-grid .first-column > *,
+    .editor-grid .first-column .field,
+    .editor-grid .first-column .readout {
+      max-width: 100%;
+      min-width: 0 !important;
+    }
+    .editor-grid tr.group-head > :nth-child(2) .line-label,
+    .editor-grid tr.total > td:nth-child(2) .line-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
   /* A row brought into view by the keyboard is not left under the footer,
      whichever of the box and the body under a summary is scrolling it. */
   .table-box.has-footer,
