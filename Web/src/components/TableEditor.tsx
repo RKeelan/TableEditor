@@ -34,6 +34,7 @@ import {
   type Column,
   type Derived,
   type NumberFormat,
+  type Schema,
   type ValidationError,
 } from "../lib/schema";
 import {
@@ -64,6 +65,8 @@ import {
   writeThenRead,
 } from "../lib/save";
 import { type RowTarget, type Tone, savedRowTarget, tableHref } from "../lib/view";
+import { cellSettings, gridColumns, rowReadOnly, underlayOf } from "../lib/cells";
+import { useCellNote } from "./CellNote";
 import { DateBox } from "./DateBox";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
@@ -333,7 +336,8 @@ function TableSection({
     onReport(table, { title: name, save, notice, errors: errors.length });
   }, [onReport, table, name, save, notice, errors.length]);
 
-  const columns = schema?.columns ?? NO_COLUMNS;
+  // A column drawn in another's note is not drawn in the grid.
+  const columns = useMemo(() => gridColumns(schema?.columns ?? NO_COLUMNS), [schema]);
 
   // ── Derived lookups ───────────────────────────────────────────────────────
   const errorsByLine = useMemo(() => {
@@ -592,6 +596,8 @@ function TableSection({
         onCell={t.setCell}
         onMark={t.markCell}
         onMapEntry={t.setMapEntry}
+        schema={schema}
+        onNote={t.setNote}
         onCancel={t.cancelCell}
         onDelete={t.onDelete}
         onDragStart={() => (dragSource.current = idx)}
@@ -914,10 +920,19 @@ interface RowProps {
   onDelete: (id: number) => void;
   onDragStart: () => void;
   onDrop: () => void;
+  /** The table's schema, for its notes and its cells' settings. A row given
+   *  none draws neither. */
+  schema?: Schema;
+  /** Write the note on one of the row's cells; absent where notes are read
+   *  but not written. */
+  onNote?: (id: number, field: string, text: string) => void;
 }
 
 function TableRow(p: RowProps) {
   const target = p.target;
+  // A row with nothing in it to edit is worked out elsewhere, so it is not
+  // deleted or moved from the page: it has no delete button or drag handle.
+  const locked = p.schema !== undefined && rowReadOnly(p.schema, p.columns, p.derived);
   const rowErr = p.errTitle.length > 0;
   // A sticky cell needs a background of its own, since the rest of the row
   // slides underneath it.
@@ -961,7 +976,8 @@ function TableRow(p: RowProps) {
         className={`sticky left-0 z-10 w-[var(--controls)] whitespace-nowrap py-1 pl-3 pr-2 ${stuck}`}
       >
         <span className="flex items-center gap-2">
-          {p.handle && (
+          {p.handle && locked && <span aria-hidden className="h-8 w-6" />}
+          {p.handle && !locked && (
             <span
               draggable={p.reorderable}
               onDragStart={p.reorderable ? p.onDragStart : undefined}
@@ -981,15 +997,19 @@ function TableRow(p: RowProps) {
               ⋮⋮
             </span>
           )}
-          <button
-            type="button"
-            onClick={() => p.onDelete(p.entry.id)}
-            aria-label={`Delete row ${p.position + 1}`}
-            title="Delete row"
-            className="flex h-8 w-8 select-none items-center justify-center rounded text-muted hover:bg-bad/10 hover:text-bad"
-          >
-            ×
-          </button>
+          {locked ? (
+            <span aria-hidden className="h-8 w-8" />
+          ) : (
+            <button
+              type="button"
+              onClick={() => p.onDelete(p.entry.id)}
+              aria-label={`Delete row ${p.position + 1}`}
+              title="Delete row"
+              className="flex h-8 w-8 select-none items-center justify-center rounded text-muted hover:bg-bad/10 hover:text-bad"
+            >
+              ×
+            </button>
+          )}
           {target !== null && (
             <a
               href={target.href}
@@ -1017,6 +1037,8 @@ function TableRow(p: RowProps) {
           onCell={p.onCell}
           onMark={p.onMark}
           onMapEntry={p.onMapEntry}
+          schema={p.schema}
+          onNote={p.onNote}
         />
       ))}
     </tr>
@@ -1171,6 +1193,9 @@ interface CellProps {
    *  reads. */
   onMark: (id: number, column: Column) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
+  /** The table's schema, for the cell's note and its settings. */
+  schema?: Schema;
+  onNote?: (id: number, field: string, text: string) => void;
 }
 
 /** The value a boolean select shows when the cell holds something that is not
@@ -1190,10 +1215,27 @@ function Cell({
   onCell,
   onMark,
   onMapEntry,
+  schema,
+  onNote,
 }: CellProps) {
   const scope = useContext(TableScope);
   const row = entry.row;
   const size = controlSize(column, fill);
+  // What the derivation says about this cell, and the figure it stands in for
+  // a blank one with. The underlay is judged against the row on screen, so it
+  // goes on the first keystroke.
+  const settings = schema ? cellSettings(schema, derived, column.field) : {};
+  const underlay = underlayOf(column, row[column.field], settings);
+  const note = useCellNote({
+    column,
+    row,
+    schema,
+    settings,
+    underlaid: underlay !== null,
+    onNote: onNote && ((text) => onNote(entry.id, column.field, text)),
+    onCell: (other, raw) => onCell(entry.id, other, raw),
+  });
+  const tone = settings.tone;
   const [editing, setEditing] = useState(false);
   // The value as it was when the cell was focused, whose line breaks what is
   // typed keeps even through a moment with none: see withLineBreaksOf.
@@ -1206,7 +1248,10 @@ function Cell({
     (error ? " cell-error" : "") +
     (mismatched ? " cell-mismatch" : "") +
     (column.strong ? " figure-strong" : "") +
-    (shade !== null ? " shaded" : "");
+    (shade !== null ? " shaded" : "") +
+    note.className;
+  // What every cell's own element carries: its note's handlers and its tone.
+  const attrs = { ...note.props, "data-tone": tone };
   // The depth of a shaded cell, which the stylesheet mixes into its tone.
   const tdStyle =
     shade === null ? undefined : ({ "--shade": `${shade}%` } as React.CSSProperties);
@@ -1234,7 +1279,7 @@ function Cell({
           ? numberParts(shown, format)
           : { number: text, unit: null, tone: null };
       return (
-        <td className={tdCls} style={tdStyle}>
+        <td {...attrs} className={tdCls} style={tdStyle}>
           <span
             className="readout figure text-right tabular-nums"
             style={size}
@@ -1248,7 +1293,7 @@ function Cell({
       );
     }
     return (
-      <td className={tdCls} style={tdStyle}>
+      <td {...attrs} className={tdCls} style={tdStyle}>
         <span
           className="readout font-mono text-[11px] text-muted"
           style={size}
@@ -1264,21 +1309,26 @@ function Cell({
   // so it is read at the grid's size: a figure in ink, right-aligned with its
   // unit after it, and anything else in the muted tone. A value that is not
   // what its column describes is shown as it is stored and marked.
-  if (column.read_only) {
+  if (column.read_only || settings.read_only) {
     const text = cellText(column, row, derived);
-    const figure = cellFigure(column, row, derived);
+    const figure = cellFigure(column, row, derived) ?? underlay;
     const parts =
       format && figure !== null && !mismatched
         ? numberParts(figure, format)
-        : { number: text, unit: null, tone: null };
+        : underlay !== null
+          ? { number: String(underlay), unit: null, tone: null }
+          : { number: text, unit: null, tone: null };
     const sum = column.type === "amount" && isSum(value);
     return (
-      <td className={tdCls} style={tdStyle}>
+      <td {...attrs} className={tdCls} style={tdStyle}>
         <span
           className={
             "readout stored" +
-            (format || column.type === "amount" ? " figure text-right tabular-nums" : "") +
-            (sum ? " amount-sum" : "")
+            (format || column.type === "amount" || underlay !== null
+              ? " figure text-right tabular-nums"
+              : "") +
+            (sum ? " amount-sum" : "") +
+            (underlay !== null ? " underlaid" : "")
           }
           style={size}
           title={mismatched ? oddTitle : sum ? String(value) : text || undefined}
@@ -1293,7 +1343,7 @@ function Cell({
 
   if (column.type === "date") {
     return (
-      <td className={tdCls}>
+      <td {...attrs} className={tdCls}>
         <DateBox
           stored={value}
           displayText={cellText(column, row, derived)}
@@ -1335,7 +1385,7 @@ function Cell({
         ? String(value)
         : "";
     return (
-      <td className={tdCls}>
+      <td {...attrs} className={tdCls}>
         <select
           value={shown}
           onChange={(e) => {
@@ -1360,7 +1410,7 @@ function Cell({
     const shown = value == null ? "" : String(value);
     const options = selectOptions(column, row);
     return (
-      <td className={tdCls}>
+      <td {...attrs} className={tdCls}>
         <select
           value={shown}
           onChange={(e) => onCell(entry.id, column, e.target.value)}
@@ -1391,6 +1441,7 @@ function Cell({
           : { number: String(figure), unit: null, tone: null };
     return (
       <td
+        {...attrs}
         className={tdCls + " amount-cell"}
         style={tdStyle}
         data-empty={value == null || value === "" || undefined}
@@ -1400,6 +1451,7 @@ function Cell({
           editText={mismatched ? cellText(column, row, derived) : amountEditText(value)}
           sum={!mismatched && isSum(value) ? String(value) : null}
           tone={parts.tone}
+          underlay={underlay === null ? null : underlayParts(underlay, format)}
           unit={format?.unit ?? null}
           size={size}
           label={label}
@@ -1413,9 +1465,10 @@ function Cell({
 
   if (column.type === "number" && format && !mismatched) {
     return (
-      <td className={tdCls} style={tdStyle}>
+      <td {...attrs} className={tdCls} style={tdStyle}>
         <NumberField
           value={typeof value === "number" ? value : null}
+          underlay={underlay}
           format={format}
           size={size}
           label={label}
@@ -1433,11 +1486,12 @@ function Cell({
     // never applies to what is not a number.
     const shown = boxText(column, row);
     return (
-      <td className={tdCls}>
+      <td {...attrs} className={tdCls}>
         <input
           type={mismatched ? "text" : "number"}
           step={column.int_only ? 1 : "any"}
           value={shown}
+          placeholder={underlay === null ? undefined : String(underlay)}
           {...typedInto<HTMLInputElement>(
             shown,
             (box) => onCell(entry.id, column, box.value),
@@ -1451,7 +1505,8 @@ function Cell({
           style={size}
           className={
             "field h-8 text-right tabular-nums" +
-            (column.width_ch === undefined ? " w-20" : "")
+            (column.width_ch === undefined ? " w-20" : "") +
+            (underlay !== null ? " underlaid" : "")
           }
         />
       </td>
@@ -1467,6 +1522,7 @@ function Cell({
     const extra = column.type !== "multiline";
     return (
       <td
+        {...attrs}
         className={
           tdCls +
           (sticky ? " focus-within:z-[15]" : "") +
@@ -1507,7 +1563,7 @@ function Cell({
   // string, text, and spaced-string all edit as one line of text.
   const shown = boxText(column, row);
   return (
-    <td className={tdCls}>
+    <td {...attrs} className={tdCls}>
       <span className="flex items-center gap-1">
         <input
           type="text"
@@ -1536,6 +1592,8 @@ function Cell({
 interface NumberFieldProps {
   /** The stored number, or null where the cell holds none. */
   value: number | null;
+  /** The figure shown, as an estimate, while the cell holds none. */
+  underlay?: number | null;
   format: NumberFormat;
   /** How wide the box and its unit are together: see controlSize. */
   size: React.CSSProperties;
@@ -1553,6 +1611,7 @@ interface NumberFieldProps {
  *  left, when it shows the stored number again. */
 function NumberField({
   value,
+  underlay = null,
   format,
   size,
   label,
@@ -1563,8 +1622,17 @@ function NumberField({
   // left; null at rest.
   const [typed, setTyped] = useState<string | null>(null);
   const invalid = typed !== null && parseEditText(typed, format).kind === "invalid";
-  const shown = typed ?? (value === null ? "" : formatNumber(value, format));
-  const tone = typed === null && value !== null ? figureTone(value, format) : null;
+  // While the cell holds nothing, its underlay stands in for it at rest.
+  const standIn = typed === null && value === null ? underlay : null;
+  const shown =
+    typed ??
+    (value !== null
+      ? formatNumber(value, format)
+      : standIn !== null
+        ? formatNumber(standIn, format)
+        : "");
+  const figure = value ?? standIn;
+  const tone = typed === null && figure !== null ? figureTone(figure, format) : null;
   return (
     <span className="inline-flex items-baseline" style={size}>
       <input
@@ -1600,7 +1668,8 @@ function NumberField({
         className={
           "field h-8 text-right tabular-nums" +
           (size.width === undefined ? " w-20" : " min-w-0 flex-1") +
-          (invalid ? " cell-error" : "")
+          (invalid ? " cell-error" : "") +
+          (standIn !== null ? " underlaid" : "")
         }
       />
       {format.unit && <span className="unit">{format.unit}</span>}
@@ -1609,6 +1678,16 @@ function NumberField({
 }
 
 // ── Amount ──────────────────────────────────────────────────────────────────
+/** An amount's underlay as its column reads it. */
+function underlayParts(
+  value: number,
+  format: NumberFormat | undefined,
+): { number: string; tone: Tone | null } {
+  if (!format) return { number: String(value), tone: null };
+  const parts = numberParts(value, format);
+  return { number: parts.number, tone: parts.tone };
+}
+
 interface AmountFieldProps {
   /** What the cell shows at rest: the figure as its format reads it, a
    *  stored value its column does not describe as it is stored, or nothing. */
@@ -1619,6 +1698,9 @@ interface AmountFieldProps {
   /** The stored sum, where the cell holds one, which underlines the figure. */
   sum: string | null;
   tone: Tone | null;
+  /** The figure shown, as an estimate, while the cell holds nothing, and the
+   *  tone it is drawn in; null where there is none. */
+  underlay?: { number: string; tone: Tone | null } | null;
   unit: string | null;
   /** How wide the box and its unit are together: see controlSize. */
   size: React.CSSProperties;
@@ -1645,6 +1727,7 @@ function AmountField({
   editText,
   sum,
   tone,
+  underlay = null,
   unit,
   size,
   label,
@@ -1656,8 +1739,10 @@ function AmountField({
   // null at rest.
   const [typed, setTyped] = useState<string | null>(null);
   const invalid = typed !== null && amountEdit(typed).kind === "invalid";
-  const text = typed ?? shown;
   const atRest = typed === null;
+  // While the cell holds nothing, its underlay stands in for it at rest.
+  const standIn = atRest && shown === "" ? underlay : null;
+  const text = typed ?? standIn?.number ?? shown;
   // A box clips the line under its text, so a sum's figure at rest is drawn
   // over the box rather than in it.
   const overlaid = atRest && sum !== null;
@@ -1698,7 +1783,7 @@ function AmountField({
           onBlur={() => setTyped(null)}
           aria-label={label}
           aria-invalid={invalid || undefined}
-          data-negative={(atRest && tone) || undefined}
+          data-negative={(atRest && (standIn ? standIn.tone : tone)) || undefined}
           title={
             invalid
               ? "Reads as no amount, so nothing is written"
@@ -1709,7 +1794,8 @@ function AmountField({
             "field h-8 w-full tabular-nums" +
             (atRest ? " text-right" : "") +
             (overlaid ? " amount-under" : "") +
-            (invalid ? " cell-error" : "")
+            (invalid ? " cell-error" : "") +
+            (standIn ? " underlaid" : "")
           }
         />
         {overlaid && (

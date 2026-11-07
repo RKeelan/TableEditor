@@ -91,6 +91,11 @@ export interface Column {
   allow_new_values?: boolean;
   /** What a chip shows before the value. Absent means the key's label. */
   chip?: "label" | "key";
+  /** Whether each cell can carry a note, kept in the schema's `notes_in`
+   *  field. */
+  notes?: boolean;
+  /** The column whose note this one is drawn in, rather than in the grid. */
+  in_note_of?: string;
 }
 
 /** How a new row starts: take `defaults`, then carry each named field forward
@@ -125,6 +130,11 @@ export interface Schema {
   /** The field whose value says which group a row is drawn in, under the
    *  headings the table's overview gives. */
   group_by?: string;
+  /** The field holding each row's notes, keyed by column field. */
+  notes_in?: string;
+  /** The key of each row's derivation holding its cells' settings, keyed by
+   *  column field. */
+  cells_from?: string;
   columns: Column[];
   new_row: NewRowSpec;
   datalists: Record<string, Datalist>;
@@ -165,6 +175,15 @@ export interface Overview {
 /** A row as the editor handles it: the object the server sent, untouched but
  *  for the cells that were edited. Fields no column names are carried through. */
 export type Row = Record<string, unknown>;
+
+/** What a derivation says about one cell: a tone for it, that it cannot be
+ *  edited, a figure shown while it is blank, and a note about it. */
+export interface CellSettings {
+  tone?: Tone;
+  read_only?: boolean;
+  underlay?: number;
+  note?: string;
+}
 
 /** What one row's derivation holds, keyed by the `from` of a computed column. */
 export type Derived = Record<string, unknown> | null | undefined;

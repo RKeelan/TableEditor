@@ -1138,6 +1138,114 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+  /* What a note shows before its text: a note from the derivation, and the
+     values of the columns drawn in it, quieter than the text. */
+  .note-derived,
+  .note-fact {
+    color: var(--muted);
+  }
+  .note-popover > * + .note-text,
+  .note-popover > * + .note-box {
+    margin-top: 0.3rem;
+  }
+  /* A note open for editing: each column drawn in it as its control, then a
+     box for the text. */
+  .note-control {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+    color: var(--muted);
+  }
+  .note-control:first-child {
+    margin-top: 0;
+  }
+  .note-control select,
+  .note-control input[type="text"],
+  .note-box {
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+  }
+  .note-control select,
+  .note-control input[type="text"] {
+    flex: 1;
+    padding: 0.2rem 0.4rem;
+  }
+  .note-box {
+    display: block;
+    width: 20rem;
+    max-width: 100%;
+    min-height: 5.5rem;
+    padding: 0.35rem 0.45rem;
+    resize: vertical;
+  }
+  .note-popover > .note-control + .note-box {
+    margin-top: 0.4rem;
+  }
+
+  /* A table cell's mark is on its control, whose well would otherwise cover
+     the mark on the cell. The rule is particular enough to outlast the well
+     at rest, under the pointer and focused. */
+  .editor-grid td.has-note .field {
+    background-image: linear-gradient(225deg, var(--accent) 0 7px, transparent 7px);
+    background-repeat: no-repeat;
+  }
+  .editor-grid td.has-note:has(.field) {
+    background-image: none;
+  }
+
+  /* A cell in the tone its derivation gives it. One that takes input has its
+     border and figure in the tone and the figure bold, focused or not; one
+     that does not has its text in the tone. */
+  td[data-tone="good"] {
+    --cell-tone: var(--good);
+  }
+  td[data-tone="warning"] {
+    --cell-tone: var(--warning);
+  }
+  td[data-tone="bad"] {
+    --cell-tone: var(--bad);
+  }
+  td[data-tone="neutral"] {
+    --cell-tone: var(--muted);
+  }
+  td[data-tone="info"] {
+    --cell-tone: var(--info);
+  }
+  .editor-grid td[data-tone] .field,
+  .editor-grid td[data-tone] .amount-show {
+    color: var(--cell-tone);
+    font-weight: 600;
+  }
+  .editor-grid td[data-tone] .field {
+    border-color: color-mix(in srgb, var(--cell-tone) 70%, transparent);
+  }
+  .editor-grid td[data-tone] .readout {
+    color: var(--cell-tone);
+  }
+
+  /* A blank cell showing its derivation's underlay: in the estimate look, a
+     tinted well and italics. Focused, the box is empty and drawn as any
+     other. An unformatted number shows it as the box's placeholder. */
+  .underlaid {
+    font-style: italic;
+  }
+  .editor-grid td .field.underlaid:not(:focus),
+  .editor-grid td .readout.underlaid {
+    background-color: var(--estimate-tint);
+  }
+  .editor-grid td .readout.underlaid {
+    border-radius: 4px;
+  }
+  .field.underlaid::placeholder {
+    color: var(--ink);
+  }
+  .field.underlaid:focus::placeholder {
+    color: transparent;
+  }
 
   /* A row that is an estimate: tinted across every cell and in italics. The
      tint is the info tone mixed into the surface rather than laid over it, so

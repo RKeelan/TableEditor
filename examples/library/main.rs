@@ -15,9 +15,9 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
-    Amount, ApiError, App, Below, Button, Card, CardGroup, Column, Context, Datalist, Detail,
-    DetailRow, DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec, NewRow,
-    OptionsBy, Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server,
+    Amount, ApiError, App, Below, Button, Card, CardGroup, CellSettings, Column, Context, Datalist,
+    Detail, DetailRow, DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec,
+    NewRow, OptionsBy, Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server,
     ServerArgs, Speak, Stamping, Status, Table, TableLogic, Tone, Undoable, ValidationError, View,
     ViewArgs, ViewData, ViewLink, ViewLogic, Written,
 };
@@ -117,6 +117,9 @@ struct Donation {
     /// What was given, as a figure or as a sum of several gifts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     amount: Option<Amount>,
+    /// Notes on its cells, by the field of the column each is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notes: Option<BTreeMap<String, String>>,
 }
 
 /// What a branch may spend on purchases in a budget year.
@@ -150,6 +153,23 @@ struct Purchase {
     /// Whether it has arrived. Until it has, it is on order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     received: Option<bool>,
+    /// Who supplied it, shown in the note on its item.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    supplier: String,
+    /// Whether it was given rather than bought, shown in the note on its item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gift: Option<bool>,
+    /// What a supplier quoted for it, which stands in for its cost until the
+    /// invoice comes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quote: Option<f64>,
+    /// Whether it is another branch's purchase passed on to this one, which
+    /// is a record of the transfer and not edited here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transfer: Option<bool>,
+    /// Notes on its cells, by the field of the column each is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notes: Option<BTreeMap<String, String>>,
 }
 
 // ── Books ───────────────────────────────────────────────────────────────────
@@ -604,6 +624,18 @@ impl Purchase {
     }
 }
 
+/// What one purchase may cost before the board has to sign it off.
+const SIGN_OFF: f64 = 1000.0;
+
+/// The suppliers a purchase can name in the note on its item.
+fn suppliers() -> Vec<SelectOption> {
+    vec![
+        SelectOption::labelled("longacre", "Longacre Press"),
+        SelectOption::labelled("sable", "Sable & Co"),
+        SelectOption::labelled("joinery", "Harbour Joinery"),
+    ]
+}
+
 /// How the example's money reads: two places, grouped, and a refund in the
 /// bad tone.
 fn money() -> Format {
@@ -653,7 +685,10 @@ impl TableLogic for Purchases {
     /// branch a group is, and a row is added to a branch through its group.
     /// A new row is bought out of the year on screen. The cost is what the
     /// table is read by, so it is set in bold, and the share of all spending
-    /// shades the rows of the branches still open.
+    /// shades the rows of the branches still open. The item and the cost take
+    /// notes, and the supplier and whether it was a gift are kept in the
+    /// item's note rather than in columns of their own; the derivation sets
+    /// what it says about each cell under `cells`.
     fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
         let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
         let open = branches
@@ -661,11 +696,16 @@ impl TableLogic for Purchases {
             .filter(|branch| branch.open != Some(false))
             .map(|branch| branch.code.clone());
         Ok(Schema::new([
-            Column::string("item", "Item").wide(),
+            Column::string("item", "Item").wide().with_notes(),
+            Column::select("supplier", "Supplier", suppliers())
+                .allow_empty()
+                .in_note_of("item"),
+            Column::boolean("gift", "Gift").in_note_of("item"),
             Column::amount("cost", "Cost")
                 .format(money())
                 .width_ch(9)
-                .strong(),
+                .strong()
+                .with_notes(),
             Column::computed("share", "Share", "share")
                 .format(Format::percent(1))
                 .width_ch(6)
@@ -675,6 +715,8 @@ impl TableLogic for Purchases {
             Column::boolean("received", "Received"),
         ])
         .group_by("branch")
+        .notes_in("notes")
+        .cells_from("cells")
         .sortable()
         .new_row(
             NewRow::new()
@@ -706,14 +748,46 @@ impl TableLogic for Purchases {
     }
 
     /// Each purchase's share of what every branch spent, left out where it
-    /// has no cost or nothing was spent.
+    /// has no cost or nothing was spent, and what is said about its cells: a
+    /// cost over what one purchase may cost without the board's sign-off is
+    /// in the bad tone; a quote stands in for a cost not yet invoiced; and a
+    /// purchase passed on from another branch is read-only in every cell.
     fn derive(&self, rows: &[Purchase], _ctx: &Context) -> Result<Vec<Value>, ApiError> {
         let total: f64 = rows.iter().filter_map(Purchase::spent).sum();
         Ok(rows
             .iter()
-            .map(|row| match row.spent() {
-                Some(spent) if total > 0.0 => json!({ "share": spent / total }),
-                _ => json!({}),
+            .map(|row| {
+                let mut derived = match row.spent() {
+                    Some(spent) if total > 0.0 => json!({ "share": spent / total }),
+                    _ => json!({}),
+                };
+                let mut cells = BTreeMap::new();
+                if row.spent().is_some_and(|spent| spent > SIGN_OFF) {
+                    cells.insert(
+                        "cost",
+                        CellSettings::new().tone(Tone::Bad).note(
+                            "Over the 1,000.00 a purchase may cost without the board's sign-off.",
+                        ),
+                    );
+                }
+                if let (None, Some(quote)) = (&row.cost, row.quote) {
+                    cells.insert(
+                        "cost",
+                        CellSettings::new()
+                            .underlay(quote)
+                            .note("Quoted, not yet invoiced."),
+                    );
+                }
+                if row.transfer == Some(true) {
+                    for field in ["item", "cost", "ordered", "expected", "received"] {
+                        let settings = cells.remove(field).unwrap_or_default();
+                        cells.insert(field, settings.read_only());
+                    }
+                }
+                if !cells.is_empty() {
+                    derived["cells"] = json!(cells);
+                }
+                derived
             })
             .collect())
     }
@@ -839,8 +913,10 @@ impl TableLogic for Donations {
             Column::date("given", "Given"),
             Column::amount("amount", "Amount")
                 .format(money())
-                .width_ch(9),
+                .width_ch(9)
+                .with_notes(),
         ])
+        .notes_in("notes")
         .new_row(
             NewRow::new()
                 .with("donor", "")

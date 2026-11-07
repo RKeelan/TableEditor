@@ -36,6 +36,10 @@ pub struct Schema {
     muted_by_derived: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_in: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cells_from: Option<String>,
     columns: Vec<Column>,
     new_row: NewRow,
     datalists: BTreeMap<String, Datalist>,
@@ -52,6 +56,8 @@ impl Schema {
             muted_by: None,
             muted_by_derived: None,
             group_by: None,
+            notes_in: None,
+            cells_from: None,
             columns: columns.into_iter().collect(),
             new_row: NewRow::default(),
             datalists: BTreeMap::new(),
@@ -105,6 +111,26 @@ impl Schema {
     /// [`crate::RowGroup`] for what one says.
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.group_by = Some(field.into());
+        self
+    }
+
+    /// Keep each row's cell notes in `field`: an object keyed by the field of
+    /// the column a note is on, whose values are the notes' text. A column
+    /// takes notes through [`Column::with_notes`], and another column can be
+    /// shown and edited inside a note through [`Column::in_note_of`]. The
+    /// field is named rather than fixed, since a table may already keep a note
+    /// of another shape under `notes`.
+    pub fn notes_in(mut self, field: impl Into<String>) -> Self {
+        self.notes_in = Some(field.into());
+        self
+    }
+
+    /// Read each row's per-cell settings from the derivation key `key`: an
+    /// object keyed by column field, each value a [`CellSettings`]. They
+    /// follow the derivation, so a cell changes when the next derive answers,
+    /// and a key naming no column is ignored.
+    pub fn cells_from(mut self, key: impl Into<String>) -> Self {
+        self.cells_from = Some(key.into());
         self
     }
 
@@ -165,6 +191,55 @@ impl Schema {
             ))),
             None => Ok(()),
         }
+    }
+
+    /// Check the columns' notes against one another: a column that takes
+    /// notes, or is shown in another's, needs the schema to say where notes
+    /// are kept; and a column is shown in the note of one that takes notes
+    /// and is not itself shown in a note, since otherwise it would be drawn
+    /// nowhere.
+    pub(crate) fn check_notes(&self) -> Result<(), ApiError> {
+        let refuse = |column: &Column, why: String| {
+            Err(ApiError::server(format!(
+                "table \"{}\" has the column \"{}\" {why}",
+                self.table, column.field
+            )))
+        };
+        for column in &self.columns {
+            if self.notes_in.is_none() && (column.notes || column.in_note_of.is_some()) {
+                let what = if column.notes {
+                    "taking notes"
+                } else {
+                    "shown in a note"
+                };
+                return refuse(column, format!("{what}, but no notes_in to keep them in"));
+            }
+            let Some(host) = &column.in_note_of else {
+                continue;
+            };
+            match self.columns.iter().find(|c| &c.field == host) {
+                None => {
+                    return refuse(
+                        column,
+                        format!("in the note of \"{host}\", which is none of the table's columns"),
+                    );
+                }
+                Some(other) if !other.notes => {
+                    return refuse(
+                        column,
+                        format!("in the note of \"{host}\", which takes no notes"),
+                    );
+                }
+                Some(other) if other.in_note_of.is_some() => {
+                    return refuse(
+                        column,
+                        format!("in the note of \"{host}\", which is itself in a note"),
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
     }
 
     /// Whether one of the columns is the field `field`.
@@ -296,6 +371,10 @@ pub struct Column {
     strong: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     shaded_within: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "is_false")]
+    notes: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_note_of: Option<String>,
     #[serde(flatten)]
     map: Option<MapSpec>,
 }
@@ -323,6 +402,8 @@ impl Column {
             href: None,
             strong: false,
             shaded_within: None,
+            notes: false,
+            in_note_of: None,
             map: None,
         }
     }
@@ -517,6 +598,77 @@ impl Column {
     /// shaded. Honoured in a table, and ignored in a view.
     pub fn shaded_within(mut self, groups: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.shaded_within = Some(groups.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Let each cell of the column carry a note, kept in the field the
+    /// schema's [`Schema::notes_in`] names. A cell with a note is marked in
+    /// its corner, shows the note when pointed at, and opens it for editing
+    /// on a right-click or Shift+F2. A table's only.
+    pub fn with_notes(mut self) -> Self {
+        self.notes = true;
+        self
+    }
+
+    /// Draw the column inside the note of the column `field` rather than in
+    /// the grid: read by its label where the note is shown, and edited as its
+    /// own control where the note is opened. The other column takes notes,
+    /// and is not itself in a note. A table's only.
+    pub fn in_note_of(mut self, field: impl Into<String>) -> Self {
+        self.in_note_of = Some(field.into());
+        self
+    }
+}
+
+/// What a table's derivation says about one cell of a row: a tone for it, that
+/// it cannot be edited, a figure to show while it is blank, and a note about
+/// it. Each is written only when set. A table returns them in its derivation
+/// under the key [`Schema::cells_from`] names, keyed by column field.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct CellSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tone: Option<Tone>,
+    #[serde(skip_serializing_if = "is_false")]
+    read_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    underlay: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+impl CellSettings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Draw the cell in `tone`: a cell that takes input gets its border and
+    /// figure in the tone, the figure bold; any other gets its text in it.
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = Some(tone);
+        self
+    }
+
+    /// Draw the cell as a read-only column's is, whatever its column, and
+    /// write it back as it was read.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    /// A figure the cell shows, read by its column's format and tinted and in
+    /// italics, while what it holds on screen is blank: an estimate standing
+    /// in until a figure is typed. Honoured on `amount` and `number` columns.
+    /// The page counts it in nothing; the derivation's totals are its own.
+    pub fn underlay(mut self, value: f64) -> Self {
+        self.underlay = Some(value);
+        self
+    }
+
+    /// A note about the cell, shown above any note stored on it, such as what
+    /// an underlay is. It marks the cell, unless the cell is showing an
+    /// underlay, whose tint is mark enough.
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
         self
     }
 }
@@ -1153,6 +1305,116 @@ mod tests {
             serde_json::to_value(none).unwrap()["shaded_within"],
             json!([])
         );
+    }
+
+    #[test]
+    fn notes_and_cell_settings_are_written_only_when_set() {
+        let plain = serde_json::to_value(Schema::new([Column::string("line", "Line")])).unwrap();
+        for key in ["notes_in", "cells_from"] {
+            assert!(plain.get(key).is_none(), "{key}");
+        }
+        let column = serde_json::to_value(Column::string("line", "Line")).unwrap();
+        for key in ["notes", "in_note_of"] {
+            assert!(column.get(key).is_none(), "{key}");
+        }
+
+        let noted = serde_json::to_value(
+            Schema::new([
+                Column::string("line", "Line").with_notes(),
+                Column::boolean("in_kind", "In kind").in_note_of("line"),
+            ])
+            .notes_in("notes")
+            .cells_from("cells"),
+        )
+        .unwrap();
+        assert_eq!(noted["notes_in"], "notes");
+        assert_eq!(noted["cells_from"], "cells");
+        assert_eq!(noted["columns"][0]["notes"], true);
+        assert_eq!(noted["columns"][1]["in_note_of"], "line");
+
+        assert_eq!(
+            serde_json::to_value(CellSettings::new()).unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            serde_json::to_value(
+                CellSettings::new()
+                    .tone(Tone::Bad)
+                    .read_only()
+                    .underlay(137.62)
+                    .note("Projected, average")
+            )
+            .unwrap(),
+            json!({ "tone": "bad", "read_only": true, "underlay": 137.62,
+                    "note": "Projected, average" })
+        );
+    }
+
+    #[test]
+    fn notes_are_checked_against_the_schema_naming_the_table_and_column() {
+        let checked = |schema: Schema| {
+            let mut schema = schema;
+            schema.identify("budget", "Budget");
+            schema.check_notes()
+        };
+        let refused = |schema: Schema, named: &[&str]| {
+            let failure = checked(schema).unwrap_err();
+            assert_eq!(failure.status, 500);
+            for name in ["\"budget\""].iter().chain(named) {
+                assert!(failure.message.contains(name), "{}", failure.message);
+            }
+        };
+
+        // Notes with nowhere to keep them.
+        refused(
+            Schema::new([Column::string("line", "Line").with_notes()]),
+            &["\"line\"", "notes_in"],
+        );
+        refused(
+            Schema::new([
+                Column::string("line", "Line"),
+                Column::boolean("in_kind", "In kind").in_note_of("line"),
+            ]),
+            &["\"in_kind\"", "notes_in"],
+        );
+        // In the note of a column that takes none, or of no column at all.
+        refused(
+            Schema::new([
+                Column::string("line", "Line"),
+                Column::boolean("in_kind", "In kind").in_note_of("line"),
+            ])
+            .notes_in("notes"),
+            &["\"in_kind\"", "\"line\""],
+        );
+        refused(
+            Schema::new([Column::boolean("in_kind", "In kind").in_note_of("lines")])
+                .notes_in("notes"),
+            &["\"in_kind\"", "\"lines\""],
+        );
+        // In the note of a column that is itself in a note.
+        refused(
+            Schema::new([
+                Column::string("line", "Line").with_notes(),
+                Column::select("account", "Account", ["tfsa"])
+                    .with_notes()
+                    .in_note_of("line"),
+                Column::boolean("in_kind", "In kind").in_note_of("account"),
+            ])
+            .notes_in("notes"),
+            &["\"in_kind\"", "\"account\""],
+        );
+
+        assert!(
+            checked(
+                Schema::new([
+                    Column::string("line", "Line").with_notes(),
+                    Column::select("account", "Account", ["tfsa"]).in_note_of("line"),
+                ])
+                .notes_in("notes")
+            )
+            .is_ok()
+        );
+        assert!(checked(Schema::new([Column::string("line", "Line")])).is_ok());
     }
 
     #[test]
