@@ -612,11 +612,18 @@ export function isEstimate(section: ViewSection, row: Row): boolean {
   return section.estimate_by !== undefined && row[section.estimate_by] === true;
 }
 
-/** How many docked cards sit in a row of the band below 860px: three, or as
- *  many as there are where there are fewer, so that a pair is not drawn in a
- *  row of three with a gap at its end. */
-export function dockColumns(cards: number): number {
-  return Math.max(1, Math.min(3, cards));
+/** How many docked cards sit in a row of the band below 860px: as many as
+ *  fit in the band's width at the width of the widest card's content, up to
+ *  four, and no more than there are, so that a pair is not drawn in a row of
+ *  four with a gap at its end. One always fits, cut short where it must be. */
+export function dockColumns(
+  cards: number,
+  available: number,
+  widest: number,
+  gap: number,
+): number {
+  const fit = Math.floor((available + gap) / (widest + gap));
+  return Math.max(1, Math.min(4, cards, fit));
 }
 
 /** Whether a section has anything in it. An empty one is still shown, with its
