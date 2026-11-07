@@ -235,8 +235,13 @@
      cells that can be typed into stand apart from figures worked out from
      them, which sit bare. Hovering raises it, and focus lights it up as
      anywhere else. The marks below come later and win. */
+  /* One color-mix to a rule: the build lowers a rule's color-mix
+     declarations into an @supports block and keeps only the first of them,
+     so a second in the same rule is left at its fallback, solid ink. */
   .editor-grid .field:where(:not(:focus)) {
     background: color-mix(in srgb, var(--ink) 7%, transparent);
+  }
+  .editor-grid .field:where(:not(:focus)) {
     border-color: color-mix(in srgb, var(--ink) 9%, transparent);
   }
   .editor-grid .field:where(:not(:focus)):hover {
