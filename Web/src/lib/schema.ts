@@ -123,6 +123,8 @@ export interface Schema {
   table: string;
   title: string;
   sortable?: boolean;
+  fixed_order?: boolean;
+  fixed_rows?: boolean;
   /** The field whose value `true` draws a row muted. */
   muted_by?: string;
   /** The key of each row's derivation whose value `true` draws it muted. */

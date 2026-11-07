@@ -879,3 +879,39 @@ export function selectOptions(
   if (stored === "" || options.some((o) => o.value === stored)) return options;
   return [{ value: stored, label: `${stored} (not in the list)` }, ...options];
 }
+
+/** What sits in the controls at the start of each row, and their width in
+ *  pixels. */
+export interface RowControls {
+  /** A drag handle, which a grouped table's rows and a `fixed_order` table's
+   *  lack. */
+  handle: boolean;
+  /** A delete button, which a `fixed_rows` table's rows lack. */
+  remove: boolean;
+  /** A link to the row's page. */
+  link: boolean;
+  /** The width of the controls, the sum of the sizes in the row's markup: the
+   *  cell's padding (12 + 8), a drag handle (24), a gap (8) and a delete
+   *  button (32), and a link (32) after a wider gap (8 + 12), kept apart from
+   *  the delete button so that a thumb aiming at one does not land on the
+   *  other. A table whose rows carry none of them keeps only a gutter (12),
+   *  the width of the space after a cell, so its first column is not drawn
+   *  against the table's edge. */
+  width: number;
+}
+
+/** The row controls of a table. */
+export function rowControls(
+  schema: Pick<Schema, "fixed_order" | "fixed_rows" | "link">,
+  grouped: boolean,
+): RowControls {
+  const handle = !grouped && schema.fixed_order !== true;
+  const remove = schema.fixed_rows !== true;
+  const link = schema.link !== undefined;
+  let width = 0;
+  if (handle) width += 24;
+  if (remove) width += (handle ? 8 : 0) + 32;
+  if (link) width += (handle || remove ? 8 : 0) + 12 + 32;
+  width += width > 0 ? 12 + 8 : 12;
+  return { handle, remove, link, width };
+}

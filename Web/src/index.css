@@ -1480,3 +1480,12 @@
     padding: 0.5rem;
   }
 }
+
+/* A table whose rows carry no controls keeps their column as a gutter of
+   the width the controls are given. The gutter is padding rather than width,
+   since a squeezed table would shrink an empty column below its width and
+   draw the first column, held at the gutter's edge, over the second. It is
+   outside the layers because it overrides the cells' own padding utilities. */
+.editor-grid.no-controls > * > tr > :first-child:not([colspan]) {
+  padding: 0 0 0 var(--controls);
+}

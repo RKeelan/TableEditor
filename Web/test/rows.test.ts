@@ -18,6 +18,7 @@ import {
   controlWidth,
   datalistOptions,
   editsAsLines,
+  rowControls,
   firstLine,
   hasLineBreak,
   isFigure,
@@ -1262,5 +1263,44 @@ describe("an amount cell", () => {
   test("counts its formatted figure in its width, as a number column does", () => {
     expect(widthChOf({ ...spent, width_ch: 9 })).toBe(9);
     expect(controlWidth({ ...spent, width_ch: 9 })).toBe("calc(9ch + var(--field-chrome))");
+  });
+});
+
+describe("a table's row controls", () => {
+  const link = { view: "book", args: {} };
+  test("are as wide as they always were where nothing is fixed", () => {
+    expect(rowControls({}, false)).toEqual({ handle: true, remove: true, link: false, width: 84 });
+    expect(rowControls({ link }, false).width).toBe(136);
+    expect(rowControls({}, true)).toEqual({ handle: false, remove: true, link: false, width: 52 });
+    expect(rowControls({ link }, true).width).toBe(104);
+  });
+
+  test("leave out the handle in a table kept in a fixed order", () => {
+    expect(rowControls({ fixed_order: true }, false)).toEqual({
+      handle: false,
+      remove: true,
+      link: false,
+      width: 52,
+    });
+  });
+
+  test("leave out the delete button in a table of fixed rows", () => {
+    expect(rowControls({ fixed_rows: true }, false)).toEqual({
+      handle: true,
+      remove: false,
+      link: false,
+      width: 44,
+    });
+    expect(rowControls({ fixed_rows: true, link }, true).width).toBe(64);
+  });
+
+  test("are a gutter where a row carries none of them", () => {
+    expect(rowControls({ fixed_order: true, fixed_rows: true }, false)).toEqual({
+      handle: false,
+      remove: false,
+      link: false,
+      width: 12,
+    });
+    expect(rowControls({ fixed_rows: true }, true).width).toBe(12);
   });
 });

@@ -52,6 +52,7 @@ import {
   linesText,
   nextSort,
   parseFilter,
+  rowControls,
   rowMuted,
   selectOptions,
   withLineBreaksOf,
@@ -90,18 +91,6 @@ const NO_COLUMNS: Column[] = [];
  *  datalist when two tables on a page name one alike. */
 const TableScope = createContext("");
 const NO_FILLS: ReadonlySet<string> = new Set();
-
-// The width of the row controls at the start of each row, in pixels, which is
-// the sum of the sizes in the markup below: the cell's padding (12 + 8), a drag
-// handle (24), a gap (8), and a delete button (32); and, where the table has a
-// link, a wider gap (8 + 12) and the link (32), kept apart from the delete
-// button so that a thumb aiming at one does not land on the other. A grouped
-// table's rows are not dragged, so its controls are those less the handle and
-// its gap.
-const CONTROLS = 84;
-const CONTROLS_WITH_LINK = 136;
-const GROUPED_CONTROLS = 52;
-const GROUPED_CONTROLS_WITH_LINK = 104;
 
 interface Props {
   table: string;
@@ -545,19 +534,16 @@ function TableSection({
 
   const banner = saveBanner(save);
   const grouped = groups !== null;
-  // A grouped table's rows belong to their groups, so they are never dragged.
-  const reorderable = !grouped && sort === null && !filtering;
+  // A grouped table's rows belong to their groups, and a table kept in a
+  // fixed order keeps its rows where they are, so neither's are dragged; a
+  // table of fixed rows neither adds nor deletes one.
+  const controls = rowControls(schema, grouped);
+  const reorderable = controls.handle && sort === null && !filtering;
+  const addable = schema.fixed_rows !== true;
   const link = schema.link;
   const linkTitle = link
     ? (views.find((v) => v.view === link.view)?.title ?? link.view)
     : "";
-  const controls = grouped
-    ? link
-      ? GROUPED_CONTROLS_WITH_LINK
-      : GROUPED_CONTROLS
-    : link
-      ? CONTROLS_WITH_LINK
-      : CONTROLS;
   const savedById = new Map(t.saved.map((e) => [e.id, e.row]));
   const footer = overview?.footer;
   const headCls =
@@ -592,7 +578,8 @@ function TableSection({
         errTitle={errs
           .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
           .join("\n")}
-        handle={!grouped}
+        handle={controls.handle}
+        remove={controls.remove}
         reorderable={reorderable}
         muted={rowMuted(schema, entry.row, derived[idx] as Derived)}
         target={
@@ -625,8 +612,12 @@ function TableSection({
   const grid = (
     <table
       ref={tableRef}
-      className={"editor-grid border-collapse text-left" + (stacked ? " w-full" : "")}
-      style={{ "--controls": `${controls}px` } as React.CSSProperties}
+      className={
+        "editor-grid border-collapse text-left" +
+        (stacked ? " w-full" : "") +
+        (!controls.handle && !controls.remove && !controls.link ? " no-controls" : "")
+      }
+      style={{ "--controls": `${controls.width}px` } as React.CSSProperties}
     >
       <thead>
         <tr className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
@@ -681,17 +672,19 @@ function TableSection({
           <tbody key={`group:${group.key}`}>
             <GroupHead group={group} columns={columns} fills={fills} />
             {group.indices.map(rowAt)}
-            <tr className="group-add">
-              <td colSpan={columns.length + 1}>
-                <button
-                  type="button"
-                  onClick={() => addToGroup(group.key)}
-                  aria-label={`Add a row to ${group.heading?.title ?? fallbackTitle(group.key)}`}
-                >
-                  + Add row
-                </button>
-              </td>
-            </tr>
+            {addable && (
+              <tr className="group-add">
+                <td colSpan={columns.length + 1}>
+                  <button
+                    type="button"
+                    onClick={() => addToGroup(group.key)}
+                    aria-label={`Add a row to ${group.heading?.title ?? fallbackTitle(group.key)}`}
+                  >
+                    + Add row
+                  </button>
+                </td>
+              </tr>
+            )}
           </tbody>
         ))
       ) : (
@@ -699,7 +692,7 @@ function TableSection({
           {visible.map(rowAt)}
           {/* With a footer pinned at the foot, adding a row is the last
               row of the body, so the footer is the one thing pinned. */}
-          {footer && (
+          {footer && addable && (
             <tr>
               <td colSpan={columns.length + 1}>{addRowButton}</td>
             </tr>
@@ -716,7 +709,8 @@ function TableSection({
           </tr>
         </tfoot>
       ) : (
-        !grouped && (
+        !grouped &&
+        addable && (
           <tfoot>
             <tr>
               <td colSpan={columns.length + 1}>{addRowButton}</td>
@@ -815,7 +809,7 @@ function TableSection({
         (grouped
           ? " Sorted within each group; writes keep the stored order."
           : " Sorted; dragging is off and writes keep the stored order.")}
-      {!sort && filtering && !grouped && " Dragging is off while a filter is on."}
+      {!sort && filtering && controls.handle && " Dragging is off while a filter is on."}
     </p>
   );
 
@@ -908,9 +902,12 @@ interface RowProps {
   shades: ReadonlyMap<string, readonly (number | null)[]>;
   errFields: Set<string>;
   errTitle: string;
-  /** Whether the row has a drag handle at all, which a grouped table's do
-   *  not. */
+  /** Whether the row has a drag handle at all, which a grouped table's and a
+   *  fixed-order table's do not. */
   handle: boolean;
+  /** Whether the row has a delete button at all, which a table of fixed rows'
+   *  do not. */
+  remove: boolean;
   reorderable: boolean;
   /** Whether the row is drawn muted, which is all it changes. */
   muted: boolean;
@@ -1004,7 +1001,7 @@ function TableRow(p: RowProps) {
               ⋮⋮
             </span>
           )}
-          {locked ? (
+          {!p.remove ? null : locked ? (
             <span aria-hidden className="h-8 w-8" />
           ) : (
             <button
