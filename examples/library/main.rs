@@ -611,6 +611,8 @@ impl TableLogic for Purchases {
     ///
     /// Above the table, a card of what was spent and one of what has not
     /// arrived yet, and a small table of each branch's share of the spending.
+    /// Where `LIBRARY_DOCK` is set, the cards are docked at the foot of the
+    /// window instead.
     fn overview(&self, rows: &[Purchase], ctx: &Context) -> Result<Overview, ApiError> {
         let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
         let spent = |code: Option<&str>| -> f64 {
@@ -640,36 +642,40 @@ impl TableLogic for Purchases {
             json!({ "branch": branch.name, "spent": here, "share": share })
         }))?;
 
-        Ok(Overview::new()
-            .groups(branches.iter().map(|branch| {
-                let mut group = RowGroup::new(&branch.code, &branch.name)
-                    .fact(&branch.code)
-                    .value("cost", spent(Some(&branch.code)));
-                if branch.open == Some(false) {
-                    group = group.fact("closed");
-                }
-                if branch.budget.is_none() {
-                    group = group.note("unbudgeted");
-                }
-                group
-            }))
-            .footer(Footer::new("All branches").value("cost", total))
-            // What was spent is read against the budgets, which the front
-            // page's cards carry.
-            .card(
-                Card::new("Spent")
-                    .figure(total, in_cad())
-                    .link(ViewLink::new("all-branches")),
-            )
-            .card(
-                Card::new("On order")
-                    .figure(on_order, in_cad())
-                    .subtitle(match waiting.len() {
+        let overview =
+            Overview::new()
+                .groups(branches.iter().map(|branch| {
+                    let mut group = RowGroup::new(&branch.code, &branch.name)
+                        .fact(&branch.code)
+                        .value("cost", spent(Some(&branch.code)));
+                    if branch.open == Some(false) {
+                        group = group.fact("closed");
+                    }
+                    if branch.budget.is_none() {
+                        group = group.note("unbudgeted");
+                    }
+                    group
+                }))
+                .footer(Footer::new("All branches").value("cost", total))
+                // What was spent is read against the budgets, which the front
+                // page's cards carry.
+                .card(
+                    Card::new("Spent")
+                        .figure(total, in_cad())
+                        .link(ViewLink::new("all-branches")),
+                )
+                .card(Card::new("On order").figure(on_order, in_cad()).subtitle(
+                    match waiting.len() {
                         1 => "1 purchase not yet received".to_string(),
                         n => format!("{n} purchases not yet received"),
-                    }),
-            )
-            .section(by_branch))
+                    },
+                ))
+                .section(by_branch);
+        Ok(if std::env::var_os("LIBRARY_DOCK").is_some() {
+            overview.dock_cards()
+        } else {
+            overview
+        })
     }
 }
 
@@ -870,11 +876,14 @@ impl ViewLogic for OnLoan {
         }
 
         let lent = out.len() + overdue.len();
+        let books = |n: usize| Format::fixed(0).unit(if n == 1 { "book" } else { "books" });
         Ok(ViewData::new()
             .note(format!(
                 "{lent} of {} book(s) at {named} are out on loan. A title links to its catalogue entry.",
                 held.len()
             ))
+            .card(Card::new("Out").figure(out.len() as f64, books(out.len())))
+            .card(Card::new("Overdue").figure(overdue.len() as f64, books(overdue.len())))
             .section(
                 Section::new(OnLoan::columns())
                     .heading("Out")
@@ -887,6 +896,127 @@ impl ViewLogic for OnLoan {
                     .note("Days past due. Chase these.")
                     .rows(overdue)?,
             ))
+    }
+}
+
+// ── The Spending view, a year of each branch's spending by month ────────────
+
+/// What each branch with a budget spends in each month of this year: what it
+/// bought, from the Purchases table, and its standing costs, worked out from
+/// its budget. The months from this one on have not closed, so they are
+/// estimates. Each branch is a frozen section, wide enough to scroll sideways
+/// on a phone, and the year's figures are cards docked at the foot of the
+/// window.
+struct Spending;
+
+/// The standing costs, each a share of a branch's budget spent every month.
+const STANDING: [(&str, &str, f64); 5] = [
+    ("periodicals", "Periodicals", 0.020),
+    ("binding", "Binding", 0.012),
+    ("repairs", "Repairs", 0.008),
+    ("utilities", "Utilities", 0.015),
+    ("events", "Events", 0.010),
+];
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+impl Spending {
+    fn columns() -> Vec<Column> {
+        let money = |field: &str, label: &str| Column::number(field, label).format(Format::money());
+        let mut columns = vec![
+            Column::string("month", "Month"),
+            money("purchases", "Purchases"),
+        ];
+        columns.extend(STANDING.iter().map(|(field, label, _)| money(field, label)));
+        columns.push(money("total", "Total"));
+        columns.push(money("to_date", "Year to date"));
+        columns
+    }
+}
+
+impl ViewLogic for Spending {
+    fn name(&self) -> &'static str {
+        "spending"
+    }
+
+    fn title(&self) -> &'static str {
+        "Spending"
+    }
+
+    fn render(&self, _args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let purchases: Vec<Purchase> = ctx.optional_rows(PURCHASES_FILE)?;
+        let today = civil_from_days(today());
+        let year = &today[..4];
+        let this_month: usize = today[5..7].parse().unwrap_or(1);
+
+        let mut data = ViewData::new().note(format!(
+            "Each branch's spending in {year}, by month. The months from this one on are estimates."
+        ));
+        let (mut spent, mut forecast, mut budgets) = (0.0, 0.0, 0.0);
+        for (k, branch) in branches.iter().enumerate() {
+            let Some(budget) = branch.budget else {
+                continue;
+            };
+            budgets += budget;
+            let mut to_date = 0.0;
+            let mut rows = Vec::new();
+            for (m, month) in MONTHS.iter().enumerate() {
+                let prefix = format!("{year}-{:02}", m + 1);
+                let bought: Vec<&Purchase> = purchases
+                    .iter()
+                    .filter(|p| p.branch == branch.code && p.ordered.starts_with(&prefix))
+                    .collect();
+                let mut row = json!({ "month": format!("{month} {year}") });
+                let mut total = 0.0;
+                if !bought.is_empty() {
+                    let cost: f64 = bought.iter().filter_map(|p| p.cost).sum();
+                    total += cost;
+                    row["purchases"] = json!(cost);
+                    let items: Vec<&str> = bought.iter().map(|p| p.item.as_str()).collect();
+                    row["notes"] = json!({ "purchases": items.join("\n") });
+                }
+                // Each standing cost wanders a little from month to month.
+                for (j, (field, _, share)) in STANDING.iter().enumerate() {
+                    let wobble = ((m * 7 + j * 3 + k * 5) % 9) as f64 - 4.0;
+                    let cost = (budget * share * (1.0 + wobble / 50.0) * 100.0).round() / 100.0;
+                    total += cost;
+                    row[*field] = json!(cost);
+                }
+                if m == 11 {
+                    row["notes"]["events"] =
+                        json!("Winter reading night, with a\nstoryteller and cocoa.");
+                }
+                to_date += total;
+                row["total"] = json!(total);
+                row["to_date"] = json!(to_date);
+                if m + 1 >= this_month {
+                    row["forecast"] = json!(true);
+                    forecast += total;
+                } else {
+                    spent += total;
+                }
+                rows.push(row);
+            }
+            data = data.section(
+                Section::new(Spending::columns())
+                    .heading(&branch.name)
+                    .freeze()
+                    .estimate_by("forecast")
+                    .notes_in("notes")
+                    .rows(rows)?,
+            );
+        }
+
+        let in_cad = || Format::money().unit("CAD");
+        Ok(data
+            .card(Card::new("Spent").figure(spent, in_cad()))
+            .card(Card::new("Still to spend").figure(forecast, in_cad()))
+            .card(Card::new("Budget").figure(budgets, in_cad()))
+            .card(Card::new("Left at year end").figure(budgets - spent - forecast, in_cad()))
+            .dock_cards())
     }
 }
 
@@ -1428,6 +1558,7 @@ struct Library {
     branches: Branches,
     purchases: Purchases,
     on_loan: OnLoan,
+    spending: Spending,
     branch_cards: BranchCards,
     branch_detail: BranchDetail,
     book_detail: BookDetail,
@@ -1452,13 +1583,22 @@ impl App for Library {
             &self.branch_detail,
             &self.book_detail,
             &self.on_loan,
+            &self.spending,
         ]
     }
 
-    /// The top bar goes by subject rather than by kind: the branches and what
-    /// they bought, then what is out on loan and the books themselves.
+    /// The top bar goes by subject rather than by kind: the branches, what
+    /// they bought and spent, then what is out on loan and the books
+    /// themselves.
     fn switcher(&self) -> Vec<&'static str> {
-        vec!["all-branches", "branches", "purchases", "on-loan", "books"]
+        vec![
+            "all-branches",
+            "branches",
+            "purchases",
+            "spending",
+            "on-loan",
+            "books",
+        ]
     }
 
     /// The reading happens on the views, so one of them is what a bare address
@@ -1519,6 +1659,7 @@ fn main() -> anyhow::Result<()> {
             branches: Branches,
             purchases: Purchases,
             on_loan: OnLoan,
+            spending: Spending,
             branch_cards: BranchCards,
             branch_detail: BranchDetail,
             book_detail: BookDetail,

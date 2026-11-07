@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::Context;
 use crate::error::ApiError;
-use crate::page::{CardGroup, Detail, Section};
+use crate::page::{Card, CardGroup, Detail, Section};
 use crate::schema::SelectOption;
 use crate::table::{By, join_sentences, told};
 
@@ -281,17 +281,22 @@ fn is_date(text: &str) -> bool {
     (1..=12).contains(&number(month)) && (1..=31).contains(&number(day))
 }
 
-/// What one render of a view produced: a note about the whole of it, and the
-/// body it is to be read as.
+/// What one render of a view produced: a note about the whole of it, cards
+/// summing it up, and the body it is to be read as.
 ///
 /// The body is one of three: sections of rows, groups of cards, or one thing in
 /// detail. A view answers with one of them, and a view that built two is a
 /// failure naming both rather than a page that shows whichever the browser
-/// happened to look for first.
+/// happened to look for first. Cards are a summary rather than a body, so they
+/// come with sections of rows or alone.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ViewData {
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cards: Vec<Card>,
+    #[serde(skip_serializing_if = "is_false")]
+    dock_cards: bool,
     sections: Vec<Section>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     groups: Vec<CardGroup>,
@@ -306,6 +311,28 @@ impl ViewData {
 
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
+        self
+    }
+
+    /// A card summing up the page, after those already given. The cards are
+    /// drawn in one row above the sections, as a table's overview draws its
+    /// own, unless they are docked.
+    pub fn card(mut self, card: Card) -> Self {
+        self.cards.push(card);
+        self
+    }
+
+    /// Cards after those already given, in the order the iterator gives them.
+    pub fn cards(mut self, cards: impl IntoIterator<Item = Card>) -> Self {
+        self.cards.extend(cards);
+        self
+    }
+
+    /// Draw the cards in a band along the foot of the window rather than above
+    /// the sections, so they stay in view however far the page is scrolled.
+    /// The page above ends where the band begins.
+    pub fn dock_cards(mut self) -> Self {
+        self.dock_cards = true;
         self
     }
 
@@ -346,8 +373,13 @@ impl ViewData {
 
     /// Refuse a page that is two pages. The browser draws one body, so a view
     /// that built both would have half of what it computed silently dropped.
+    /// Cards sum up a page of sections, and a grid of cards or a page about one
+    /// thing has nowhere to draw them, so they count as a body beside either.
     fn one_body(&self, view: &str) -> Result<(), ApiError> {
-        let bodies = self.bodies();
+        let mut bodies = self.bodies();
+        if !self.cards.is_empty() && (!self.groups.is_empty() || self.detail.is_some()) {
+            bodies.insert(0, "cards");
+        }
         if bodies.len() > 1 {
             return Err(ApiError::server(format!(
                 "the view \"{view}\" answered with {}; a view answers with one of them",
@@ -554,6 +586,8 @@ impl<V: ViewLogic> View for V {
             params,
             args,
             note: data.note,
+            cards: data.cards,
+            dock_cards: data.dock_cards,
             sections: data.sections,
             groups: data.groups,
             detail: data.detail,
@@ -634,6 +668,10 @@ struct ViewPayload<'a> {
     args: ViewArgs,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cards: Vec<Card>,
+    #[serde(skip_serializing_if = "is_false")]
+    dock_cards: bool,
     sections: Vec<Section>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     groups: Vec<CardGroup>,
@@ -920,6 +958,18 @@ mod tests {
                 "both" => Ok(ViewData::new()
                     .group(CardGroup::new("Here").card(card("Moss")))
                     .detail(Detail::new("Moss"))),
+                "summed" => Ok(ViewData::new()
+                    .card(Card::new("Out"))
+                    .cards([Card::new("Late")])
+                    .dock_cards()
+                    .section(Section::new([Column::string("title", "Title")]))),
+                "summary" => Ok(ViewData::new().card(Card::new("Out"))),
+                "summed-cards" => Ok(ViewData::new()
+                    .card(Card::new("Out"))
+                    .group(CardGroup::new("Here").card(card("Moss")))),
+                "summed-detail" => Ok(ViewData::new()
+                    .card(Card::new("Out"))
+                    .detail(Detail::new("Moss"))),
                 _ => Ok(ViewData::new().section(Section::new([Column::string("title", "Title")]))),
             }
         }
@@ -971,6 +1021,46 @@ mod tests {
         assert_eq!(shown["sections"][0]["columns"][0]["field"], "title");
         assert!(shown.get("groups").is_none());
         assert!(shown.get("detail").is_none());
+    }
+
+    #[test]
+    fn a_page_of_rows_carries_the_cards_that_sum_it_up() {
+        let shown = page(&[("body", "summed")]);
+        assert_eq!(
+            shown["cards"],
+            json!([{ "title": "Out" }, { "title": "Late" }])
+        );
+        assert_eq!(shown["dock_cards"], true);
+        assert_eq!(shown["sections"][0]["columns"][0]["field"], "title");
+
+        let alone = page(&[("body", "summary")]);
+        assert_eq!(alone["cards"], json!([{ "title": "Out" }]));
+        assert!(alone.get("dock_cards").is_none());
+        assert_eq!(alone["sections"], json!([]));
+
+        // A page with no cards says nothing about them.
+        let plain = page(&[("body", "rows")]);
+        assert!(plain.get("cards").is_none());
+        assert!(plain.get("dock_cards").is_none());
+    }
+
+    #[test]
+    fn cards_beside_a_grid_of_cards_or_a_page_of_one_thing_are_refused() {
+        let dir = fixture::temp_dir();
+        for (body, other) in [
+            ("summed-cards", "groups of cards"),
+            ("summed-detail", "one thing in detail"),
+        ] {
+            let failure = Shelf
+                .handle_get(&query(&[("body", body)]), &dir.context())
+                .unwrap_err();
+            assert_eq!(failure.status, 500);
+            assert!(
+                failure.message.contains("cards and") && failure.message.contains(other),
+                "{}",
+                failure.message
+            );
+        }
     }
 
     #[test]

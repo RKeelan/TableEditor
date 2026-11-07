@@ -11,6 +11,7 @@ import {
   tableHref,
   viewHref,
 } from "./lib/view";
+import { NoteLayer } from "./components/NotePopover";
 import { TableEditor } from "./components/TableEditor";
 import { UndoToasts } from "./components/UndoToasts";
 import { ThemeMenu } from "./components/ThemeMenu";
@@ -147,7 +148,7 @@ export function App() {
           {app?.subtitle && (
             <span className="text-sm text-muted">{app.subtitle}</span>
           )}
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+          <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-3 gap-y-2">
             {offer.length > 0 && (
               <nav
                 aria-label="Views and tables"
@@ -215,6 +216,7 @@ export function App() {
       </main>
 
       <UndoToasts />
+      <NoteLayer />
     </div>
   );
 }

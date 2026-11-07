@@ -40,6 +40,12 @@ pub struct Section {
     heading: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    freeze: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimate_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes_in: Option<String>,
     columns: Vec<Column>,
     rows: Vec<serde_json::Value>,
 }
@@ -49,6 +55,9 @@ impl Section {
         Self {
             heading: None,
             note: None,
+            freeze: false,
+            estimate_by: None,
+            notes_in: None,
             columns: columns.into_iter().collect(),
             rows: Vec::new(),
         }
@@ -61,6 +70,33 @@ impl Section {
 
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
+        self
+    }
+
+    /// Draw the section as a table at every width, its rows scrolling
+    /// sideways in a box of their own, its heading and header row held at the
+    /// top of the page while the section passes, and its first column held at
+    /// the left as the box scrolls. It is for a section wider than a phone
+    /// whose rows are read across, as a year of pay is. The name is Excel's.
+    pub fn freeze(mut self) -> Self {
+        self.freeze = true;
+        self
+    }
+
+    /// The field that marks a row as an estimate: a row holding `true` there
+    /// is drawn tinted and in italics, so a figure that is forecast reads
+    /// apart from one that is recorded. The field need not be a column.
+    pub fn estimate_by(mut self, field: impl Into<String>) -> Self {
+        self.estimate_by = Some(field.into());
+        self
+    }
+
+    /// The field that holds each row's notes: an object keyed by the field of
+    /// the column a note is on, whose values are the notes' text. A cell with a
+    /// note is marked in its corner and shows the note when pointed at, or
+    /// when tapped on a phone. The notes are read, not edited.
+    pub fn notes_in(mut self, field: impl Into<String>) -> Self {
+        self.notes_in = Some(field.into());
         self
     }
 
@@ -820,6 +856,26 @@ mod tests {
             json!({ "heading": "Out", "note": "Due back this week.",
                     "columns": [{ "field": "title", "label": "Title", "type": "string" }],
                     "rows": [{ "title": "A Field Guide to Moss" }] })
+        );
+    }
+
+    #[test]
+    fn a_sections_frozen_estimate_and_notes_fields_are_written_only_when_set() {
+        let section = Section::new([Column::string("date", "Date")])
+            .heading("Pay")
+            .freeze()
+            .estimate_by("forecast")
+            .notes_in("notes")
+            .rows(vec![json!({ "date": "2026-11-13", "forecast": true,
+                               "notes": { "date": "From the bindery." } })])
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&section).unwrap(),
+            json!({ "heading": "Pay", "freeze": true, "estimate_by": "forecast",
+                    "notes_in": "notes",
+                    "columns": [{ "field": "date", "label": "Date", "type": "string" }],
+                    "rows": [{ "date": "2026-11-13", "forecast": true,
+                               "notes": { "date": "From the bindery." } }] })
         );
     }
 

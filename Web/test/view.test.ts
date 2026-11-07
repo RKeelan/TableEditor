@@ -22,6 +22,9 @@ import {
   parseTarget,
   rowCardFor,
   isPageClick,
+  dockColumns,
+  isEstimate,
+  noteOf,
   rowTarget,
   savedRowTarget,
   safeHref,
@@ -241,15 +244,15 @@ describe("a row as a card at a narrow width", () => {
       title: "A Field Guide to Moss",
       href: "https://example.invalid/moss",
       lines: [
-        { label: "Due", text: "2026-09-30" },
-        { label: "Days", text: "12" },
+        { field: "due", label: "Due", text: "2026-09-30" },
+        { field: "days", label: "Days", text: "12" },
       ],
     });
   });
 
   test("leaves out a line with nothing in it", () => {
     const card = rowCardFor([title, due, days], { title: "Moss", days: 3 });
-    expect(card.lines).toEqual([{ label: "Days", text: "3" }]);
+    expect(card.lines).toEqual([{ field: "days", label: "Days", text: "3" }]);
     expect(card.href).toBeNull();
   });
 
@@ -608,6 +611,16 @@ describe("what the page says when it cannot be seen", () => {
     expect(announce(page([]))).toBe("On loan: nothing to show.");
   });
 
+  test("counts the cards of a page that has nothing else", () => {
+    expect(announce({ ...bare, cards: [{ title: "Spent" }] })).toBe(
+      "On loan: 1 card.",
+    );
+    // Beside sections the cards sum them up, and the rows are the answer.
+    expect(
+      announce({ ...page([section("Out", 2)]), cards: [{ title: "Spent" }] }),
+    ).toBe("On loan: Out, 2 rows.");
+  });
+
   test("counts the cards of each group by name", () => {
     expect(
       announce({ ...bare, groups: [group("Open", 2), group("Shut", 1)] }),
@@ -821,5 +834,54 @@ describe("whether the app serves what was asked for", () => {
     expect(isServed({ name: "Bare", tables: [] }, { kind: "view", name: "x", args: {} })).toBe(
       false,
     );
+  });
+});
+
+describe("a note on a section's cell", () => {
+  const noted: ViewSection = { notes_in: "notes", columns: [title], rows: [] };
+
+  test("is the text the row's notes hold under the column's field", () => {
+    const row: Row = { title: "Moss", notes: { title: "Two copies.\nOne torn." } };
+    expect(noteOf(noted, row, "title")).toBe("Two copies.\nOne torn.");
+    expect(noteOf(noted, row, "due")).toBeNull();
+  });
+
+  test("is nothing where the section keeps no notes", () => {
+    const row: Row = { title: "Moss", notes: { title: "Two copies." } };
+    expect(noteOf({ columns: [title], rows: [] }, row, "title")).toBeNull();
+  });
+
+  test("is nothing where the notes are not an object of text", () => {
+    for (const notes of [null, "Two copies.", ["Two copies."], 3]) {
+      expect(noteOf(noted, { notes }, "title")).toBeNull();
+    }
+    for (const text of [3, true, null, "", "  "]) {
+      expect(noteOf(noted, { notes: { title: text } }, "title")).toBeNull();
+    }
+  });
+});
+
+describe("an estimate row", () => {
+  const forecast: ViewSection = { estimate_by: "forecast", columns: [title], rows: [] };
+
+  test("is one holding true in the section's estimate_by field", () => {
+    expect(isEstimate(forecast, { forecast: true })).toBe(true);
+    for (const value of [false, "true", 1, null, undefined]) {
+      expect(isEstimate(forecast, { forecast: value })).toBe(false);
+    }
+  });
+
+  test("is never one in a section that names no field", () => {
+    expect(isEstimate({ columns: [title], rows: [] }, { forecast: true })).toBe(false);
+  });
+});
+
+describe("docked cards on a narrow screen", () => {
+  test("sit three to a row, or as many as there are", () => {
+    expect(dockColumns(1)).toBe(1);
+    expect(dockColumns(2)).toBe(2);
+    expect(dockColumns(3)).toBe(3);
+    expect(dockColumns(7)).toBe(3);
+    expect(dockColumns(0)).toBe(1);
   });
 });
