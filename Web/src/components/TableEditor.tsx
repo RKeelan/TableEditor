@@ -1363,6 +1363,7 @@ function Cell({
           stored={value}
           displayText={cellText(column, row, derived)}
           allowMonth={column.allow_month}
+          calendar={column.no_calendar !== true}
           label={column.label}
           ariaLabel={label}
           title={mismatched ? oddTitle : undefined}

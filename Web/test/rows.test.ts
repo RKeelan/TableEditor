@@ -1043,6 +1043,12 @@ describe("a date cell", () => {
     );
   });
 
+  test("leaves no room for a calendar button where it has none", () => {
+    expect(controlWidth({ ...acquired, no_calendar: true })).toBe(
+      "calc(11ch + var(--field-chrome))",
+    );
+  });
+
   test("sorts by what it stores rather than how it reads", () => {
     const a = { row: { acquired: "2019-12-31" }, derived: null };
     const b = { row: { acquired: "2020-01-01" }, derived: null };

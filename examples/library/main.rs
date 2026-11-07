@@ -927,7 +927,7 @@ impl TableLogic for Donations {
     fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
         Ok(Schema::new([
             Column::string("donor", "Donor").width_ch(24),
-            Column::date("given", "Given"),
+            Column::date("given", "Given").without_calendar(),
             Column::amount("amount", "Amount")
                 .format(money())
                 .width_ch(9)
