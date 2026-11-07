@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 
 use crate::error::ApiError;
 use crate::jsonl;
-use crate::table::{By, Written};
+use crate::table::{By, Placement, Written};
 use crate::view::ViewArgs;
 
 /// What one file held the first time this context looked: its text, or the
@@ -52,12 +52,22 @@ const ABSENT: &str = "absent";
 /// A table's request carries the arguments the table was asked with, which
 /// [`Context::args`] hands to each of the table's hooks. Every other request's
 /// context carries none.
+///
+/// A request about a page of several tables may carry the rows the other
+/// tables have on screen. The context then answers reads of those tables'
+/// files with the files as they would be with those rows in them, so a hook
+/// that reads another table sees what is typed there. Nothing is written, and
+/// [`Context::version`] and [`Context::write`] are about the files on disk.
 pub struct Context {
     data_dir: PathBuf,
     cache: Arc<Mutex<HashMap<String, Cached>>>,
     written: Arc<Mutex<Vec<String>>>,
     after_write: Option<AfterWrite>,
     args: ViewArgs,
+    /// The text reads of a file are answered with in place of what the disk
+    /// holds, by file name.
+    overlays: Arc<Mutex<HashMap<String, String>>>,
+    placement: Placement,
 }
 
 impl Context {
@@ -69,6 +79,8 @@ impl Context {
             written: Arc::new(Mutex::new(Vec::new())),
             after_write: None,
             args: ViewArgs::default(),
+            overlays: Arc::new(Mutex::new(HashMap::new())),
+            placement: Placement::default(),
         }
     }
 
@@ -96,13 +108,48 @@ impl Context {
     /// request has read and written, and what it tells the app, so it is the
     /// same request seen with its arguments settled.
     pub(crate) fn under(&self, args: ViewArgs) -> Self {
+        self.sharing(args, self.placement.clone())
+    }
+
+    /// This request's context, about a table placed on its page as
+    /// `placement` says. It shares everything else, its arguments included.
+    pub(crate) fn placed(&self, placement: Placement) -> Self {
+        self.sharing(self.args.clone(), placement)
+    }
+
+    fn sharing(&self, args: ViewArgs, placement: Placement) -> Self {
         Self {
             data_dir: self.data_dir.clone(),
             cache: Arc::clone(&self.cache),
             written: Arc::clone(&self.written),
             after_write: self.after_write.clone(),
             args,
+            overlays: Arc::clone(&self.overlays),
+            placement,
         }
+    }
+
+    /// Where the table this context is about sits on its page.
+    pub(crate) fn placement(&self) -> &Placement {
+        &self.placement
+    }
+
+    /// Answer reads of `file` with `text` for the rest of the request, rather
+    /// than with what the disk holds. Its version, and a write of it, are
+    /// still about the disk.
+    pub(crate) fn overlay(&self, file: &str, text: String) {
+        self.overlays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(file.to_string(), text);
+    }
+
+    fn overlaid(&self, file: &str) -> Option<String> {
+        self.overlays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(file)
+            .cloned()
     }
 
     /// The same context, telling `hook` what it has written when
@@ -144,6 +191,9 @@ impl Context {
     /// Read a file the table needs. A missing file is a 500: the table cannot
     /// be served without it.
     pub fn read(&self, file: &str) -> Result<String, ApiError> {
+        if let Some(text) = self.overlaid(file) {
+            return Ok(text);
+        }
         match self.cached(file)? {
             Ok(text) => Ok(text),
             Err(message) => Err(ApiError::server(format!(
@@ -155,6 +205,15 @@ impl Context {
     /// Read a file the table can do without. A missing file is `None`; an
     /// unreadable one is still a 500.
     pub fn read_optional(&self, file: &str) -> Result<Option<String>, ApiError> {
+        if let Some(text) = self.overlaid(file) {
+            return Ok(Some(text));
+        }
+        self.read_stored(file)
+    }
+
+    /// Read a file as the disk holds it, whatever the rows on screen would
+    /// make of it. A missing file is `None`.
+    pub(crate) fn read_stored(&self, file: &str) -> Result<Option<String>, ApiError> {
         Ok(self.cached(file)?.ok())
     }
 
@@ -628,6 +687,44 @@ mod tests {
         settled.write("Rows.jsonl", "{\"name\":\"c\"}\n").unwrap();
         assert_eq!(ctx.written(), ["Rows.jsonl"]);
         assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"c\"}\n");
+    }
+
+    #[test]
+    fn an_overlay_answers_reads_but_not_versions_or_writes() {
+        let dir = fixture::temp_dir();
+        dir.write("Rows.jsonl", "{\"name\":\"disk\"}\n");
+        let ctx = Context::new(dir.path());
+        let version = ctx.version("Rows.jsonl").unwrap();
+
+        // An overlay set through one context of the request is seen through
+        // every other.
+        let placed = ctx.placed(crate::table::Placement::default());
+        placed.overlay("Rows.jsonl", "{\"name\":\"typed\"}\n".to_string());
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"typed\"}\n");
+        let rows: Vec<Row> = ctx.rows("Rows.jsonl").unwrap();
+        assert_eq!(rows[0].name, "typed");
+        let optional: Vec<Row> = ctx.optional_rows("Rows.jsonl").unwrap();
+        assert_eq!(optional[0].name, "typed");
+        assert_eq!(
+            ctx.read_stored("Rows.jsonl").unwrap().as_deref(),
+            Some("{\"name\":\"disk\"}\n")
+        );
+
+        // The version is the disk's, and a write goes to the disk.
+        assert_eq!(ctx.version("Rows.jsonl").unwrap(), version);
+        ctx.write("Rows.jsonl", "{\"name\":\"written\"}\n").unwrap();
+        assert_eq!(dir.read("Rows.jsonl"), "{\"name\":\"written\"}\n");
+        assert_ne!(ctx.version("Rows.jsonl").unwrap(), version);
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"typed\"}\n");
+    }
+
+    #[test]
+    fn an_overlay_makes_a_missing_file_present_to_reads() {
+        let dir = fixture::temp_dir();
+        let ctx = Context::new(dir.path());
+        ctx.overlay("Absent.jsonl", "{\"name\":\"a\"}\n".to_string());
+        assert!(ctx.read_optional("Absent.jsonl").unwrap().is_some());
+        assert_eq!(ctx.version("Absent.jsonl").unwrap(), "absent");
     }
 
     #[test]

@@ -338,6 +338,75 @@ pub trait TableLogic: Send + Sync + 'static {
     fn link(&self) -> Option<RowLink> {
         None
     }
+
+    /// The tables drawn beneath this one on its page, in order. The default
+    /// is none.
+    ///
+    /// A table named here is still a table, with its own route, file,
+    /// version, overview and hooks, and its own page when opened by address.
+    /// On this table's page it is read, derived and written with this table's
+    /// arguments, and a write to it puts what it was sent among the rows of
+    /// its file its `shows` rejects, as a write to a table with parameters
+    /// does. Building a [`crate::Server`] panics where a name is not a table
+    /// the app serves, is this table, is named twice, is below two tables, or
+    /// has tables below it itself.
+    fn below(&self) -> Vec<Below> {
+        Vec::new()
+    }
+}
+
+/// A table drawn beneath another on that table's page, as
+/// [`TableLogic::below`] names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Below {
+    table: String,
+    titled: bool,
+}
+
+impl Below {
+    /// The table called `name`, drawn with no heading, its column headers
+    /// saying what it is.
+    pub fn table(name: impl Into<String>) -> Self {
+        Self {
+            table: name.into(),
+            titled: false,
+        }
+    }
+
+    /// Head the table with its title.
+    pub fn titled(mut self) -> Self {
+        self.titled = true;
+        self
+    }
+
+    /// The name of the table.
+    pub fn name(&self) -> &str {
+        &self.table
+    }
+
+    /// Whether the table is headed with its title.
+    pub fn is_titled(&self) -> bool {
+        self.titled
+    }
+}
+
+/// Where the table a request is about sits on its page, which the server
+/// works out from the app and puts on the request's context.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Placement {
+    /// For a table below another: that table's parameters, which are the
+    /// page's, so the table is asked what the page is asked.
+    pub(crate) above: Option<Vec<Param>>,
+    /// For a table with tables below it: each of them, as a read sends them.
+    pub(crate) below: Vec<Lower>,
+}
+
+/// A table below another, as the upper table's read names it.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct Lower {
+    pub(crate) table: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<&'static str>,
 }
 
 /// Which fields of which rows the reader typed into since each row was last
@@ -440,6 +509,32 @@ pub trait Table: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// The parameters this table declares, from [`TableLogic::params`],
+    /// which are its page's where tables are below it. The default is none.
+    fn controls(&self, _ctx: &Context) -> Result<Vec<Param>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// The tables below this one on its page, from [`TableLogic::below`].
+    /// The default is none.
+    fn tables_below(&self) -> Vec<Below> {
+        Vec::new()
+    }
+
+    /// Have the context answer reads of this table's file as though `rows`
+    /// were written into it, as a write of them would put them, for the rest
+    /// of the request; nothing is written. It is how a derive or a write of
+    /// one table on a page sees what the others have on screen.
+    ///
+    /// The default refuses, since a type implementing this trait itself has no
+    /// row type to read the rows as.
+    fn overlay(&self, _ctx: &Context, _rows: serde_json::Value) -> Result<(), ApiError> {
+        Err(ApiError::server(format!(
+            "the table \"{}\" cannot take the rows of its page alongside another's",
+            self.route()
+        )))
+    }
+
     /// `GET /api/<table>`: the schema, the stored rows the table's `shows`
     /// keeps, their derivation, their validation errors, their overview, any
     /// sibling data, the version of the whole file the rows were read from,
@@ -502,6 +597,27 @@ impl<T: TableLogic> Table for T {
             .collect())
     }
 
+    fn controls(&self, ctx: &Context) -> Result<Vec<Param>, ApiError> {
+        self.params(ctx)
+    }
+
+    fn tables_below(&self) -> Vec<Below> {
+        self.below()
+    }
+
+    fn overlay(&self, ctx: &Context, rows: serde_json::Value) -> Result<(), ApiError> {
+        let rows: Vec<T::Row> = serde_json::from_value(rows).map_err(|e| {
+            ApiError::bad_request(format!(
+                "the rows alongside for \"{}\" are not its rows: {e}",
+                self.name()
+            ))
+        })?;
+        let (_, settled) = &self.settle(ctx)?;
+        let text = self.whole_file(settled, rows)?;
+        ctx.overlay(self.file(), text);
+        Ok(())
+    }
+
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError> {
         let (params, ctx) = &self.settle(ctx)?;
         let file = self.file();
@@ -534,6 +650,7 @@ impl<T: TableLogic> Table for T {
             version: ctx.version(file)?,
             args: (!params.is_empty()).then(|| ctx.args().clone()),
             params: params.clone(),
+            below: ctx.placement().below.clone(),
         })
     }
 
@@ -608,7 +725,7 @@ fn save<T: TableLogic>(
     // fact gone through.
     let (stamped, notice) = table.stamping(ctx, &mut rows, &edits, Stamping::Write)?;
     let (derived, errors, overview) = table.derivation(ctx, &rows)?;
-    let text = if table.scopes_rows(params) {
+    let text = if table.scopes_rows(params, ctx) {
         table.whole_file(ctx, rows)?
     } else {
         table
@@ -654,31 +771,34 @@ fn edits_of(edited: &[EditedLine], rows: usize) -> Result<Edits, ApiError> {
 /// derivation, what they are stamped with.
 trait Derivation: TableLogic {
     /// The table's parameters, and the request's context with the arguments
-    /// it carries settled against them.
+    /// it carries settled against them. A table below another is asked its
+    /// page's parameters first, then its own.
     fn settle(&self, ctx: &Context) -> Result<(Vec<Param>, Context), ApiError> {
-        let params = self.params(ctx)?;
+        let mut params = ctx.placement().above.clone().unwrap_or_default();
+        params.extend(self.params(ctx)?);
         let args = ctx.args().settled(&params);
         Ok((params, ctx.under(args)))
     }
 
     /// Whether the table's page holds some of its file's rows rather than all
     /// of them, so that a write has to put what it was sent in among the rest.
-    /// A table that declares parameters does; one that declares none holds
-    /// the whole file, and a write replaces the file with what it was sent
-    /// without reading it.
-    fn scopes_rows(&self, params: &[Param]) -> bool {
-        !params.is_empty()
+    /// A table that has parameters does, and so does one below another, which
+    /// shows what its page is asked about without parameters of its own. Any
+    /// other holds the whole file, and a write replaces the file with what it
+    /// was sent without reading it.
+    fn scopes_rows(&self, params: &[Param], ctx: &Context) -> bool {
+        !params.is_empty() || ctx.placement().above.is_some()
     }
 
     /// The text of the whole file once `rows` are put into it: every row of
-    /// the file as the context reads it that `shows` rejects, in its place,
+    /// the file as the disk holds it that `shows` rejects, in its place,
     /// with `rows` where the first row it keeps was, or at the end where it
     /// keeps none, all through `serialize`. Nothing is written.
     ///
     /// A file that is not there holds no rows, so a first write makes it.
     fn whole_file(&self, ctx: &Context, rows: Vec<Self::Row>) -> Result<String, ApiError> {
         let file = self.file();
-        let stored = match ctx.read_optional(file)? {
+        let stored = match ctx.read_stored(file)? {
             Some(text) => self
                 .parse(&text)
                 .map_err(|e| ApiError::from_parse(file, &e))?,
@@ -816,6 +936,9 @@ struct GetPayload<'a, R> {
     /// absent with them.
     #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<ViewArgs>,
+    /// The tables below this one on its page, absent where there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    below: Vec<Lower>,
 }
 
 /// `PUT /api/<table>`.

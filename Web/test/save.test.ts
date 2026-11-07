@@ -303,7 +303,7 @@ describe("a table read under other arguments", () => {
 
     // The year changes now.
     const switched = writeThenRead(
-      writes,
+      [writes],
       async () => {
         events.push("read");
         writes.loaded("[]", "v9", { year: "2026" });
@@ -340,7 +340,7 @@ describe("a table read under other arguments", () => {
     writes.loaded("[]", "v0", { year: "2025" });
     let read = false;
     await writeThenRead(
-      writes,
+      [writes],
       async () => {
         read = true;
       },
@@ -356,7 +356,7 @@ describe("a table read under other arguments", () => {
     typed(screen, "Moss");
     let read = false;
     const switched = writeThenRead(
-      writes,
+      [writes],
       async () => {
         read = true;
       },
@@ -374,7 +374,7 @@ describe("a table read under other arguments", () => {
     writes.loaded("[]", "v0", { year: "2025" });
     typed(screen, "Moss");
     const switched = writeThenRead(
-      writes,
+      [writes],
       async () => {},
       () => states.at(-1)?.kind === "failed",
     );

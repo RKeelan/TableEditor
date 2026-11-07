@@ -304,9 +304,9 @@ export function writer(parts: WriterParts): Writer {
   };
 }
 
-/** Read the table under other arguments: write what is on screen, under the
- *  arguments its rows were read with, and only then read. Says whether it
- *  read.
+/** Read a page's tables under other arguments: write what is on screen in
+ *  each, under the arguments its rows were read with, and only then read.
+ *  Says whether it read.
  *
  *  The order is the point. Rows read under one year and written under the
  *  next would replace that year's rows with the last one's, and a read that
@@ -319,11 +319,11 @@ export function writer(parts: WriterParts): Writer {
  *  their own arguments. A write the server refused is no reason to stay,
  *  since it cannot go through however long the page waits. */
 export async function writeThenRead(
-  writes: Pick<Writer, "save">,
+  writes: readonly Pick<Writer, "save">[],
   read: () => Promise<void>,
   failing: () => boolean,
 ): Promise<boolean> {
-  await writes.save();
+  await Promise.all(writes.map((w) => w.save()));
   if (failing()) return false;
   await read();
   return true;

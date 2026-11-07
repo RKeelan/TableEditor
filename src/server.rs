@@ -183,6 +183,48 @@ fn reserved_url_character(name: &str) -> Option<char> {
 /// already means something by them.
 const RESERVED_PARAM_KEYS: [&str; 2] = ["view", "table"];
 
+/// Panic where the tables an app puts below others do not make pages: each
+/// is a table the app serves, other than the one it is below, named once,
+/// below one table only, and with no tables below it.
+fn check_pages(app: &dyn App) {
+    let mut placed: Vec<(String, &'static str)> = Vec::new();
+    for table in app.tables() {
+        let mut named: Vec<String> = Vec::new();
+        for below in table.tables_below() {
+            let name = below.name();
+            let Some(lower) = app.table(name) else {
+                panic!(
+                    "table \"{}\" puts \"{name}\" below it, which is not a table this app serves",
+                    table.route()
+                );
+            };
+            assert!(
+                name != table.route(),
+                "table \"{name}\" puts itself below itself; a page draws each table once"
+            );
+            assert!(
+                !named.iter().any(|n| n == name),
+                "table \"{}\" puts \"{name}\" below it twice; a page draws each table once",
+                table.route()
+            );
+            if let Some((_, upper)) = placed.iter().find(|(n, _)| n == name) {
+                panic!(
+                    "\"{name}\" is below both \"{upper}\" and \"{}\"; a table is below one table only",
+                    table.route()
+                );
+            }
+            assert!(
+                lower.tables_below().is_empty(),
+                "table \"{}\" puts \"{name}\" below it, and \"{name}\" has tables below it \
+                 itself; a page is one table with the tables below it",
+                table.route()
+            );
+            named.push(name.to_string());
+            placed.push((name.to_string(), table.route()));
+        }
+    }
+}
+
 /// Whether a name is one file inside `Data/` rather than a path out of it.
 fn is_bare_file_name(file: &str) -> bool {
     !file.is_empty()
@@ -224,6 +266,9 @@ impl Server {
     /// parameter that view does not declare. Panics when [`App::switcher`]
     /// names a page the app does not serve, names one twice, names one its
     /// `in_switcher` keeps out, or leaves out one its `in_switcher` keeps in.
+    /// Panics when a table names a table below it that the app does not serve,
+    /// names itself or one table twice, names a table another table also
+    /// names, or names a table that has tables below it itself.
     pub fn new(app: impl App) -> Self {
         let app: Arc<dyn App> = Arc::new(app);
         for table in app.tables() {
@@ -262,6 +307,8 @@ impl Server {
                 );
             }
         }
+
+        check_pages(app.as_ref());
 
         let tables: Vec<&'static str> = app.tables().iter().map(|t| t.route()).collect();
         let mut seen: Vec<&'static str> = Vec::new();
@@ -1396,5 +1443,110 @@ mod tests {
             .run(parse(&["library", "web", "stop", "--port", "1"]))
             .unwrap();
         assert_eq!(ran.load(Ordering::Relaxed), 0);
+    }
+
+    /// A table of books that puts the tables named in `below` below it.
+    struct Above {
+        name: &'static str,
+        below: Vec<&'static str>,
+    }
+
+    impl TableLogic for Above {
+        type Row = crate::fixture::Book;
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn file(&self) -> &'static str {
+            crate::fixture::BOOKS_FILE
+        }
+        fn title(&self) -> &'static str {
+            "Above"
+        }
+        fn schema(&self, _ctx: &Context) -> Result<crate::Schema, ApiError> {
+            Ok(crate::Schema::new([crate::Column::string(
+                "title", "Title",
+            )]))
+        }
+        fn validate(
+            &self,
+            _rows: &[crate::fixture::Book],
+            _ctx: &Context,
+        ) -> Result<Vec<crate::ValidationError>, ApiError> {
+            Ok(Vec::new())
+        }
+        fn below(&self) -> Vec<crate::Below> {
+            self.below
+                .iter()
+                .map(|name| crate::Below::table(*name))
+                .collect()
+        }
+    }
+
+    struct Stacked(Vec<Above>);
+
+    impl App for Stacked {
+        fn name(&self) -> &str {
+            "Stacked"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            self.0.iter().map(|t| t as &dyn Table).collect()
+        }
+    }
+
+    fn above(name: &'static str, below: &[&'static str]) -> Above {
+        Above {
+            name,
+            below: below.to_vec(),
+        }
+    }
+
+    #[test]
+    fn tables_below_one_another_make_a_page() {
+        let _ = Server::new(Stacked(vec![
+            above("plan", &["extras", "caps"]),
+            above("extras", &[]),
+            above("caps", &[]),
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "which is not a table this app serves")]
+    fn a_table_below_must_be_served() {
+        let _ = Server::new(Stacked(vec![above("plan", &["nowhere"])]));
+    }
+
+    #[test]
+    #[should_panic(expected = "puts itself below itself")]
+    fn a_table_may_not_be_below_itself() {
+        let _ = Server::new(Stacked(vec![above("plan", &["plan"])]));
+    }
+
+    #[test]
+    #[should_panic(expected = "below it twice")]
+    fn a_table_may_not_be_below_another_twice() {
+        let _ = Server::new(Stacked(vec![
+            above("plan", &["extras", "extras"]),
+            above("extras", &[]),
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "is below both")]
+    fn a_table_may_not_be_below_two_tables() {
+        let _ = Server::new(Stacked(vec![
+            above("plan", &["extras"]),
+            above("budget", &["extras"]),
+            above("extras", &[]),
+        ]));
+    }
+
+    #[test]
+    #[should_panic(expected = "has tables below it itself")]
+    fn a_table_below_another_may_not_have_tables_below_it() {
+        let _ = Server::new(Stacked(vec![
+            above("plan", &["extras"]),
+            above("extras", &["caps"]),
+            above("caps", &[]),
+        ]));
     }
 }

@@ -1,17 +1,18 @@
 import {
   type ReactNode,
   type RefObject,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { type DeriveResult, deriveTable, getTable, putTable } from "../lib/api";
+import type { TableGet } from "../lib/api";
 import { amountEdit, amountEditText, isSum } from "../lib/amount";
 import { dateEdit } from "../lib/dates";
-import { describeError } from "../lib/errors";
 import {
   editText,
   figureTone,
@@ -22,23 +23,19 @@ import {
 import {
   type DrawnGroup,
   fallbackTitle,
-  groupInsertIndex,
   groupRows,
   groupTextOf,
   lineCells,
   lineValueText,
-  newGroupRow,
   shadeDepths,
 } from "../lib/groups";
+import { type Page, createPage, datalistId, pageBadge } from "../lib/page";
 import {
   type Column,
   type Derived,
   type NumberFormat,
-  type Overview,
-  type Schema,
   type ValidationError,
 } from "../lib/schema";
-import type { Pending } from "../lib/save";
 import {
   type Sort,
   boxInput,
@@ -52,46 +49,19 @@ import {
   editsAsLines,
   formatOf,
   linesText,
-  newRow,
   nextSort,
   parseFilter,
   rowMuted,
   selectOptions,
   withLineBreaksOf,
-  writeCell,
-  writeMapEntry,
 } from "../lib/rows";
-import {
-  type RowEntry,
-  appendEntry,
-  cancelEdit,
-  editEntry,
-  editedLines,
-  entryRows,
-  insertEntry,
-  lastEdit,
-  markEdited,
-  moveEntry,
-  nextEntryId,
-  removeEntry,
-  restoreEntry,
-  settleEdits,
-  toEntries,
-  visibleIndices,
-} from "../lib/entries";
-import { adoptStamped, rowsAsWritten } from "../lib/stamp";
+import { type RowEntry, entryRows, visibleIndices } from "../lib/entries";
 import {
   type PendingSave,
   type SaveState,
-  type Writer,
-  hasUnsavedWork,
   leave,
-  noticeAfter,
-  retryDelay,
   saveBanner,
-  waitingToSave,
   writeThenRead,
-  writer,
 } from "../lib/save";
 import { type RowTarget, type Tone, savedRowTarget, tableHref } from "../lib/view";
 import { DateBox } from "./DateBox";
@@ -101,17 +71,14 @@ import { ParamControl } from "./ParamControl";
 import { typedInto } from "./parts";
 import { SpeakButton } from "./SpeakButton";
 import { CardDock, Summary } from "./Summary";
+import { useTable } from "./useTable";
 import { useTableParams } from "./useTableParams";
 
-// A short debounce for the live derive, which redraws validation and computed
-// columns as the user types, and a longer one before the write to disk.
-const DERIVE_DELAY = 250;
-const SAVE_DELAY = 600;
-
-// How long a deleted row can be brought back.
-const UNDO_WINDOW = 10_000;
-
 const NO_COLUMNS: Column[] = [];
+
+/** The table a cell is drawn in, so that a cell names its own table's
+ *  datalist when two tables on a page name one alike. */
+const TableScope = createContext("");
 const NO_FILLS: ReadonlySet<string> = new Set();
 
 // The width of the row controls at the start of each row, in pixels, which is
@@ -142,265 +109,53 @@ interface Props {
   go: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
 }
 
+/** What a table on the page tells the page about itself, for the toolbar. */
+interface Reported {
+  title: string;
+  save: SaveState;
+  notice: string | null;
+  errors: number;
+}
+
+/** A table's page: the table the address names, and the tables its read says
+ *  are below it. The toolbar, the parameters, the filter and the record count
+ *  are the first table's; the save badge speaks for every table; and leaving
+ *  the page, or asking it about another year, waits for every table to have
+ *  written. */
 export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
-  const [schema, setSchema] = useState<Schema | null>(null);
-  const [entries, setEntries] = useState<RowEntry[]>([]);
-  const [derived, setDerived] = useState<unknown[]>([]);
-  const [errors, setErrors] = useState<ValidationError[]>([]);
-  // The headings of the groups, the footer, and the summary above the table,
-  // which follow the derivation: they are of the same rows.
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const page = useMemo(() => createPage(), []);
   const [filter, setFilter] = useState("");
   const [filterNote, setFilterNote] = useState(false);
-  const [sort, setSort] = useState<Sort | null>(null);
-  const [save, setSave] = useState<SaveState>({ kind: "idle" });
-  // Whether the table is being read under other arguments, during which the
+  // Whether the page is being read under other arguments, during which the
   // rows on screen are the last question's and take no typing.
   const [switching, setSwitching] = useState(false);
   const { askedRef, askedKey, settled, controls: paramControls, answered, ask } =
     useTableParams({ table, asked: args, onAsk, pending });
-  const [notice, setNotice] = useState<string | null>(null);
-  // The rows as they were last written, which is what a row's link may point
-  // at: the page it opens reads the file.
-  const [saved, setSaved] = useState<RowEntry[]>([]);
-  // The write in flight: the entries it sent, as they were written once it
-  // lands, and the number of the last keystroke it carries.
-  const writing = useRef<{ entries: RowEntry[]; upTo: number }>({
-    entries: [],
-    upTo: 0,
-  });
-  const [undoable, setUndoable] = useState<
-    { removed: RowEntry; index: number }[]
-  >([]);
+  // The tables below the first, as its read names them.
+  const [below, setBelow] = useState<{ table: string; title?: string }[]>([]);
+  const [reported, setReported] = useState<Record<string, Reported>>({});
+  // The arguments the rows on screen were read under, which the address is
+  // put back to where a write fails before a new question can be read.
+  const readUnder = useRef<Record<string, string>>(args);
 
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const deriveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // A request id shared by derive and PUT, so the freshest answer wins and a
-  // stale one is dropped.
-  const reqSeq = useRef(0);
-  const appliedSeq = useRef(0);
-  // Which reading of the table the page holds. A write's stamp is taken in
-  // only by the reading it was made from, since ids start again with each.
-  const reading = useRef(0);
-  // The number of the last keystroke, which each edit is recorded under so a
-  // write can forget the ones it stored and keep those typed while it was in
-  // flight.
-  const editSeq = useRef(0);
-  // What the state is now, for the callbacks that outlive a render.
-  const entriesRef = useRef<RowEntry[]>([]);
-  entriesRef.current = entries;
-
-  const rowsKey = useMemo(() => JSON.stringify(entryRows(entries)), [entries]);
-  const rowsKeyRef = useRef(rowsKey);
-  rowsKeyRef.current = rowsKey;
-  // The latest keystroke recorded. A value typed over itself changes no row,
-  // but it is still an edit the server may stamp, so it is derived all the
-  // same; whether it is then written is up to what the derive answers.
-  const latestEdit = useMemo(() => lastEdit(entries), [entries]);
-  // Counts edits abandoned with Esc. Abandoning one can leave the rows as the
-  // file has them and nothing recorded as typed, which would ask for no derive,
-  // while what is on screen was derived from what had been typed.
-  const [abandoned, setAbandoned] = useState(0);
-
-  /** Put entries on screen, the refs first, so a write that starts in the
-   *  same tick sends them. */
-  const show = useCallback((next: RowEntry[]) => {
-    entriesRef.current = next;
-    rowsKeyRef.current = JSON.stringify(entryRows(next));
-    setEntries(next);
-  }, []);
-
-  /** Take a derivation only when it answers the rows on screen. A response to
-   *  rows that have since been edited, deleted or reordered would hang errors
-   *  and computed values on whichever row took the place of the one they were
-   *  about. Says whether it was taken. */
-  const applyDerived = useCallback(
-    (id: number, asked: string, res: DeriveResult): boolean => {
-      if (id < appliedSeq.current) return false;
-      if (asked !== rowsKeyRef.current) return false;
-      appliedSeq.current = id;
-      setDerived(res.derived);
-      setErrors(res.errors);
-      setOverview(res.overview ?? null);
-      return true;
-    },
-    [],
-  );
-
-  // ── Saving ────────────────────────────────────────────────────────────────
-  const clearRetry = () => {
-    if (retryTimer.current) {
-      clearTimeout(retryTimer.current);
-      retryTimer.current = null;
-    }
-  };
-
-  /** The rows to write and the fields typed into them, read when the write
-   *  starts rather than when it was asked for. */
-  const onScreen = useCallback((): Pending => {
-    const sent = entriesRef.current;
-    writing.current = { entries: sent, upTo: editSeq.current };
-    return {
-      rows: entryRows(sent),
-      key: rowsKeyRef.current,
-      edited: editedLines(sent),
-    };
-  }, []);
-
-  const put = useCallback(
-    (write: Pending, version: string, under: Record<string, string>) => {
-      const id = ++reqSeq.current;
-      const of = reading.current;
-      const { entries: sent, upTo } = writing.current;
-      return putTable(table, under, write.rows, version, write.edited).then((res) => {
-        // The derivation is of the rows as stamped, so it is taken only where
-        // the rows on screen, before the stamp is taken in, are the rows sent.
-        applyDerived(id, write.key, res);
-        if (of === reading.current) {
-          // The stamp is taken in field by field, where the reader has not
-          // changed the field since, and the edits the write stored are
-          // forgotten, all before anything renders.
-          const stamped = adoptStamped(entriesRef.current, sent, res.stamped ?? []);
-          show(settleEdits(stamped, new Set(sent.map((e) => e.id)), upTo));
-          const asWritten = rowsAsWritten(write.rows, res.stamped);
-          writing.current = {
-            entries: sent.map((entry, i) => ({ ...entry, row: asWritten[i] })),
-            upTo,
-          };
-        }
-        return res;
-      });
-    },
-    [table, applyDerived, show],
-  );
-
-  const report = useCallback((state: SaveState) => {
-    setSave(state);
-    setNotice((shown) => noticeAfter(shown, state));
-    // The shell asks whether a write is outstanding as soon as the write it
-    // waited for settles, before the page has rendered what it reported.
-    saveRef.current = state;
-    if (state.kind === "saved") setSaved(writing.current.entries);
-    clearRetry();
-    // A failure is not the end of it: try again on a lengthening timer, as
-    // well as whenever the next edit lands. A refusal schedules nothing,
-    // because retrying it cannot help.
-    if (state.kind === "failed") {
-      retryTimer.current = setTimeout(
-        () => void held.current?.writes.save(),
-        retryDelay(state.attempt),
-      );
-    }
-  }, []);
-
-  // The writes of this table, made one at a time, each stating the version the
-  // one before it left behind.
-  //
-  // A writer holds the version it must state next and whether a write has been
-  // refused, so it is kept in a ref rather than memoised: a memo is a cache
-  // that may be thrown away, and a writer made again would have forgotten the
-  // version and stopped saving without saying so. One writer per table, since
-  // a version belongs to a file.
-  const held = useRef<{ table: string; writes: Writer } | null>(null);
-  if (held.current === null || held.current.table !== table) {
-    held.current = { table, writes: writer({ pending: onScreen, put, report }) };
-  }
-  const writes = held.current.writes;
-
-  /** Whether what is on screen is not yet written: rows that differ from the
-   *  last write. A field typed into that leaves its row as it was is not, so a
-   *  value retyped on a table whose stamp leaves the row alone, or that has
-   *  none, writes nothing. */
-  const unwritten = useCallback(
-    (rowsNow: string) => {
-      const written = writes.written();
-      return written !== null && rowsNow !== written;
-    },
-    [writes],
-  );
-  const dirty = unwritten(rowsKey);
-
-  // ── Load ──────────────────────────────────────────────────────────────────
-  // Reads can be asked faster than they are answered, so only the latest
-  // read's answer is allowed to land.
-  const loads = useRef(0);
-  const load = useCallback(async () => {
-    const mine = ++loads.current;
-    const under = askedRef.current;
-    setLoadError(null);
-    try {
-      const data = await getTable(table, under);
-      if (mine !== loads.current) return;
-      const loaded = toEntries(data.rows);
-      const key = JSON.stringify(data.rows);
-      entriesRef.current = loaded;
-      rowsKeyRef.current = key;
-      reading.current += 1;
-      writes.loaded(key, data.version, data.args ?? under);
+  const onFirstRead = useCallback(
+    (data: TableGet, under: Record<string, string>) => {
       answered(data, under);
-      setSchema(data.schema);
-      setEntries(loaded);
-      setSaved(loaded);
-      setDerived(data.derived);
-      setErrors(data.errors);
-      setOverview(data.overview ?? null);
-      setUndoable([]);
-      appliedSeq.current = ++reqSeq.current;
-    } catch (e) {
-      if (mine === loads.current) setLoadError(describeError(e));
-    }
-  }, [table, writes, askedRef, answered]);
+      readUnder.current = data.args ?? under;
+      const next = data.below ?? [];
+      setBelow((was) => (JSON.stringify(was) === JSON.stringify(next) ? was : next));
+    },
+    [answered],
+  );
 
-  // The table is read when it opens and whenever the address asks it
-  // something else: by a control, or by Back and Forward. What is pending is
-  // written first, under the arguments its rows were read with, and until the
-  // read lands the rows on screen are dimmed and take no typing: they answer
-  // the last question, and what was typed into them would be lost.
-  //
-  // Where that write fails, the rows stay, since they are the only copy of
-  // what was typed, and the address is put back to the question they answer.
-  // A control cannot get here that way, since it asks only once what is
-  // pending has been written; Back and Forward can.
-  useEffect(() => {
-    let live = true;
-    setSwitching(true);
-    void writeThenRead(writes, load, () => saveRef.current.kind === "failed")
-      .then((read) => {
-        if (!read) window.history.replaceState(null, "", tableHref(table, writes.args()));
-      })
-      .finally(() => {
-        if (live) setSwitching(false);
-      });
-    return () => {
-      live = false;
-    };
-  }, [askedKey, load, writes, table]);
-
-  /** Write now rather than when the timer says so, and wait for it. The write
-   *  queues behind one already in flight, so what is on screen reaches the
-   *  disk rather than whatever the write in flight happens to be carrying. */
-  const flush = useCallback(async () => {
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-    }
-    await writes.save();
-  }, [writes]);
-
-  const saveRef = useRef<SaveState>(save);
-  saveRef.current = save;
+  const onReport = useCallback((name: string, state: Reported) => {
+    setReported((was) => ({ ...was, [name]: state }));
+  }, []);
 
   // The shell asks for this before it navigates, so switching tables inside
-  // the debounce window cannot lose what was typed.
+  // the debounce window cannot lose what was typed in any of them.
   useEffect(() => {
-    pending.current = {
-      flush,
-      waiting: () => waitingToSave(saveRef.current, unwritten(rowsKeyRef.current)),
-      failing: () => saveRef.current.kind === "failed",
-    };
+    pending.current = page.pending;
     // A page that is not this editor has nothing pending, and leaving this
     // one's flush behind would have the shell wait on an editor that is gone.
     return () => {
@@ -410,73 +165,173 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
         failing: () => false,
       };
     };
-  }, [flush, pending, unwritten]);
+  }, [page, pending]);
 
-  // Closing the page mid-edit throws the edit away, so say so first. What is
-  // unwritten is read when the page is left rather than at the last render,
-  // since leaving through the switcher or a row's link comes straight after a
-  // write that the page has not yet rendered.
-  useEffect(() => {
-    const guard = (e: BeforeUnloadEvent) => {
-      if (!hasUnsavedWork(saveRef.current, unwritten(rowsKeyRef.current))) return;
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", guard);
-    return () => window.removeEventListener("beforeunload", guard);
-  }, [unwritten]);
+  /** Read every table on the page again, under the address's arguments. */
+  const readAll = useCallback(async () => {
+    await Promise.all(page.tables().map((t) => t.load()));
+  }, [page]);
 
-  // ── Live derive, debounced ────────────────────────────────────────────────
-  // Asked for by rows that differ from the last write and by every edit, so a
-  // value typed over itself is derived, and stamped where the table stamps it,
-  // though it changes no row.
+  // Each table reads itself when it is first drawn. Whenever the address asks
+  // the page something else, by a control or by Back and Forward, what is
+  // pending in every table is written first, under the arguments its rows
+  // were read with, and until the reads land the rows on screen are dimmed and
+  // take no typing: they answer the last question, and what was typed into
+  // them would be lost.
+  //
+  // Where a write fails, the rows stay, since they are the only copy of what
+  // was typed, and the address is put back to the question they answer. A
+  // control cannot get here that way, since it asks only once what is pending
+  // has been written; Back and Forward can.
+  const readKey = useRef(askedKey);
   useEffect(() => {
-    if (!dirty && latestEdit === 0 && abandoned === 0) return;
-    if (deriveTimer.current) clearTimeout(deriveTimer.current);
-    deriveTimer.current = setTimeout(() => {
-      // A page that can no longer save has nothing to show a fresh derivation
-      // of: what is on screen is not going to be written.
-      if (writes.stale()) return;
-      const id = ++reqSeq.current;
-      const asked = rowsKeyRef.current;
-      const sent = entriesRef.current;
-      deriveTable(table, writes.args(), entryRows(sent), editedLines(sent))
-        .then((res) => {
-          // The stamp is taken in with the derivation, and only where the
-          // derivation is: the rows on screen are then the rows asked about,
-          // so the stamp is shown with every figure worked out from it.
-          if (applyDerived(id, asked, res) && res.stamped?.length) {
-            show(adoptStamped(entriesRef.current, sent, res.stamped));
-          }
-        })
-        .catch(() => {
-          // Transient; the next derive or the save refreshes it.
-        });
-    }, DERIVE_DELAY);
+    if (readKey.current === askedKey) return;
+    readKey.current = askedKey;
+    let live = true;
+    setSwitching(true);
+    void writeThenRead(page.tables(), readAll, () => page.pending.failing())
+      .then((read) => {
+        if (!read) {
+          window.history.replaceState(null, "", tableHref(table, readUnder.current));
+        }
+      })
+      .finally(() => {
+        if (live) setSwitching(false);
+      });
     return () => {
-      if (deriveTimer.current) clearTimeout(deriveTimer.current);
+      live = false;
     };
-  }, [rowsKey, latestEdit, abandoned, dirty, table, applyDerived, show, writes]);
+  }, [askedKey, page, readAll, table]);
 
-  // ── Autosave, debounced ───────────────────────────────────────────────────
-  // Asked for only by rows that differ from the last write: where a preview
-  // stamp has changed a row, they do.
-  useEffect(() => {
-    if (!dirty) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => void writes.save(), SAVE_DELAY);
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-    };
-  }, [rowsKey, dirty, writes]);
-
-  useEffect(
-    () => () => {
-      clearRetry();
-      if (undoTimer.current) clearTimeout(undoTimer.current);
-    },
-    [],
+  const tables = [table, ...below.map((b) => b.table)];
+  const badge = pageBadge(
+    tables.flatMap((name) => (reported[name] ? [reported[name]] : [])),
   );
+  const errorCount = tables.reduce((n, name) => n + (reported[name]?.errors ?? 0), 0);
+
+  const lower = below.map((b) => (
+    <TableSection
+      key={b.table}
+      table={b.table}
+      title={b.title}
+      page={page}
+      askedRef={askedRef}
+      views={views}
+      pending={pending}
+      go={go}
+      onReport={onReport}
+    />
+  ));
+
+  // A table is data, and its widths are counted in characters, so the whole of
+  // it is set in the monospaced face at the size the grid was designed around.
+  return (
+    <div className="flex min-h-0 flex-1 flex-col font-mono text-[13px]">
+      <div className="flex flex-none flex-wrap items-center gap-2 sm:gap-3">
+        <input
+          type="search"
+          value={filter}
+          onChange={(e) => {
+            setFilter(e.target.value);
+            setFilterNote(false);
+          }}
+          placeholder="Filter rows…  (try header:terms)"
+          aria-label="Filter rows"
+          autoComplete="off"
+          spellCheck={false}
+          className="field h-9 min-w-0 flex-1 border border-border bg-page sm:w-80 sm:flex-none"
+        />
+        {paramControls.map((param, i) => (
+          <ParamControl
+            key={`${i}-${param.key}`}
+            param={param}
+            value={settled[param.key] ?? ""}
+            onAsk={(key, value) => void ask(key, value)}
+            inline
+          />
+        ))}
+        <div className="flex items-center gap-2 sm:ml-auto sm:gap-3">
+          {errorCount > 0 && (
+            <span className="font-mono text-[11px] text-bad">
+              {errorCount} validation error(s)
+            </span>
+          )}
+          <SaveBadge save={badge.save} notice={badge.notice} />
+          <button
+            className="btn h-9"
+            onClick={() => void page.pending.flush().then(readAll)}
+            title="Write anything pending, then re-read from disk. Anything that cannot be written is discarded."
+          >
+            Reload
+          </button>
+        </div>
+      </div>
+
+      <TableSection
+        table={table}
+        page={page}
+        askedRef={askedRef}
+        onRead={onFirstRead}
+        views={views}
+        pending={pending}
+        go={go}
+        onReport={onReport}
+        first={{ filter, setFilter, filterNote, setFilterNote, switching, lower }}
+      />
+    </div>
+  );
+}
+
+/** What only the first table on a page has: the filter, the tables below it,
+ *  and the dimming while the page is read again. */
+interface First {
+  filter: string;
+  setFilter: (filter: string) => void;
+  filterNote: boolean;
+  setFilterNote: (note: boolean) => void;
+  switching: boolean;
+  /** The tables below, drawn in the body the first table scrolls in. */
+  lower: ReactNode[];
+}
+
+/** One table on its page: its banner, its cards and sections, and its grid.
+ *
+ *  The first table is drawn as a page of one table always was, with the tables
+ *  below it after its grid in the body it scrolls in. A table below is headed
+ *  with its title where it asks to be, has its own cards and sections above
+ *  it, and is as wide as its content, scrolling sideways in its own box where
+ *  it is wider than the page. */
+function TableSection({
+  table,
+  title,
+  page,
+  askedRef,
+  onRead,
+  views,
+  pending,
+  go,
+  onReport,
+  first,
+}: {
+  table: string;
+  title?: string;
+  page: Page;
+  askedRef: RefObject<Record<string, string>>;
+  onRead?: (data: TableGet, under: Record<string, string>) => void;
+  views: readonly { view: string; title: string }[];
+  pending: RefObject<PendingSave>;
+  go: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
+  onReport: (table: string, state: Reported) => void;
+  first?: First;
+}) {
+  const t = useTable({ table, page, askedRef, onRead });
+  const { schema, entries, derived, errors, overview, save, notice } = t;
+  const [sort, setSort] = useState<Sort | null>(null);
+  const name = title ?? schema?.title ?? table;
+
+  useEffect(() => {
+    onReport(table, { title: name, save, notice, errors: errors.length });
+  }, [onReport, table, name, save, notice, errors.length]);
 
   const columns = schema?.columns ?? NO_COLUMNS;
 
@@ -500,6 +355,7 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
     return out;
   }, [schema, entries]);
 
+  const filter = first?.filter ?? "";
   const plan = useMemo(() => parseFilter(filter, columns), [filter, columns]);
   const filtering = plan.terms.length > 0;
 
@@ -522,122 +378,22 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
     [entries, visible, schema, overview, filtering],
   );
 
-  // ── Mutations ─────────────────────────────────────────────────────────────
-  const forgetUndo = () => {
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    setUndoable((stack) => (stack.length === 0 ? stack : []));
-  };
-
-  // Each keystroke is recorded as an edit of its column's field, whether or
-  // not it changes the value: retyping a figure is how a reader says it still
-  // stands. The number is taken outside the update, which may run twice. A
-  // keystroke that leaves its box reading as it did is that and nothing more,
-  // and leaves the row alone (see boxInput).
-  const markCell = useCallback((id: number, column: Column) => {
-    const seq = ++editSeq.current;
-    setEntries((prev) => markEdited(prev, id, column.field, seq));
-  }, []);
-
-  const setCell = useCallback(
-    (id: number, column: Column, raw: string) => {
-      if (!schema) return;
-      forgetUndo();
-      const seq = ++editSeq.current;
-      setEntries((prev) => {
-        const entry = prev.find((e) => e.id === id);
-        if (!entry) return prev;
-        const next = editEntry(prev, id, writeCell(entry.row, column, raw, schema));
-        return markEdited(next, id, column.field, seq);
-      });
-    },
-    [schema],
-  );
-
-  // Esc abandons the edit in the focused cell: the row goes back to what it
-  // was when the cell was focused. Where that is what the file holds, nothing
-  // is written; where a write already took what was typed, putting it back is
-  // written in turn.
-  const cancelCell = useCallback((before: RowEntry) => {
-    forgetUndo();
-    setEntries((prev) => cancelEdit(prev, before));
-    setAbandoned((n) => n + 1);
-  }, []);
-
-  const setMapEntry = useCallback(
-    (id: number, column: Column, key: string, value: string) => {
-      if (!schema) return;
-      forgetUndo();
-      const seq = ++editSeq.current;
-      setEntries((prev) => {
-        const entry = prev.find((e) => e.id === id);
-        if (!entry) return prev;
-        const next = editEntry(
-          prev,
-          id,
-          writeMapEntry(entry.row, column, key, value, schema),
-        );
-        return markEdited(next, id, column.field, seq);
-      });
-    },
-    [schema],
-  );
-
-  const onDelete = useCallback((id: number) => {
-    setEntries((prev) => {
-      const removal = removeEntry(prev, id);
-      if (!removal) return prev;
-      setUndoable((stack) => [...stack, { removed: removal.removed, index: removal.index }]);
-      if (undoTimer.current) clearTimeout(undoTimer.current);
-      undoTimer.current = setTimeout(() => setUndoable([]), UNDO_WINDOW);
-      return removal.entries;
-    });
-  }, []);
-
-  const undo = useCallback(() => {
-    setUndoable((stack) => {
-      const last = stack[stack.length - 1];
-      if (!last) return stack;
-      setEntries((prev) => restoreEntry(prev, last.removed, last.index));
-      return stack.slice(0, -1);
-    });
-  }, []);
-
-  const addRow = useCallback(() => {
-    if (!schema) return;
-    forgetUndo();
-    // A row added under a filter it does not match would be added invisibly,
-    // so the filter goes rather than the row.
-    if (plan.terms) {
-      setFilter("");
-      setFilterNote(true);
+  // A row added under a filter it does not match would be added invisibly,
+  // so the filter goes rather than the row.
+  const clearFilter = () => {
+    if (first && plan.terms) {
+      first.setFilter("");
+      first.setFilterNote(true);
     }
-    setEntries((prev) => appendEntry(prev, newRow(schema, entryRows(prev))));
-  }, [schema, plan.terms]);
-
-  // The row a group's control added, whose first editable cell takes the
-  // focus once it is drawn.
-  const focusEntry = useRef<number | null>(null);
-
-  const addToGroup = useCallback(
-    (key: string) => {
-      if (!schema) return;
-      forgetUndo();
-      if (plan.terms) {
-        setFilter("");
-        setFilterNote(true);
-      }
-      setEntries((prev) => {
-        const rows = entryRows(prev);
-        const order = groupRows(prev, rows.map((_, i) => i), schema, overview, false).map(
-          (group) => group.key,
-        );
-        const at = groupInsertIndex(rows, order, schema.group_by ?? "", key);
-        focusEntry.current = nextEntryId(prev);
-        return insertEntry(prev, at, newGroupRow(schema, rows, key));
-      });
-    },
-    [schema, overview, plan.terms],
-  );
+  };
+  const addRow = () => {
+    clearFilter();
+    t.addRow();
+  };
+  const addToGroup = (key: string) => {
+    clearFilter();
+    t.addToGroup(key);
+  };
 
   // The box the table is drawn in, and, under a summary, the body the summary
   // and the box scroll in together.
@@ -645,14 +401,17 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   const tableRef = useRef<HTMLTableElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  // The cards and sections above the table. Where there are any, the table
-  // shares a block with them, and the box it is drawn in stops being a
-  // scroll container of its own. Docked cards are in a band at the foot of
-  // the window instead, and leave the table its own box.
-  const docked = overview?.dock_cards === true ? (overview.cards ?? []) : [];
+  // The cards and sections above the table. Where there are any, the first
+  // table shares a block with them, and the box it is drawn in stops being a
+  // scroll container of its own; so it does where tables are below it, since
+  // they scroll with it. Its docked cards are in a band at the foot of the
+  // window instead. A table below has its cards above it, docked or not.
+  const docked =
+    first && overview?.dock_cards === true ? (overview.cards ?? []) : [];
   const cards = docked.length > 0 ? [] : (overview?.cards ?? []);
   const sections = overview?.sections ?? [];
   const summarised = cards.length > 0 || sections.length > 0;
+  const stacked = first !== undefined && (summarised || first.lower.length > 0);
 
   /** A card's link leaves the table the way the switcher does: once what was
    *  typed has been written, and not at all while a save is failing. */
@@ -666,15 +425,15 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   );
 
   useEffect(() => {
-    const id = focusEntry.current;
+    const id = t.focusEntry.current;
     if (id === null) return;
-    focusEntry.current = null;
+    t.focusEntry.current = null;
     paneRef.current
       ?.querySelector<HTMLElement>(
         `tr[data-entry="${id}"] > td:not(:first-child) :is(input, select, textarea, button)`,
       )
       ?.focus();
-  }, [entries]);
+  }, [entries, t.focusEntry]);
 
   // Where the header and the footer sit against the box the table is drawn
   // in, since their outer corners round only where they are the box's: the
@@ -699,7 +458,7 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
     const grid = tableRef.current;
     if (!pane || !grid) return;
     const box = pane.getBoundingClientRect();
-    const table = grid.getBoundingClientRect();
+    const drawnTable = grid.getBoundingClientRect();
     const top = box.top + pane.clientTop;
     const bottom = box.bottom - pane.clientTop;
     const away = (from: number, edge: number) => Math.abs(from - edge) > 0.5;
@@ -716,8 +475,8 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
         (away(foot.getBoundingClientRect().bottom, bottom) ||
           away(drawn(foot).bottom, bottom)),
     );
-    setNarrow(table.right < box.right - pane.clientLeft - 0.5);
-    setTooWide(table.width > pane.clientWidth + 1);
+    setNarrow(drawnTable.right < box.right - pane.clientLeft - 0.5);
+    setTooWide(drawnTable.width > pane.clientWidth + 1);
   }, []);
 
   const loaded = schema !== null;
@@ -736,25 +495,33 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
     if (body) observer.observe(body);
     if (block) observer.observe(block);
     return () => observer.disconnect();
-  }, [loaded, summarised, markStuck]);
+  }, [loaded, stacked, markStuck]);
 
   // ── Reordering, which a sorted view has no order to reorder ───────────────
   const dragSource = useRef<number | null>(null);
 
-  const onDrop = useCallback((to: number) => {
-    const from = dragSource.current;
-    dragSource.current = null;
-    if (from === null) return;
-    forgetUndo();
-    setEntries((prev) => moveEntry(prev, from, to));
-  }, []);
+  const onDrop = useCallback(
+    (to: number) => {
+      const from = dragSource.current;
+      dragSource.current = null;
+      if (from === null) return;
+      t.moveRow(from, to);
+    },
+    [t.moveRow],
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
-  if (loadError) {
+  if (t.loadError) {
     return (
-      <div className="rounded-lg border border-bad/40 bg-bad/10 p-4 sm:p-6">
-        <p className="font-mono text-sm text-bad">{loadError}</p>
-        <button className="btn mt-4" onClick={() => void load()}>
+      <div
+        className={
+          "rounded-lg border border-bad/40 bg-bad/10 p-4 sm:p-6" + (first ? " mt-3" : " mt-8")
+        }
+      >
+        <p className="font-mono text-sm text-bad">
+          {first ? t.loadError : `${name}: ${t.loadError}`}
+        </p>
+        <button className="btn mt-4" onClick={() => void t.load()}>
           Retry
         </button>
       </div>
@@ -762,7 +529,7 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   }
 
   if (!schema) {
-    return <p className="font-mono text-[11px] text-muted">Loading…</p>;
+    return <p className="mt-3 font-mono text-[11px] text-muted">Loading…</p>;
   }
 
   const banner = saveBanner(save);
@@ -780,14 +547,14 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
     : link
       ? CONTROLS_WITH_LINK
       : CONTROLS;
-  const savedById = new Map(saved.map((e) => [e.id, e.row]));
+  const savedById = new Map(t.saved.map((e) => [e.id, e.row]));
   const footer = overview?.footer;
   const headCls =
     "sticky top-0 z-20 border-b border-border bg-raised py-2 font-medium";
-  // Under a summary the table is as wide as the block it shares with it, and
-  // the width it has beyond its columns' own goes to its wide columns, or to
-  // its first where none is wide.
-  const fills = summarised ? fillFields(columns) : NO_FILLS;
+  // In a block, the table is as wide as the block, and the width it has
+  // beyond its columns' own goes to its wide columns, or to its first where
+  // none is wide. A table below is as wide as its columns.
+  const fills = stacked ? fillFields(columns) : NO_FILLS;
   // How deep each row is shaded under each column that shades within groups.
   const shades = new Map(
     columns
@@ -822,11 +589,11 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
         }
         linkTitle={linkTitle}
         go={go}
-        onCell={setCell}
-        onMark={markCell}
-        onMapEntry={setMapEntry}
-        onCancel={cancelCell}
-        onDelete={onDelete}
+        onCell={t.setCell}
+        onMark={t.markCell}
+        onMapEntry={t.setMapEntry}
+        onCancel={t.cancelCell}
+        onDelete={t.onDelete}
         onDragStart={() => (dragSource.current = idx)}
         onDrop={() => onDrop(idx)}
       />
@@ -845,7 +612,7 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   const grid = (
     <table
       ref={tableRef}
-      className={"editor-grid border-collapse text-left" + (summarised ? " w-full" : "")}
+      className={"editor-grid border-collapse text-left" + (stacked ? " w-full" : "")}
       style={{ "--controls": `${controls}px` } as React.CSSProperties}
     >
       <thead>
@@ -866,7 +633,7 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
                 (i === 0 ? " sticky left-[var(--controls)] z-30 bg-raised" : "") +
                 // A column that does not fill is as narrow as its cells
                 // let it be, which leaves the rest to those that do.
-                (summarised && !fills.has(column.field) ? " w-[1%]" : "")
+                (stacked && !fills.has(column.field) ? " w-[1%]" : "")
               }
             >
               {schema.sortable ? (
@@ -954,103 +721,115 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
     (footStuck ? " foot-stuck" : "") +
     (narrow ? " narrow" : "");
 
-  // A table is data, and its widths are counted in characters, so the whole of
-  // it is set in the monospaced face at the size the grid was designed around.
-  return (
-    <div className="flex min-h-0 flex-1 flex-col font-mono text-[13px]">
-      <div className="flex flex-none flex-wrap items-center gap-2 sm:gap-3">
-        <input
-          type="search"
-          value={filter}
-          onChange={(e) => {
-            setFilter(e.target.value);
-            setFilterNote(false);
-          }}
-          placeholder="Filter rows…  (try header:terms)"
-          aria-label="Filter rows"
-          autoComplete="off"
-          spellCheck={false}
-          className="field h-9 min-w-0 flex-1 border border-border bg-page sm:w-80 sm:flex-none"
-        />
-        {paramControls.map((param, i) => (
-          <ParamControl
-            key={`${i}-${param.key}`}
-            param={param}
-            value={settled[param.key] ?? ""}
-            onAsk={(key, value) => void ask(key, value)}
-            inline
-          />
-        ))}
-        <div className="flex items-center gap-2 sm:ml-auto sm:gap-3">
-          {errors.length > 0 && (
-            <span className="font-mono text-[11px] text-bad">
-              {errors.length} validation error(s)
-            </span>
-          )}
-          <SaveBadge save={save} notice={notice} />
-          <button
-            className="btn h-9"
-            onClick={() => void flush().then(() => load())}
-            title="Write anything pending, then re-read from disk. Anything that cannot be written is discarded."
-          >
+  // A failure or a refusal is the table's own, drawn above it; a table below
+  // names itself in it, since the page has more than one.
+  const bannerBlock = banner && (
+    <div
+      role="alert"
+      className="mt-2 flex-none rounded-lg border border-bad/50 bg-bad/10 px-3 py-2"
+    >
+      <p className="font-mono text-[12px] text-bad">
+        {first ? banner.message : `${name}: ${banner.message}`}
+      </p>
+      <p className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
+        {banner.detail}
+        {save.kind === "stale" ? (
+          <button className="btn h-8" onClick={() => void t.load()}>
             Reload
           </button>
-        </div>
-      </div>
-
-      {banner && (
-        <div
-          role="alert"
-          className="mt-2 flex-none rounded-lg border border-bad/50 bg-bad/10 px-3 py-2"
-        >
-          <p className="font-mono text-[12px] text-bad">{banner.message}</p>
-          <p className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
-            {banner.detail}
-            {save.kind === "stale" ? (
-              <button className="btn h-8" onClick={() => void load()}>
-                Reload
-              </button>
-            ) : (
-              <button className="btn h-8" onClick={() => void flush()}>
-                Save now
-              </button>
-            )}
-          </p>
-        </div>
-      )}
-
-      {undoable.length > 0 && (
-        <div className="mt-2 flex flex-none flex-wrap items-center gap-2 rounded-lg border border-border bg-raised px-3 py-2">
-          <span className="text-[11px] text-muted">
-            {undoable.length === 1
-              ? "Row deleted."
-              : `${undoable.length} rows deleted.`}
-          </span>
-          <button className="btn btn-primary h-8" onClick={undo}>
-            Undo
+        ) : (
+          <button className="btn h-8" onClick={() => void t.flush()}>
+            Save now
           </button>
-        </div>
-      )}
+        )}
+      </p>
+    </div>
+  );
 
-      {summarised ? (
-        // The summary and the table scroll as one body, which holds the
-        // table's header at its top and its footer at its foot. The box the
-        // table is drawn in is not a scroll container of its own, unless the
-        // table is wider than it, when it scrolls sideways instead and gives
-        // up the holding.
+  const undoBlock = t.undoable.length > 0 && (
+    <div className="mt-2 flex flex-none flex-wrap items-center gap-2 rounded-lg border border-border bg-raised px-3 py-2">
+      <span className="text-[11px] text-muted">
+        {t.undoable.length === 1 ? "Row deleted." : `${t.undoable.length} rows deleted.`}
+      </span>
+      <button className="btn btn-primary h-8" onClick={t.undo}>
+        Undo
+      </button>
+    </div>
+  );
+
+  const datalistBlock = Object.entries(datalists).map(([id, options]) => (
+    <datalist key={id} id={datalistId(table, id)}>
+      {options.map((option) => (
+        <option key={option} value={option} />
+      ))}
+    </datalist>
+  ));
+
+  if (!first) {
+    return (
+      <TableScope.Provider value={table}>
+      <section className="lower-table mt-10" aria-label={name}>
+        {title && <h3 className="mb-3 font-semibold">{title}</h3>}
+        {bannerBlock}
+        {undoBlock}
+        {summarised && (
+          <div className="mb-5 mt-2">
+            <Summary cards={cards} sections={sections} onAsk={leaveTo} />
+          </div>
+        )}
+        <div
+          ref={paneRef}
+          onScroll={markStuck}
+          className={
+            "table-box lower-box rounded-lg border border-border bg-surface/40" + boxState
+          }
+        >
+          {grid}
+        </div>
+        {datalistBlock}
+      </section>
+      </TableScope.Provider>
+    );
+  }
+
+  const count = (
+    <p className="mt-2 flex-none font-mono text-[11px] text-muted">
+      {filtering
+        ? `${visible.length} of ${entries.length} record(s).`
+        : `${entries.length} record(s).`}
+      {first.filterNote && " Filter cleared so the new row is in view."}
+      {sort &&
+        (grouped
+          ? " Sorted within each group; writes keep the stored order."
+          : " Sorted; dragging is off and writes keep the stored order.")}
+      {!sort && filtering && !grouped && " Dragging is off while a filter is on."}
+    </p>
+  );
+
+  return (
+    <TableScope.Provider value={table}>
+      {bannerBlock}
+      {undoBlock}
+
+      {stacked ? (
+        // The summary, the table and the tables below it scroll as one body,
+        // which holds the table's header at its top and its footer at its foot
+        // while its rows pass. The box the table is drawn in is not a scroll
+        // container of its own, unless the table is wider than it, when it
+        // scrolls sideways instead and gives up the holding.
         <div
           ref={bodyRef}
           onScroll={markStuck}
-          inert={switching}
-          aria-busy={switching || undefined}
+          inert={first.switching}
+          aria-busy={first.switching || undefined}
           className={
             "summary-body mt-3 min-h-0 flex-1 overflow-y-auto transition-opacity" +
             (footer ? " has-footer" : "") +
-            (switching ? " opacity-50" : "")
+            (first.switching ? " opacity-50" : "")
           }
         >
           <div className="summary-block">
-            <Summary cards={cards} sections={sections} onAsk={leaveTo} />
+            {summarised && <Summary cards={cards} sections={sections} onAsk={leaveTo} />}
             <div
               ref={paneRef}
               onScroll={markStuck}
@@ -1063,6 +842,10 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
               {grid}
             </div>
           </div>
+          {/* The count is the first table's, so where tables are below it,
+              it is under the first table rather than under the last. */}
+          {first.lower.length > 0 && count}
+          {first.lower}
         </div>
       ) : (
         // The pane is the only thing that scrolls sideways, and it takes
@@ -1070,41 +853,25 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
         <div
           ref={paneRef}
           onScroll={markStuck}
-          inert={switching}
-          aria-busy={switching || undefined}
+          inert={first.switching}
+          aria-busy={first.switching || undefined}
           className={
             "table-box mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40 transition-opacity" +
             boxState +
             (footer ? " has-footer" : "") +
-            (switching ? " opacity-50" : "")
+            (first.switching ? " opacity-50" : "")
           }
         >
           {grid}
         </div>
       )}
 
-      <p className="mt-2 flex-none font-mono text-[11px] text-muted">
-        {filtering
-          ? `${visible.length} of ${entries.length} record(s).`
-          : `${entries.length} record(s).`}
-        {filterNote && " Filter cleared so the new row is in view."}
-        {sort &&
-          (grouped
-            ? " Sorted within each group; writes keep the stored order."
-            : " Sorted; dragging is off and writes keep the stored order.")}
-        {!sort && filtering && !grouped && " Dragging is off while a filter is on."}
-      </p>
+      {first.lower.length === 0 && count}
 
       {docked.length > 0 && <CardDock cards={docked} onAsk={leaveTo} />}
 
-      {Object.entries(datalists).map(([id, options]) => (
-        <datalist key={id} id={`dl-${id}`}>
-          {options.map((option) => (
-            <option key={option} value={option} />
-          ))}
-        </datalist>
-      ))}
-    </div>
+      {datalistBlock}
+    </TableScope.Provider>
   );
 }
 
@@ -1424,6 +1191,7 @@ function Cell({
   onMark,
   onMapEntry,
 }: CellProps) {
+  const scope = useContext(TableScope);
   const row = entry.row;
   const size = controlSize(column, fill);
   const [editing, setEditing] = useState(false);
@@ -1744,7 +1512,7 @@ function Cell({
         <input
           type="text"
           value={shown}
-          list={column.datalist ? `dl-${column.datalist}` : undefined}
+          list={column.datalist ? datalistId(scope, column.datalist) : undefined}
           {...typedInto<HTMLInputElement>(
             shown,
             (box) => onCell(entry.id, column, box.value),

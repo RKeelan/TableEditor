@@ -40,6 +40,9 @@ export interface TableGet {
   version: string;
   params?: ViewParam[];
   args?: Record<string, string>;
+  /** The tables drawn below this one on its page, in order, each with its
+   *  title where it is headed with one. Absent where there are none. */
+  below?: { table: string; title?: string }[];
 }
 
 /** The fields of one row the reader typed into since it was last written,
@@ -173,17 +176,23 @@ export function postAction(
   }).then((r) => asJson<ActionResult>(r));
 }
 
-/** The body of a derive or a write: the rows, and the edits where there are
- *  any, since a body that lists none is simply not stamped. */
+/** The rows the other tables on a page have on screen, by table. */
+export type Alongside = Record<string, readonly Row[]>;
+
+/** The body of a derive or a write: the rows, the edits where there are any,
+ *  since a body that lists none is simply not stamped, and the other tables'
+ *  rows where the table shares its page. */
 export function rowsBody(
   rows: readonly Row[],
   edited: readonly EditedLine[],
   version?: string,
+  alongside: Alongside = {},
 ): string {
   return JSON.stringify({
     rows,
     ...(version === undefined ? {} : { version }),
     ...(edited.length === 0 ? {} : { edited }),
+    ...(Object.keys(alongside).length === 0 ? {} : { alongside }),
   });
 }
 
@@ -200,11 +209,12 @@ export function putTable(
   rows: readonly Row[],
   version: string,
   edited: readonly EditedLine[] = [],
+  alongside: Alongside = {},
 ): Promise<PutResult> {
   return fetch(`${api()}/${table}${querySuffix(args)}`, {
     method: "PUT",
     headers: JSON_HEADERS,
-    body: rowsBody(rows, edited, version),
+    body: rowsBody(rows, edited, version, alongside),
   }).then((r) => asJson<PutResult>(r));
 }
 
@@ -215,10 +225,11 @@ export function deriveTable(
   args: Record<string, string>,
   rows: readonly Row[],
   edited: readonly EditedLine[] = [],
+  alongside: Alongside = {},
 ): Promise<DeriveResult> {
   return fetch(`${api()}/${table}/derive${querySuffix(args)}`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: rowsBody(rows, edited),
+    body: rowsBody(rows, edited, undefined, alongside),
   }).then((r) => asJson<DeriveResult>(r));
 }
