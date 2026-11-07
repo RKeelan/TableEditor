@@ -65,7 +65,14 @@ import {
   writeThenRead,
 } from "../lib/save";
 import { type RowTarget, type Tone, savedRowTarget, tableHref } from "../lib/view";
-import { cellSettings, gridColumns, rowReadOnly, underlayOf } from "../lib/cells";
+import {
+  cellReadOnly,
+  cellSettings,
+  figureOf,
+  gridColumns,
+  rowReadOnly,
+  underlayOf,
+} from "../lib/cells";
 import { useCellNote } from "./CellNote";
 import { DateBox } from "./DateBox";
 import { MapCell } from "./MapCell";
@@ -1221,11 +1228,12 @@ function Cell({
   const scope = useContext(TableScope);
   const row = entry.row;
   const size = controlSize(column, fill);
-  // What the derivation says about this cell, and the figure it stands in for
-  // a blank one with. The underlay is judged against the row on screen, so it
-  // goes on the first keystroke.
+  // What the derivation says about this cell, the figure it stands in for a
+  // blank one with, and the figure it works out for it. The underlay is
+  // judged against the row on screen, so it goes on the first keystroke.
   const settings = schema ? cellSettings(schema, derived, column.field) : {};
   const underlay = underlayOf(column, row[column.field], settings);
+  const worked = figureOf(column, settings);
   const note = useCellNote({
     column,
     row,
@@ -1241,7 +1249,7 @@ function Cell({
   // typed keeps even through a moment with none: see withLineBreaksOf.
   const breaksFrom = useRef<unknown>(undefined);
   const lines = editing || editsAsLines(column, row[column.field]);
-  const mismatched = cellMismatch(column, row);
+  const mismatched = worked === null && cellMismatch(column, row);
   const tdCls =
     "py-1 pr-3 whitespace-nowrap" +
     (sticky ? ` first-column sticky left-[var(--controls)] z-10 ${sticky}` : "") +
@@ -1308,30 +1316,40 @@ function Cell({
   // A stored value the reader cannot edit is data rather than an annotation,
   // so it is read at the grid's size: a figure in ink, right-aligned with its
   // unit after it, and anything else in the muted tone. A value that is not
-  // what its column describes is shown as it is stored and marked.
-  if (column.read_only || settings.read_only) {
+  // what its column describes is shown as it is stored and marked. A figure
+  // the derivation works out is drawn as a stored one is, in place of whatever
+  // the cell holds, so it is never marked.
+  if (cellReadOnly(column, settings)) {
     const text = cellText(column, row, derived);
-    const figure = cellFigure(column, row, derived) ?? underlay;
+    const figure = worked ?? cellFigure(column, row, derived) ?? underlay;
     const parts =
       format && figure !== null && !mismatched
         ? numberParts(figure, format)
-        : underlay !== null
-          ? { number: String(underlay), unit: null, tone: null }
+        : worked !== null || underlay !== null
+          ? { number: String(figure), unit: null, tone: null }
           : { number: text, unit: null, tone: null };
-    const sum = column.type === "amount" && isSum(value);
+    const sum = worked === null && column.type === "amount" && isSum(value);
     return (
       <td {...attrs} className={tdCls} style={tdStyle}>
         <span
           className={
             "readout stored" +
-            (format || column.type === "amount" || underlay !== null
+            (format || column.type === "amount" || worked !== null || underlay !== null
               ? " figure text-right tabular-nums"
               : "") +
             (sum ? " amount-sum" : "") +
             (underlay !== null ? " underlaid" : "")
           }
           style={size}
-          title={mismatched ? oddTitle : sum ? String(value) : text || undefined}
+          title={
+            mismatched
+              ? oddTitle
+              : sum
+                ? String(value)
+                : worked === null
+                  ? text || undefined
+                  : undefined
+          }
           data-negative={parts.tone ?? undefined}
         >
           {parts.number}

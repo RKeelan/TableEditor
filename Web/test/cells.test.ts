@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   cellReadOnly,
   cellSettings,
+  figureOf,
   gridColumns,
   noteColumns,
   noteFlagRaw,
@@ -22,12 +23,15 @@ const schema = { cells_from: "cells", notes_in: "notes" };
 describe("a cell's settings from the derivation", () => {
   test("are read from the key the schema names, by field", () => {
     const derived = {
-      cells: { jan: { tone: "bad", read_only: true, underlay: 137.62, note: "Projected" } },
+      cells: {
+        jan: { tone: "bad", read_only: true, underlay: 137.62, figure: 4210.5, note: "Projected" },
+      },
     };
     expect(cellSettings(schema, derived, "jan")).toEqual({
       tone: "bad",
       read_only: true,
       underlay: 137.62,
+      figure: 4210.5,
       note: "Projected",
     });
     expect(cellSettings(schema, derived, "feb")).toEqual({});
@@ -42,7 +46,9 @@ describe("a cell's settings from the derivation", () => {
 
   test("leave out a setting of the wrong kind", () => {
     const derived = {
-      cells: { jan: { tone: "red", read_only: "yes", underlay: "137", note: " " } },
+      cells: {
+        jan: { tone: "red", read_only: "yes", underlay: "137", figure: "4210.5", note: " " },
+      },
     };
     expect(cellSettings(schema, derived, "jan")).toEqual({});
   });
@@ -92,6 +98,31 @@ describe("an underlay", () => {
     expect(underlayOf(number, undefined, { underlay: 5 })).toBe(5);
     expect(underlayOf(line, undefined, { underlay: 5 })).toBeNull();
     expect(underlayOf(jan, undefined, {})).toBeNull();
+  });
+
+  test("gives way to a derived figure", () => {
+    expect(underlayOf(jan, undefined, { underlay: 137.62, figure: 4210.5 })).toBeNull();
+  });
+});
+
+describe("a derived figure", () => {
+  test("shows in place of whatever the cell holds and makes it read-only", () => {
+    expect(figureOf(jan, { figure: 4210.5 })).toBe(4210.5);
+    expect(figureOf(jan, { figure: 0 })).toBe(0);
+    expect(figureOf(jan, {})).toBeNull();
+    expect(cellReadOnly(jan, { figure: 4210.5 })).toBe(true);
+    expect(rowReadOnly(schema, [jan, total], { cells: { jan: { figure: 4210.5 } } })).toBe(true);
+  });
+
+  test("shows on amount and number cells only, and leaves any other as it was", () => {
+    const number: Column = { field: "n", label: "N", type: "number" };
+    expect(figureOf(number, { figure: 5 })).toBe(5);
+    expect(figureOf(line, { figure: 5 })).toBeNull();
+    expect(cellReadOnly(line, { figure: 5 })).toBe(false);
+  });
+
+  test("leaves a derived note to mark its cell, as an underlay does not", () => {
+    expect(noteMarked("", { figure: 4210.5, note: "From the stubs" }, false)).toBe(true);
   });
 });
 

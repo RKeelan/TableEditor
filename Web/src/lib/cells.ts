@@ -28,6 +28,9 @@ export function cellSettings(
   if (typeof raw.underlay === "number" && Number.isFinite(raw.underlay)) {
     settings.underlay = raw.underlay;
   }
+  if (typeof raw.figure === "number" && Number.isFinite(raw.figure)) {
+    settings.figure = raw.figure;
+  }
   if (typeof raw.note === "string" && raw.note.trim() !== "") settings.note = raw.note;
   return settings;
 }
@@ -44,9 +47,14 @@ export function noteColumns(columns: readonly Column[], field: string): Column[]
 }
 
 /** Whether a cell is read-only: by its column, being computed, or by its
- *  derivation. */
+ *  derivation, which makes it so by saying so or by giving it a figure. */
 export function cellReadOnly(column: Column, settings: CellSettings): boolean {
-  return column.type === "computed" || column.read_only === true || settings.read_only === true;
+  return (
+    column.type === "computed" ||
+    column.read_only === true ||
+    settings.read_only === true ||
+    figureOf(column, settings) !== null
+  );
 }
 
 /** Whether every cell of a row is read-only, by its column or its derivation,
@@ -71,15 +79,24 @@ export function isBlank(value: unknown): boolean {
 /** The figure a cell shows in place of its value, or null. Only an `amount`
  *  or `number` cell shows one, and only while what it holds on screen is
  *  blank, so the figure goes on the first keystroke and comes back when the
- *  cell is cleared. */
+ *  cell is cleared. A cell with a derived figure shows that instead. */
 export function underlayOf(
   column: Column,
   value: unknown,
   settings: CellSettings,
 ): number | null {
   if (column.type !== "amount" && column.type !== "number") return null;
+  if (figureOf(column, settings) !== null) return null;
   if (settings.underlay === undefined || !isBlank(value)) return null;
   return settings.underlay;
+}
+
+/** The figure the derivation works out for a cell, shown plain in place of
+ *  whatever it holds, or null. Only an `amount` or `number` cell shows one,
+ *  and a cell that does is read-only. */
+export function figureOf(column: Column, settings: CellSettings): number | null {
+  if (column.type !== "amount" && column.type !== "number") return null;
+  return settings.figure ?? null;
 }
 
 /** The note stored on a row's cell, or "" where it has none. */

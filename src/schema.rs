@@ -621,8 +621,8 @@ impl Column {
 }
 
 /// What a table's derivation says about one cell of a row: a tone for it, that
-/// it cannot be edited, a figure to show while it is blank, and a note about
-/// it. Each is written only when set. A table returns them in its derivation
+/// it cannot be edited, a figure to show while it is blank, a figure it shows
+/// in place of what it holds, and a note about it. Each is written only when set. A table returns them in its derivation
 /// under the key [`Schema::cells_from`] names, keyed by column field.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CellSettings {
@@ -632,6 +632,8 @@ pub struct CellSettings {
     read_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     underlay: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    figure: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
 }
@@ -661,6 +663,18 @@ impl CellSettings {
     /// The page counts it in nothing; the derivation's totals are its own.
     pub fn underlay(mut self, value: f64) -> Self {
         self.underlay = Some(value);
+        self
+    }
+
+    /// A figure the cell shows in place of whatever it holds, read by its
+    /// column's format and drawn as a stored figure is, plain rather than in
+    /// the estimate look: a value the derivation works out rather than one
+    /// typed. The cell is read-only and written back as it was read, and the
+    /// figure is shown in place of any underlay. Honoured on `amount` and
+    /// `number` columns and ignored on any other. The page counts it in
+    /// nothing; the derivation's totals are its own.
+    pub fn figure(mut self, value: f64) -> Self {
+        self.figure = Some(value);
         self
     }
 
@@ -1347,6 +1361,11 @@ mod tests {
             .unwrap(),
             json!({ "tone": "bad", "read_only": true, "underlay": 137.62,
                     "note": "Projected, average" })
+        );
+        assert_eq!(
+            serde_json::to_value(CellSettings::new().figure(4210.5).note("From the stubs"))
+                .unwrap(),
+            json!({ "figure": 4210.5, "note": "From the stubs" })
         );
     }
 
