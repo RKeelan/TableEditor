@@ -530,6 +530,14 @@
     left: 0;
     z-index: 10;
   }
+  /* So does its title, beside the controls as a row's first cell is, so a
+     table scrolled sideways still says which group each value belongs to.
+     A title spanning several columns stays put at its whole width. */
+  tr.group-head > :nth-child(2) {
+    position: sticky;
+    left: var(--controls);
+    z-index: 10;
+  }
   /* The title of a heading or the footer, with whatever follows it, sits on
      the line of the boxes and read-outs beside it and starts where the text
      in the boxes beneath it does. */
@@ -588,6 +596,10 @@
   }
   tr.total > td:first-child {
     left: 0;
+    z-index: 30;
+  }
+  tr.total > td:nth-child(2) {
+    left: var(--controls);
     z-index: 30;
   }
   /* A row brought into view by the keyboard is not left under the footer,
