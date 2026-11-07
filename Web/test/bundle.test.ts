@@ -53,6 +53,14 @@ describe.skipIf(!built)("the built bundle", () => {
     expect(bundle).toContain("<!-- table-editor:head -->");
   });
 
+  test("keeps the colours of a cell's resting well", () => {
+    // The build lowers each color-mix into a fallback and an @supports block,
+    // and has kept only the first of two in one rule, leaving the border at
+    // its fallback of solid ink.
+    expect(bundle).toContain("background:color-mix(in srgb,var(--ink)7%,transparent)");
+    expect(bundle).toContain("border-color:color-mix(in srgb,var(--ink)9%,transparent)");
+  });
+
   test("carries no carriage return, so every platform builds the same page", () => {
     // Bun copies the markup of index.html through as it finds it, so a source
     // checked out with CRLF puts a carriage return in the page, and the page a
