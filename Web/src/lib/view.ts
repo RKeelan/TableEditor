@@ -8,7 +8,8 @@
 // the write does, are the server's.
 
 import type { Column, NumberFormat, Row, RowLink, SelectOption } from "./schema";
-import { cellText, unitChars } from "./rows";
+import { figureTone } from "./format";
+import { cellFigure, cellText, formatOf, unitChars } from "./rows";
 
 export interface ViewParam {
   key: string;
@@ -548,7 +549,9 @@ export function viewCellText(column: Column, row: Row): string {
 export interface RowCard {
   title: string;
   href: string | null;
-  lines: { field: string; label: string; text: string }[];
+  /** Each line's field, label and text, and the tone of a figure below zero
+   *  where its column's format names one. */
+  lines: { field: string; label: string; text: string; tone?: Tone }[];
 }
 
 export function rowCardFor(columns: readonly Column[], row: Row): RowCard {
@@ -557,11 +560,16 @@ export function rowCardFor(columns: readonly Column[], row: Row): RowCard {
     title: first ? viewCellText(first, row) : "",
     href: first ? hrefFor(first, row) : null,
     lines: rest
-      .map((column) => ({
-        field: column.field,
-        label: column.label,
-        text: viewCellText(column, row),
-      }))
+      .map((column) => {
+        const format = formatOf(column);
+        const tone = format ? figureTone(cellFigure(column, row, row), format) : null;
+        return {
+          field: column.field,
+          label: column.label,
+          text: viewCellText(column, row),
+          ...(tone ? { tone } : {}),
+        };
+      })
       .filter((line) => line.text !== ""),
   };
 }

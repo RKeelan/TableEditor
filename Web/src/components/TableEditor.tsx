@@ -9,9 +9,16 @@ import {
   useState,
 } from "react";
 import { type DeriveResult, deriveTable, getTable, putTable } from "../lib/api";
+import { amountEdit, amountEditText, isSum } from "../lib/amount";
 import { dateEdit } from "../lib/dates";
 import { describeError } from "../lib/errors";
-import { editText, formatNumber, numberParts, parseEditText } from "../lib/format";
+import {
+  editText,
+  figureTone,
+  formatNumber,
+  numberParts,
+  parseEditText,
+} from "../lib/format";
 import {
   type DrawnGroup,
   fallbackTitle,
@@ -21,6 +28,7 @@ import {
   lineCells,
   lineValueText,
   newGroupRow,
+  shadeDepths,
 } from "../lib/groups";
 import {
   type Column,
@@ -35,6 +43,7 @@ import {
   type Sort,
   boxInput,
   boxText,
+  cellFigure,
   cellMismatch,
   cellText,
   cellValue,
@@ -84,7 +93,7 @@ import {
   writeThenRead,
   writer,
 } from "../lib/save";
-import { type RowTarget, savedRowTarget, tableHref } from "../lib/view";
+import { type RowTarget, type Tone, savedRowTarget, tableHref } from "../lib/view";
 import { DateBox } from "./DateBox";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
@@ -779,6 +788,15 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   // the width it has beyond its columns' own goes to its wide columns, or to
   // its first where none is wide.
   const fills = summarised ? fillFields(columns) : NO_FILLS;
+  // How deep each row is shaded under each column that shades within groups.
+  const shades = new Map(
+    columns
+      .filter((column) => column.shaded_within !== undefined)
+      .map((column) => [
+        column.field,
+        shadeDepths(schema, column, entries.map((e) => e.row), derived as Derived[]),
+      ]),
+  );
 
   const rowAt = (idx: number) => {
     const entry = entries[idx];
@@ -791,6 +809,7 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
         columns={columns}
         fills={fills}
         derived={derived[idx] as Derived}
+        shades={shades}
         errFields={new Set(errs.map((e) => e.field ?? ""))}
         errTitle={errs
           .map((e) => `${e.field ? e.field + ": " : ""}${e.message}`)
@@ -1105,6 +1124,8 @@ interface RowProps {
    *  whatever width the table has beyond its columns' own. */
   fills: ReadonlySet<string>;
   derived: Derived;
+  /** How deep each shading column shades each row: see shadeDepths. */
+  shades: ReadonlyMap<string, readonly (number | null)[]>;
   errFields: Set<string>;
   errTitle: string;
   /** Whether the row has a drag handle at all, which a grouped table's do
@@ -1222,6 +1243,7 @@ function TableRow(p: RowProps) {
           entry={p.entry}
           position={p.position}
           derived={p.derived}
+          shade={p.shades.get(column.field)?.[p.position] ?? null}
           error={p.errFields.has(column.field)}
           sticky={i === 0 ? stuck : null}
           fill={p.fills.has(column.field)}
@@ -1311,7 +1333,7 @@ function LineCells({
         }
         if (cell.kind === "empty") return <td key={i} />;
         return (
-          <td key={i}>
+          <td key={i} className={cell.column.strong ? "figure-strong" : undefined}>
             <LineValue
               column={cell.column}
               value={cell.value}
@@ -1341,12 +1363,13 @@ function LineValue({
   const parts =
     format && typeof value === "number"
       ? numberParts(value, format)
-      : { number: text, unit: null };
+      : { number: text, unit: null, tone: null };
   return (
     <span
       className="readout figure text-right tabular-nums"
       style={controlSize(column, fill)}
       title={text || undefined}
+      data-negative={parts.tone ?? undefined}
     >
       {parts.number}
       {parts.unit && <span className="unit">{parts.unit}</span>}
@@ -1367,6 +1390,9 @@ interface CellProps {
   entry: RowEntry;
   position: number;
   derived: Derived;
+  /** How deep the cell is shaded, or null where its column does not shade
+   *  its row. */
+  shade: number | null;
   error: boolean;
   /** The background to keep the first column readable as the rest scrolls. */
   sticky: string | null;
@@ -1390,6 +1416,7 @@ function Cell({
   entry,
   position,
   derived,
+  shade,
   error,
   sticky,
   fill,
@@ -1409,7 +1436,12 @@ function Cell({
     "py-1 pr-3 whitespace-nowrap" +
     (sticky ? ` sticky left-[var(--controls)] z-10 ${sticky}` : "") +
     (error ? " cell-error" : "") +
-    (mismatched ? " cell-mismatch" : "");
+    (mismatched ? " cell-mismatch" : "") +
+    (column.strong ? " figure-strong" : "") +
+    (shade !== null ? " shaded" : "");
+  // The depth of a shaded cell, which the stylesheet mixes into its tone.
+  const tdStyle =
+    shade === null ? undefined : ({ "--shade": `${shade}%` } as React.CSSProperties);
   const value = row[column.field];
   const label = `${column.label}, row ${position + 1}`;
   const oddTitle =
@@ -1417,7 +1449,9 @@ function Cell({
       ? column.allow_month
         ? "Not a day written YYYY-MM-DD or a month written YYYY-MM, which is what this column holds"
         : "Not a day written YYYY-MM-DD, which is what this column holds"
-      : `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
+      : column.type === "amount" && typeof value === "string"
+        ? "Neither a number nor a sum, which is what this column holds"
+        : `Stored as ${value === null ? "null" : typeof value}, which is not what this column holds`;
 
   const format = formatOf(column);
 
@@ -1430,13 +1464,14 @@ function Cell({
       const parts =
         typeof shown === "number"
           ? numberParts(shown, format)
-          : { number: text, unit: null };
+          : { number: text, unit: null, tone: null };
       return (
-        <td className={tdCls}>
+        <td className={tdCls} style={tdStyle}>
           <span
             className="readout figure text-right tabular-nums"
             style={size}
             title={text || undefined}
+            data-negative={parts.tone ?? undefined}
           >
             {parts.number}
             {parts.unit && <span className="unit">{parts.unit}</span>}
@@ -1445,7 +1480,7 @@ function Cell({
       );
     }
     return (
-      <td className={tdCls}>
+      <td className={tdCls} style={tdStyle}>
         <span
           className="readout font-mono text-[11px] text-muted"
           style={size}
@@ -1463,18 +1498,23 @@ function Cell({
   // what its column describes is shown as it is stored and marked.
   if (column.read_only) {
     const text = cellText(column, row, derived);
+    const figure = cellFigure(column, row, derived);
     const parts =
-      format && typeof value === "number" && !mismatched
-        ? numberParts(value, format)
-        : { number: text, unit: null };
+      format && figure !== null && !mismatched
+        ? numberParts(figure, format)
+        : { number: text, unit: null, tone: null };
+    const sum = column.type === "amount" && isSum(value);
     return (
-      <td className={tdCls}>
+      <td className={tdCls} style={tdStyle}>
         <span
           className={
-            "readout stored" + (format ? " figure text-right tabular-nums" : "")
+            "readout stored" +
+            (format || column.type === "amount" ? " figure text-right tabular-nums" : "") +
+            (sum ? " amount-sum" : "")
           }
           style={size}
-          title={mismatched ? oddTitle : text || undefined}
+          title={mismatched ? oddTitle : sum ? String(value) : text || undefined}
+          data-negative={parts.tone ?? undefined}
         >
           {parts.number}
           {parts.unit && <span className="unit">{parts.unit}</span>}
@@ -1572,9 +1612,40 @@ function Cell({
     );
   }
 
+  if (column.type === "amount") {
+    const figure = cellFigure(column, row, derived);
+    const parts = mismatched
+      ? { number: cellText(column, row, derived), unit: null, tone: null }
+      : figure === null
+        ? { number: "", unit: null, tone: null }
+        : format
+          ? numberParts(figure, format)
+          : { number: String(figure), unit: null, tone: null };
+    return (
+      <td
+        className={tdCls + " amount-cell"}
+        style={tdStyle}
+        data-empty={value == null || value === "" || undefined}
+      >
+        <AmountField
+          shown={parts.number}
+          editText={mismatched ? cellText(column, row, derived) : amountEditText(value)}
+          sum={!mismatched && isSum(value) ? String(value) : null}
+          tone={parts.tone}
+          unit={format?.unit ?? null}
+          size={size}
+          label={label}
+          title={mismatched ? oddTitle : undefined}
+          onWrite={(raw) => onCell(entry.id, column, raw)}
+          onMark={() => onMark(entry.id, column)}
+        />
+      </td>
+    );
+  }
+
   if (column.type === "number" && format && !mismatched) {
     return (
-      <td className={tdCls}>
+      <td className={tdCls} style={tdStyle}>
         <NumberField
           value={typeof value === "number" ? value : null}
           format={format}
@@ -1725,6 +1796,7 @@ function NumberField({
   const [typed, setTyped] = useState<string | null>(null);
   const invalid = typed !== null && parseEditText(typed, format).kind === "invalid";
   const shown = typed ?? (value === null ? "" : formatNumber(value, format));
+  const tone = typed === null && value !== null ? figureTone(value, format) : null;
   return (
     <span className="inline-flex items-baseline" style={size}>
       <input
@@ -1755,6 +1827,7 @@ function NumberField({
         onBlur={() => setTyped(null)}
         aria-label={label}
         aria-invalid={invalid || undefined}
+        data-negative={tone ?? undefined}
         title={invalid ? "Reads as no number, so nothing is written" : undefined}
         className={
           "field h-8 text-right tabular-nums" +
@@ -1763,6 +1836,125 @@ function NumberField({
         }
       />
       {format.unit && <span className="unit">{format.unit}</span>}
+    </span>
+  );
+}
+
+// ── Amount ──────────────────────────────────────────────────────────────────
+interface AmountFieldProps {
+  /** What the cell shows at rest: the figure as its format reads it, a
+   *  stored value its column does not describe as it is stored, or nothing. */
+  shown: string;
+  /** What the cell shows focused: the stored number without commas, or the
+   *  sum as it is stored. */
+  editText: string;
+  /** The stored sum, where the cell holds one, which underlines the figure. */
+  sum: string | null;
+  tone: Tone | null;
+  unit: string | null;
+  /** How wide the box and its unit are together: see controlSize. */
+  size: React.CSSProperties;
+  label: string;
+  title: string | undefined;
+  onWrite: (raw: string) => void;
+  /** Record a keystroke that left the box reading as it did. */
+  onMark: () => void;
+}
+
+/** The fewest characters a focused amount's box is wide, so a sum has room
+ *  to be read whatever its column's width. */
+const AMOUNT_EDIT_CH = 18;
+
+/** An amount cell. At rest it shows the figure, right-aligned and formatted,
+ *  underlined with a dotted line where it is worked out from a sum. Focused,
+ *  it shows what is stored, all of it selected, in a box that widens
+ *  rightward over the cells after it to fit what is typed. Each keystroke
+ *  writes what the box reads as, a plain number or a sum; text that reads as
+ *  neither writes nothing, and the box is marked until it reads as one or is
+ *  left, when it shows the stored value again. */
+function AmountField({
+  shown,
+  editText,
+  sum,
+  tone,
+  unit,
+  size,
+  label,
+  title,
+  onWrite,
+  onMark,
+}: AmountFieldProps) {
+  // What is being typed, shown in place of the figure until the box is left;
+  // null at rest.
+  const [typed, setTyped] = useState<string | null>(null);
+  const invalid = typed !== null && amountEdit(typed).kind === "invalid";
+  const text = typed ?? shown;
+  const atRest = typed === null;
+  // A box clips the line under its text, so a sum's figure at rest is drawn
+  // over the box rather than in it.
+  const overlaid = atRest && sum !== null;
+  const width = atRest
+    ? undefined
+    : `max(100%, calc(${Math.max(AMOUNT_EDIT_CH, text.length + 1)}ch + var(--field-chrome)))`;
+  return (
+    <span className="inline-flex items-baseline" style={size}>
+      <span
+        className={
+          "amount-well relative block h-8" +
+          (size.width === undefined ? " w-20" : " min-w-0 flex-1")
+        }
+      >
+        <input
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          spellCheck={false}
+          value={text}
+          onFocus={(e) => {
+            setTyped(editText);
+            // On the next tick, so the click that focused the box does not put
+            // the caret where it landed and undo the selection.
+            const box = e.currentTarget;
+            setTimeout(() => {
+              if (document.activeElement === box) box.select();
+            }, 0);
+          }}
+          {...typedInto<HTMLInputElement>(
+            text,
+            (box) => {
+              setTyped(box.value);
+              if (amountEdit(box.value).kind !== "invalid") onWrite(box.value);
+            },
+            onMark,
+          )}
+          onBlur={() => setTyped(null)}
+          aria-label={label}
+          aria-invalid={invalid || undefined}
+          data-negative={(atRest && tone) || undefined}
+          title={
+            invalid
+              ? "Reads as no amount, so nothing is written"
+              : (title ?? (atRest && sum !== null ? sum : undefined))
+          }
+          style={{ width }}
+          className={
+            "field h-8 w-full tabular-nums" +
+            (atRest ? " text-right" : "") +
+            (overlaid ? " amount-under" : "") +
+            (invalid ? " cell-error" : "")
+          }
+        />
+        {overlaid && (
+          <span
+            className="amount-show amount-sum tabular-nums"
+            data-negative={tone ?? undefined}
+            aria-hidden
+          >
+            {shown}
+          </span>
+        )}
+      </span>
+      {unit && <span className="unit">{unit}</span>}
     </span>
   );
 }

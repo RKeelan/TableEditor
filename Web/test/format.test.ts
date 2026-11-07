@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type EditedNumber,
   editText,
+  figureTone,
   formatNumber,
   formattedText,
   numberParts,
@@ -81,14 +82,14 @@ describe("a formatted number", () => {
 
 describe("a formatted value's parts", () => {
   test("are the number and its unit", () => {
-    expect(numberParts(1234.5, cad)).toEqual({ number: "1,234.50", unit: "CAD" });
-    expect(numberParts(1234.5, money)).toEqual({ number: "1,234.50", unit: null });
+    expect(numberParts(1234.5, cad)).toEqual({ number: "1,234.50", unit: "CAD", tone: null });
+    expect(numberParts(1234.5, money)).toEqual({ number: "1,234.50", unit: null, tone: null });
   });
 
   test("give a value that is not a number as it is stored, with no unit", () => {
-    expect(numberParts("n/a", cad)).toEqual({ number: "n/a", unit: null });
-    expect(numberParts(null, cad)).toEqual({ number: "", unit: null });
-    expect(numberParts(undefined, cad)).toEqual({ number: "", unit: null });
+    expect(numberParts("n/a", cad)).toEqual({ number: "n/a", unit: null, tone: null });
+    expect(numberParts(null, cad)).toEqual({ number: "", unit: null, tone: null });
+    expect(numberParts(undefined, cad)).toEqual({ number: "", unit: null, tone: null });
   });
 
   test("read as one line with a space before the unit", () => {
@@ -104,14 +105,15 @@ describe("a card's figure", () => {
     expect(numberParts(1234567.89, cad)).toEqual({
       number: "1,234,567.89",
       unit: "CAD",
+      tone: null,
     });
-    expect(numberParts(-86.25, cad)).toEqual({ number: `${MINUS}86.25`, unit: "CAD" });
-    expect(numberParts(0.4521, percent(1))).toEqual({ number: "45.2%", unit: null });
+    expect(numberParts(-86.25, cad)).toEqual({ number: `${MINUS}86.25`, unit: "CAD", tone: null });
+    expect(numberParts(0.4521, percent(1))).toEqual({ number: "45.2%", unit: null, tone: null });
   });
 
   test("is empty where the server sent a figure that was not finite", () => {
     // The server sends one as null, and the card draws nothing in its place.
-    expect(numberParts(null, cad)).toEqual({ number: "", unit: null });
+    expect(numberParts(null, cad)).toEqual({ number: "", unit: null, tone: null });
   });
 });
 
@@ -195,5 +197,35 @@ describe("what is typed into a formatted cell", () => {
     for (const text of [...refused, ".", "5-", "--5", "0x10"]) {
       expect(parseEditText(text, money)).toEqual({ kind: "invalid" });
     }
+  });
+});
+
+describe("a negative figure under a format with a negative tone", () => {
+  const toned: NumberFormat = { ...money, negative: "bad" };
+
+  test("is drawn in that tone", () => {
+    expect(figureTone(-12.5, toned)).toBe("bad");
+    expect(numberParts(-12.5, toned)).toEqual({
+      number: `${MINUS}12.50`,
+      unit: null,
+      tone: "bad",
+    });
+  });
+
+  test("is not toned at zero or above, or where it rounds to zero", () => {
+    expect(figureTone(0, toned)).toBeNull();
+    expect(figureTone(12.5, toned)).toBeNull();
+    expect(figureTone(-0.004, toned)).toBeNull();
+  });
+
+  test("is not toned where the format names no tone, or the value is no number", () => {
+    expect(figureTone(-12.5, money)).toBeNull();
+    expect(figureTone("-12.5", toned)).toBeNull();
+    expect(numberParts("n/a", toned).tone).toBeNull();
+  });
+
+  test("follows a percentage as it reads", () => {
+    expect(figureTone(-0.0004, { decimals: 1, percent: true, negative: "warning" })).toBeNull();
+    expect(figureTone(-0.004, { decimals: 1, percent: true, negative: "warning" })).toBe("warning");
   });
 });

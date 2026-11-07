@@ -4,6 +4,7 @@ import { describeError } from "../lib/errors";
 import { pendingActions } from "../lib/pending";
 import type { Row } from "../lib/schema";
 import {
+  type Tone,
   type ViewPayload,
   type ViewSection,
   announce,
@@ -333,6 +334,7 @@ function RowCard({ section, row }: { section: ViewSection; row: Row }) {
                 as="dd"
                 note={noteOf(section, row, line.field)}
                 className="min-w-0 break-words"
+                tone={line.tone}
               >
                 {line.text}
               </NotedLine>
@@ -350,16 +352,23 @@ function NotedLine({
   as: Tag,
   note,
   className,
+  tone,
   children,
 }: {
   as: "p" | "dd";
   note: string | null;
   className: string;
+  /** The tone of a figure below zero, where its format names one. */
+  tone?: Tone;
   children: React.ReactNode;
 }) {
   const noted = useNote(note);
   return (
-    <Tag {...noted.handlers} className={className + noted.className}>
+    <Tag
+      {...noted.handlers}
+      className={className + noted.className}
+      data-negative={tone}
+    >
       {children}
       {note !== null && <span className="sr-only">Note: {note}</span>}
     </Tag>

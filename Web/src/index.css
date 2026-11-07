@@ -401,6 +401,85 @@
     background: color-mix(in oklab, var(--bad) 10%, transparent);
   }
 
+  /* An amount's box at rest fills the well it sits in. Focused, it leaves the
+     well and widens rightward over the cells after it, to the width the
+     component gives it, above the rows but below the sticky first column,
+     header and footer. */
+  .amount-well > .field:focus {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 5;
+  }
+  /* A figure worked out from a sum, told apart from one typed. A box clips
+     the line under its text, so a sum's box at rest hides its own text and
+     the figure is drawn over it, where the line can show. */
+  .amount-sum {
+    text-decoration: underline dotted
+      color-mix(in srgb, var(--ink) 45%, transparent);
+    text-underline-offset: 0.3em;
+  }
+  .amount-under {
+    color: transparent !important;
+  }
+  .amount-show {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 calc(var(--field-pad-x) + 1px);
+    overflow: hidden;
+    white-space: nowrap;
+    color: var(--ink);
+    pointer-events: none;
+  }
+  .row-muted .amount-show {
+    color: var(--muted);
+  }
+  .figure-strong .amount-show {
+    font-weight: 600;
+  }
+  /* An empty amount's well is fainter than a filled one's and has no border,
+     so a sparse grid reads by its figures. */
+  td.amount-cell[data-empty] .field:where(:not(:focus):not(:hover)) {
+    background: color-mix(in srgb, var(--ink) 3.5%, transparent);
+    border-color: transparent;
+  }
+
+  /* A figure below zero, in the tone its format's `negative` names. A muted
+     row and a mark on a cell outweigh it. */
+  [data-negative="good"] {
+    color: var(--good);
+  }
+  [data-negative="warning"] {
+    color: var(--warning);
+  }
+  [data-negative="bad"] {
+    color: var(--bad);
+  }
+  [data-negative="neutral"] {
+    color: var(--muted);
+  }
+  [data-negative="info"] {
+    color: var(--info);
+  }
+
+  /* A column the table is read by, such as a total: bold in its rows, under
+     its headings and in the footer. */
+  .figure-strong .readout,
+  .figure-strong .field {
+    font-weight: 600;
+  }
+
+  /* A row of a group its column shades within: the figure's background in
+     the info tone, as deep as the component's `--shade` says. */
+  td.shaded .readout,
+  td.shaded .field:where(:not(:focus)) {
+    background-color: color-mix(in srgb, var(--info) var(--shade), transparent);
+    border-radius: 0.25rem;
+  }
+
   /* A row the schema's `muted_by` field or `muted_by_derived` key marks: its
      text is drawn in the muted tone, which is at least 4.5:1 against the
      page, a card, and a hovered field in both themes, so a muted row is
@@ -1062,6 +1141,25 @@
   .card-estimate {
     background-color: var(--estimate-tint);
     font-style: italic;
+  }
+  /* A figure below zero in an estimate keeps its tone, mixed with the ink so
+     it stays readable on the tint. The neutral tone is the muted ink already,
+     and is left as it is. */
+  .row-estimate [data-negative="good"],
+  .card-estimate [data-negative="good"] {
+    color: color-mix(in srgb, var(--good) 72%, var(--ink));
+  }
+  .row-estimate [data-negative="warning"],
+  .card-estimate [data-negative="warning"] {
+    color: color-mix(in srgb, var(--warning) 72%, var(--ink));
+  }
+  .row-estimate [data-negative="bad"],
+  .card-estimate [data-negative="bad"] {
+    color: color-mix(in srgb, var(--bad) 72%, var(--ink));
+  }
+  .row-estimate [data-negative="info"],
+  .card-estimate [data-negative="info"] {
+    color: color-mix(in srgb, var(--info) 72%, var(--ink));
   }
 
   /* A frozen section: as wide as its content, up to the page. Its heading and

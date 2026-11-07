@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::error::ApiError;
+use crate::page::Tone;
 
 /// One table's presentation: the columns, how a new row starts, and any
 /// completion lists the columns draw on.
@@ -150,6 +151,22 @@ impl Schema {
         Ok(())
     }
 
+    /// Check that a column that shades within groups is in a table that has
+    /// them, since the groups it names would otherwise be no rows at all and
+    /// the shading would vanish without a word.
+    pub(crate) fn check_shading(&self) -> Result<(), ApiError> {
+        if self.group_by.is_some() {
+            return Ok(());
+        }
+        match self.columns.iter().find(|c| c.shaded_within.is_some()) {
+            Some(column) => Err(ApiError::server(format!(
+                "table \"{}\" shades the column \"{}\" within groups, but has no group_by",
+                self.table, column.field
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// Whether one of the columns is the field `field`.
     pub(crate) fn has_column(&self, field: &str) -> bool {
         self.columns.iter().any(|column| column.field == field)
@@ -232,6 +249,10 @@ pub enum ColumnType {
     Map,
     /// A day, stored as a `YYYY-MM-DD` string.
     Date,
+    /// A figure that may be typed as a sum: stored as a number where what is
+    /// typed is a plain number, and as the text of the sum where it is one.
+    /// See [`crate::Amount`].
+    Amount,
 }
 
 /// One column of a table.
@@ -271,6 +292,10 @@ pub struct Column {
     speak: Option<Speak>,
     #[serde(skip_serializing_if = "Option::is_none")]
     href: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    strong: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shaded_within: Option<Vec<String>>,
     #[serde(flatten)]
     map: Option<MapSpec>,
 }
@@ -296,6 +321,8 @@ impl Column {
             allow_month: false,
             speak: None,
             href: None,
+            strong: false,
+            shaded_within: None,
             map: None,
         }
     }
@@ -371,6 +398,11 @@ impl Column {
         }
     }
 
+    /// A figure that may be typed as a sum. See [`ColumnType::Amount`].
+    pub fn amount(field: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::base(field, label, ColumnType::Amount)
+    }
+
     /// A day, stored as a `YYYY-MM-DD` string.
     pub fn date(field: impl Into<String>, label: impl Into<String>) -> Self {
         Self::base(field, label, ColumnType::Date)
@@ -419,8 +451,9 @@ impl Column {
         self
     }
 
-    /// How the column's numbers read. Honoured on `number` and `computed`
-    /// columns, in a table and in a view, and ignored on every other type.
+    /// How the column's numbers read. Honoured on `number`, `amount` and
+    /// `computed` columns, in a table and in a view, and ignored on every
+    /// other type.
     pub fn format(mut self, format: Format) -> Self {
         self.format = Some(format);
         self
@@ -465,6 +498,27 @@ impl Column {
         self.href = Some(field.into());
         self
     }
+
+    /// Set the column's figures in bold: in its rows, under its group
+    /// headings, and in the footer. It is for the column a table is read by,
+    /// such as a total. Honoured in a table, and ignored in a view.
+    pub fn strong(mut self) -> Self {
+        self.strong = true;
+        self
+    }
+
+    /// Shade each row of the named groups by its value in this column, in the
+    /// `info` tone, deeper the larger the value is beside the largest among
+    /// those rows, so the rows that weigh most stand out. The groups are keys
+    /// of the schema's [`Schema::group_by`] field, and a table that shades
+    /// with no `group_by` is a failure naming the table and the column when it
+    /// is read. A group no row is in shades nothing, and so does an empty
+    /// list. Rows outside the groups, the headings and the footer are not
+    /// shaded. Honoured in a table, and ignored in a view.
+    pub fn shaded_within(mut self, groups: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.shaded_within = Some(groups.into_iter().map(Into::into).collect());
+        self
+    }
 }
 
 /// How a number reads. It changes what a cell shows and never what it
@@ -483,6 +537,8 @@ pub struct Format {
     percent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    negative: Option<Tone>,
 }
 
 impl Format {
@@ -494,6 +550,7 @@ impl Format {
             grouped: false,
             percent: false,
             unit: None,
+            negative: None,
         }
     }
 
@@ -522,6 +579,14 @@ impl Format {
     /// A word drawn after the number, smaller and muted: "CAD", "days".
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = Some(unit.into());
+        self
+    }
+
+    /// Draw a figure below zero in `tone`, wherever the format is honoured: a
+    /// table's cells, its group headings and footer, a view's sections, and a
+    /// card's figure. A figure that rounds to zero is not below it.
+    pub fn negative(mut self, tone: Tone) -> Self {
+        self.negative = Some(tone);
         self
     }
 }
@@ -965,6 +1030,7 @@ mod tests {
             (Column::computed("f", "F", "k"), "computed"),
             (Column::map("f", "F", MapSpec::new("K", "V")), "map"),
             (Column::date("f", "F"), "date"),
+            (Column::amount("f", "F"), "amount"),
         ] {
             assert_eq!(serde_json::to_value(column).unwrap()["type"], name);
         }
@@ -1041,6 +1107,72 @@ mod tests {
             serde_json::to_value(column).unwrap(),
             json!({ "field": "cad", "label": "CAD", "type": "computed", "from": "cad",
                     "format": { "decimals": 2, "grouped": true, "unit": "CAD" } })
+        );
+    }
+
+    #[test]
+    fn an_amount_column_serializes_to_the_documented_shape() {
+        let column = Column::amount("jan", "Jan").format(Format::money().negative(Tone::Bad));
+        assert_eq!(
+            serde_json::to_value(column).unwrap(),
+            json!({ "field": "jan", "label": "Jan", "type": "amount",
+                    "format": { "decimals": 2, "grouped": true, "negative": "bad" } })
+        );
+    }
+
+    #[test]
+    fn a_negative_tone_is_omitted_unless_set() {
+        let plain = serde_json::to_value(Format::money()).unwrap();
+        assert!(plain.get("negative").is_none());
+
+        let toned = serde_json::to_value(Format::percent(1).negative(Tone::Warning)).unwrap();
+        assert_eq!(toned["negative"], "warning");
+    }
+
+    #[test]
+    fn strong_and_shaded_within_are_omitted_unless_set() {
+        let plain = serde_json::to_value(Column::computed("total", "Total", "total")).unwrap();
+        assert!(plain.get("strong").is_none());
+        assert!(plain.get("shaded_within").is_none());
+
+        let marked = serde_json::to_value(
+            Column::computed("share", "Share", "share")
+                .strong()
+                .shaded_within(["funds", "recurring"]),
+        )
+        .unwrap();
+        assert_eq!(marked["strong"], true);
+        assert_eq!(marked["shaded_within"], json!(["funds", "recurring"]));
+    }
+
+    #[test]
+    fn an_empty_shading_list_is_written_rather_than_dropped() {
+        // An empty list shades no rows, which is not what an absent one says.
+        let none = Column::computed("share", "Share", "share").shaded_within(Vec::<String>::new());
+        assert_eq!(
+            serde_json::to_value(none).unwrap()["shaded_within"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn shading_within_groups_needs_a_table_that_has_them() {
+        let column = || Column::computed("share", "Share", "share").shaded_within(["funds"]);
+
+        let mut ungrouped = Schema::new([Column::string("line", "Line"), column()]);
+        ungrouped.identify("budget", "Budget");
+        let failure = ungrouped.check_shading().unwrap_err();
+        assert_eq!(failure.status, 500);
+        for named in ["\"budget\"", "\"share\""] {
+            assert!(failure.message.contains(named), "{}", failure.message);
+        }
+
+        let grouped = Schema::new([column()]).group_by("group");
+        assert!(grouped.check_shading().is_ok());
+        assert!(
+            Schema::new([Column::string("line", "Line")])
+                .check_shading()
+                .is_ok()
         );
     }
 

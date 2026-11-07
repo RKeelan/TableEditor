@@ -29,10 +29,12 @@
 //! # Features
 //!
 //! `server` is on by default and is everything above. Without it the crate is
-//! the file format alone—[`jsonl`], [`ParseError`], [`ValidationError`], and
-//! [`ApiError`]—and depends on nothing but `serde` and `serde_json`, which is
-//! what a crate that only reads and writes the tables wants.
+//! the file format alone—[`jsonl`], [`amount`], [`ParseError`],
+//! [`ValidationError`], and [`ApiError`]—and depends on nothing but `serde` and
+//! `serde_json`, which is what a crate that only reads and writes the tables
+//! wants.
 
+pub mod amount;
 mod error;
 pub mod jsonl;
 
@@ -62,6 +64,7 @@ mod view;
 #[cfg(all(test, feature = "server"))]
 mod fixture;
 
+pub use amount::Amount;
 pub use error::{ApiError, ParseError, ValidationError};
 
 #[cfg(feature = "server")]

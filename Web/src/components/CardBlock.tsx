@@ -80,12 +80,13 @@ export function CardBlock({
   );
 }
 
-/** The number a card is about, large, with its unit after it. A figure that
- *  arrived as null is drawn empty. */
+/** The number a card is about, large, with its unit after it, and in its
+ *  format's tone where it is below zero. A figure that arrived as null is
+ *  drawn empty. */
 function CardFigure({ figure }: { figure: Figure }) {
-  const { number, unit } = numberParts(figure.value, figure.format);
+  const { number, unit, tone } = numberParts(figure.value, figure.format);
   return (
-    <p className="card-figure">
+    <p className="card-figure" data-negative={tone ?? undefined}>
       {number}
       {unit && <span className="unit">{unit}</span>}
     </p>

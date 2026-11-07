@@ -2,7 +2,7 @@
 // for field. The server rebuilds it on every GET, so everything the editor
 // needs to render a table is data here and nothing is held in the browser.
 
-import type { Card, ViewSection } from "./view";
+import type { Card, Tone, ViewSection } from "./view";
 
 /** One choice in a select, a map key, or a map value. */
 export interface SelectOption {
@@ -24,13 +24,15 @@ export interface Speak {
 }
 
 /** How a number reads: `decimals` places always shown, the thousands grouped,
- *  a fraction shown as a percentage, and a word drawn after it. It changes
- *  what a cell shows and never what it stores. */
+ *  a fraction shown as a percentage, a word drawn after it, and the tone a
+ *  figure below zero is drawn in. It changes what a cell shows and never what
+ *  it stores. */
 export interface NumberFormat {
   decimals: number;
   grouped?: boolean;
   percent?: boolean;
   unit?: string;
+  negative?: Tone;
 }
 
 export type ColumnType =
@@ -43,7 +45,8 @@ export type ColumnType =
   | "select"
   | "computed"
   | "map"
-  | "date";
+  | "date"
+  | "amount";
 
 /** One column. The `map` fields are flattened into the column by the server,
  *  so they are present together or not at all. */
@@ -64,9 +67,15 @@ export interface Column {
   int_only?: boolean;
   datalist?: string;
   from?: string;
-  /** How the column's numbers read. Honoured on a `number` and a `computed`
-   *  column, and ignored on every other type. */
+  /** How the column's numbers read. Honoured on a `number`, an `amount` and
+   *  a `computed` column, and ignored on every other type. */
   format?: NumberFormat;
+  /** Set the column's figures in bold, in rows, headings and the footer. A
+   *  table's only. */
+  strong?: boolean;
+  /** The groups of the table's `group_by` whose rows are shaded by their
+   *  value in this column. A table's only. */
+  shaded_within?: string[];
   /** Let a `date` column hold a month, `YYYY-MM`, as well as a day. */
   allow_month?: boolean;
   speak?: Speak;

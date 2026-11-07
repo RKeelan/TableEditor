@@ -15,7 +15,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
-    ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
+    Amount, ApiError, App, Button, Card, CardGroup, Column, Context, Datalist, Detail, DetailRow,
     DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec, NewRow, OptionsBy,
     Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server, ServerArgs, Speak,
     Stamping, Status, Table, TableLogic, Tone, Undoable, ValidationError, View, ViewArgs, ViewData,
@@ -110,8 +110,10 @@ struct Purchase {
     year: i32,
     branch: String,
     item: String,
+    /// What it cost, typed as a figure or as a sum such as `6.12*10`. A refund
+    /// is below zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cost: Option<f64>,
+    cost: Option<Amount>,
     /// The day it was ordered, as `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     ordered: String,
@@ -568,6 +570,20 @@ impl Purchases {
     }
 }
 
+impl Purchase {
+    /// What the purchase cost, worked out where it was typed as a sum, or
+    /// nothing where no cost is typed or what is typed is not one.
+    fn spent(&self) -> Option<f64> {
+        self.cost.as_ref().and_then(Amount::value)
+    }
+}
+
+/// How the example's money reads: two places, grouped, and a refund in the
+/// bad tone.
+fn money() -> Format {
+    Format::money().negative(Tone::Bad)
+}
+
 impl TableLogic for Purchases {
     type Row = Purchase;
 
@@ -600,13 +616,25 @@ impl TableLogic for Purchases {
 
     /// Grouped by branch, which is not a column: the heading says which
     /// branch a group is, and a row is added to a branch through its group.
-    /// A new row is bought out of the year on screen.
+    /// A new row is bought out of the year on screen. The cost is what the
+    /// table is read by, so it is set in bold, and the share of all spending
+    /// shades the rows of the branches still open.
     fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
+        let branches: Vec<Branch> = ctx.optional_rows(BRANCHES_FILE)?;
+        let open = branches
+            .iter()
+            .filter(|branch| branch.open != Some(false))
+            .map(|branch| branch.code.clone());
         Ok(Schema::new([
             Column::string("item", "Item").wide(),
-            Column::number("cost", "Cost")
-                .format(Format::money())
-                .width_ch(8),
+            Column::amount("cost", "Cost")
+                .format(money())
+                .width_ch(9)
+                .strong(),
+            Column::computed("share", "Share", "share")
+                .format(Format::percent(1))
+                .width_ch(6)
+                .shaded_within(open),
             Column::date("ordered", "Ordered"),
             Column::date("expected", "Expected").allow_month(),
             Column::boolean("received", "Received"),
@@ -629,8 +657,29 @@ impl TableLogic for Purchases {
         Ok(rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| row.item.trim().is_empty())
-            .map(|(idx, _)| ValidationError::field(idx + 1, "item", "say what was bought"))
+            .flat_map(|(idx, row)| {
+                let unnamed = row
+                    .item
+                    .trim()
+                    .is_empty()
+                    .then(|| ValidationError::field(idx + 1, "item", "say what was bought"));
+                let unworked = (row.cost.is_some() && row.spent().is_none())
+                    .then(|| ValidationError::field(idx + 1, "cost", "not a figure or a sum"));
+                unnamed.into_iter().chain(unworked)
+            })
+            .collect())
+    }
+
+    /// Each purchase's share of what every branch spent, left out where it
+    /// has no cost or nothing was spent.
+    fn derive(&self, rows: &[Purchase], _ctx: &Context) -> Result<Vec<Value>, ApiError> {
+        let total: f64 = rows.iter().filter_map(Purchase::spent).sum();
+        Ok(rows
+            .iter()
+            .map(|row| match row.spent() {
+                Some(spent) if total > 0.0 => json!({ "share": spent / total }),
+                _ => json!({}),
+            })
             .collect())
     }
 
@@ -649,7 +698,7 @@ impl TableLogic for Purchases {
         let spent = |code: Option<&str>| -> f64 {
             rows.iter()
                 .filter(|row| code.is_none_or(|code| row.branch == code))
-                .filter_map(|row| row.cost)
+                .filter_map(Purchase::spent)
                 .sum()
         };
         let total = spent(None);
@@ -657,13 +706,13 @@ impl TableLogic for Purchases {
             .iter()
             .filter(|row| row.received != Some(true))
             .collect();
-        let on_order: f64 = waiting.iter().filter_map(|row| row.cost).sum();
-        let in_cad = || Format::money().unit("CAD");
+        let on_order: f64 = waiting.iter().filter_map(|row| row.spent()).sum();
+        let in_cad = || money().unit("CAD");
 
         // A branch's name may wrap, so the table fits a phone.
         let by_branch = Section::new([
             Column::string("branch", "Branch").wide(),
-            Column::number("spent", "Spent").format(Format::money()),
+            Column::number("spent", "Spent").format(money()),
             Column::number("share", "Share of all spending").format(Format::percent(1)),
         ])
         .rows(branches.iter().map(|branch| {
@@ -955,14 +1004,18 @@ const MONTHS: [&str; 12] = [
 
 impl Spending {
     fn columns() -> Vec<Column> {
-        let money = |field: &str, label: &str| Column::number(field, label).format(Format::money());
+        let figure = |field: &str, label: &str| Column::number(field, label).format(money());
         let mut columns = vec![
             Column::string("month", "Month"),
-            money("purchases", "Purchases"),
+            figure("purchases", "Purchases"),
         ];
-        columns.extend(STANDING.iter().map(|(field, label, _)| money(field, label)));
-        columns.push(money("total", "Total"));
-        columns.push(money("to_date", "Year to date"));
+        columns.extend(
+            STANDING
+                .iter()
+                .map(|(field, label, _)| figure(field, label)),
+        );
+        columns.push(figure("total", "Total"));
+        columns.push(figure("to_date", "Year to date"));
         columns
     }
 }
@@ -1003,7 +1056,7 @@ impl ViewLogic for Spending {
                 let mut row = json!({ "month": format!("{month} {year}") });
                 let mut total = 0.0;
                 if !bought.is_empty() {
-                    let cost: f64 = bought.iter().filter_map(|p| p.cost).sum();
+                    let cost: f64 = bought.iter().filter_map(|p| p.spent()).sum();
                     total += cost;
                     row["purchases"] = json!(cost);
                     let items: Vec<&str> = bought.iter().map(|p| p.item.as_str()).collect();
@@ -1041,7 +1094,7 @@ impl ViewLogic for Spending {
             );
         }
 
-        let in_cad = || Format::money().unit("CAD");
+        let in_cad = || money().unit("CAD");
         Ok(data
             .card(Card::new("Spent").figure(spent, in_cad()))
             .card(Card::new("Still to spend").figure(forecast, in_cad()))

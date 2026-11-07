@@ -285,6 +285,19 @@ describe("a row as a card at a narrow width", () => {
     expect(card.href).toBeNull();
   });
 
+  test("carries the tone of a figure below zero where its format names one", () => {
+    const balance: Column = {
+      field: "balance",
+      label: "Balance",
+      type: "number",
+      format: { decimals: 2, negative: "bad" },
+    };
+    const card = rowCardFor([title, balance], { title: "Moss", balance: -3 });
+    expect(card.lines).toEqual([{ field: "balance", label: "Balance", text: "−3.00", tone: "bad" }]);
+    const owed = rowCardFor([title, balance], { title: "Moss", balance: 3 });
+    expect(owed.lines).toEqual([{ field: "balance", label: "Balance", text: "3.00" }]);
+  });
+
   test("copes with a section that names no columns", () => {
     expect(rowCardFor([], { title: "Moss" })).toEqual({
       title: "",
