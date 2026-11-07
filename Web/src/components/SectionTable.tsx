@@ -1,5 +1,5 @@
 import { numberParts } from "../lib/format";
-import { cellValue, formatOf, isFigure } from "../lib/rows";
+import { cellFigure, formatOf, isFigure } from "../lib/rows";
 import type { Column, Row } from "../lib/schema";
 import {
   type ViewSection,
@@ -81,7 +81,7 @@ export function SectionTable({
 
 /** Whether a column's cells are numbers, which line up on the right. */
 export function isNumeric(column: Column): boolean {
-  return isFigure(column) || column.type === "number";
+  return isFigure(column) || column.type === "number" || column.type === "amount";
 }
 
 /** One cell of a section: its column's value as a table would show it, a
@@ -103,14 +103,15 @@ export function ViewCell({
   const text = viewCellText(column, row);
   const href = hrefFor(column, row);
   const noted = useNote(note);
-  // A formatted number draws its unit in a span of its own; anything else,
-  // formatted column or not, reads as its text.
+  // A formatted figure draws its unit in a span of its own and a negative in
+  // its format's tone; anything else, formatted column or not, reads as its
+  // text.
   const format = formatOf(column);
-  const value = cellValue(column, row, row);
+  const figure = cellFigure(column, row, row);
   const parts =
-    format && typeof value === "number"
-      ? numberParts(value, format)
-      : { number: text, unit: null };
+    format && figure !== null
+      ? numberParts(figure, format)
+      : { number: text, unit: null, tone: null };
   const shown = (
     <>
       {parts.number}
@@ -134,6 +135,7 @@ export function ViewCell({
         style={{ width: controlWidthOfColumn(column) }}
         // The note says what the cell is, so its text is the one tooltip.
         title={note === null ? text || undefined : undefined}
+        data-negative={parts.tone ?? undefined}
       >
         {href ? <OutsideLink href={href}>{shown}</OutsideLink> : shown}
       </span>

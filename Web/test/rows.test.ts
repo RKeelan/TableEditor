@@ -3,6 +3,7 @@ import type { Column, Row, Schema } from "../src/lib/schema";
 import {
   boxInput,
   boxText,
+  cellFigure,
   cellSearchText,
   cellText,
   CHIP_KEY_SHRINK,
@@ -1178,5 +1179,88 @@ describe("a read-only cell", () => {
     expect(controlWidth({ ...genre, width_ch: 12, read_only: true })).toBe(
       "calc(12ch + var(--field-chrome))",
     );
+  });
+});
+
+const spent: Column = {
+  field: "spent",
+  label: "Spent",
+  type: "amount",
+  format: { decimals: 2, grouped: true, negative: "bad" },
+};
+const amountSchema = (defaults: Record<string, unknown> = {}): Schema => ({
+  table: "budget",
+  title: "Budget",
+  columns: [title, spent],
+  new_row: { defaults, carry_forward: [] },
+  datalists: {},
+});
+
+describe("an amount cell", () => {
+  test("stores a plain number as a number, commas and a leading = allowed", () => {
+    expect(writeCell({}, spent, "1,234.50", amountSchema())).toEqual({ spent: 1234.5 });
+    expect(writeCell({}, spent, "=12", amountSchema())).toEqual({ spent: 12 });
+    expect(writeCell({}, spent, "−42", amountSchema())).toEqual({ spent: -42 });
+  });
+
+  test("stores a sum as its trimmed text, without the =", () => {
+    expect(writeCell({}, spent, " = 407.04*5 ", amountSchema())).toEqual({
+      spent: "407.04*5",
+    });
+  });
+
+  test("writes nothing for a sum half typed", () => {
+    const row = { spent: "407.04*5" };
+    expect(writeCell(row, spent, "407.04*", amountSchema())).toEqual(row);
+    expect(writeCell(row, spent, "5/0", amountSchema())).toEqual(row);
+  });
+
+  test("clears to an absent field, or to the empty string its default gives", () => {
+    expect(writeCell({ spent: 5 }, spent, "", amountSchema())).toEqual({});
+    expect(writeCell({ spent: 5 }, spent, "", amountSchema({ spent: "" }))).toEqual({
+      spent: "",
+    });
+  });
+
+  test("shows its figure as its format reads it, a sum's included", () => {
+    expect(cellText(spent, { spent: 1234.5 }, null)).toBe("1,234.50");
+    expect(cellText(spent, { spent: "6.12*10" }, null)).toBe("61.20");
+    expect(cellText(spent, {}, null)).toBe("");
+    expect(cellText(spent, { spent: "" }, null)).toBe("");
+    expect(cellFigure(spent, { spent: "6.12*10" }, null)).toBeCloseTo(61.2, 9);
+  });
+
+  test("without a format shows its figure as it is", () => {
+    const plain: Column = { field: "spent", label: "Spent", type: "amount" };
+    expect(cellText(plain, { spent: "2*3" }, null)).toBe("6");
+    expect(isFigure(plain)).toBe(false);
+  });
+
+  test("holding something that is neither a number nor a sum is shown as it is and marked", () => {
+    expect(cellMismatch(spent, { spent: "about 40" })).toBe(true);
+    expect(cellText(spent, { spent: "about 40" }, null)).toBe("about 40");
+    expect(cellMismatch(spent, { spent: true })).toBe(true);
+    expect(cellMismatch(spent, { spent: null })).toBe(true);
+    expect(cellMismatch(spent, { spent: "" })).toBe(false);
+    expect(cellMismatch(spent, { spent: "6.12*10" })).toBe(false);
+    expect(cellMismatch(spent, { spent: 61.2 })).toBe(false);
+  });
+
+  test("sorts by its figure, a sum by what it works out to", () => {
+    const a = { row: { spent: "100/2" }, derived: null };
+    const b = { row: { spent: 9 }, derived: null };
+    expect(compareByColumn(spent, a, b)).toBeGreaterThan(0);
+    expect(compareByColumn(spent, b, a)).toBeLessThan(0);
+  });
+
+  test("is found by the figure it shows or the text it stores", () => {
+    const text = cellSearchText(spent, { spent: "6.12*10" }, null);
+    expect(text).toContain("61.20");
+    expect(text).toContain("6.12*10");
+  });
+
+  test("counts its formatted figure in its width, as a number column does", () => {
+    expect(widthChOf({ ...spent, width_ch: 9 })).toBe(9);
+    expect(controlWidth({ ...spent, width_ch: 9 })).toBe("calc(9ch + var(--field-chrome))");
   });
 });

@@ -1,6 +1,7 @@
 // How a grouped table's rows are drawn: which group each row is in, the
 // order the groups come in, where a row added to a group lands and how it
-// starts, and how a heading or the footer lines up with the columns.
+// starts, how a heading or the footer lines up with the columns, and how a
+// column shades the rows of the groups it names.
 //
 // The schema's `group_by` names the field that says which group a row is in,
 // and the overview's groups give the headings, in the order they are drawn.
@@ -9,8 +10,8 @@
 // overview's.
 
 import type { RowEntry } from "./entries";
-import { cellText, newRow } from "./rows";
-import type { Column, Overview, Row, RowGroup, Schema } from "./schema";
+import { cellFigure, cellText, newRow } from "./rows";
+import type { Column, Derived, Overview, Row, RowGroup, Schema } from "./schema";
 
 /** What a row holds in the group field, as text: "" where it holds nothing,
  *  so a row with the field absent and one holding null are in one group. A
@@ -179,4 +180,38 @@ export function groupTextOf(
     const key = groupKey(row, field);
     return texts.get(key) ?? fallbackTitle(key).toLowerCase();
   };
+}
+
+/** The deepest a shaded row is drawn, as a percentage of the `info` tone. */
+export const DEEPEST_SHADE = 30;
+
+/** How deep each row is shaded under a column that names `shaded_within`, as
+ *  a percentage of the `info` tone from 0 to DEEPEST_SHADE, index for index
+ *  with `rows`: null for a row outside the groups the column names, and in
+ *  them the square root of the row's figure over the largest figure among
+ *  those rows, so a small row is still seen beside a large one. A row with no
+ *  figure, or one at or below zero, takes no shade, and nor does any row
+ *  where none is above zero. Null throughout where the column shades nothing
+ *  or the table has no groups. */
+export function shadeDepths(
+  schema: Schema,
+  column: Column,
+  rows: readonly Row[],
+  derived: readonly Derived[],
+): (number | null)[] {
+  const field = schema.group_by;
+  const within = new Set(column.shaded_within ?? []);
+  const figures = rows.map((row, i) =>
+    field !== undefined && within.has(groupKey(row, field))
+      ? Math.max(cellFigure(column, row, derived[i]) ?? 0, 0)
+      : null,
+  );
+  const largest = Math.max(0, ...figures.map((figure) => figure ?? 0));
+  return figures.map((figure) =>
+    figure === null
+      ? null
+      : largest > 0
+        ? Math.round(Math.sqrt(figure / largest) * DEEPEST_SHADE)
+        : 0,
+  );
 }

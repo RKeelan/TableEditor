@@ -10,9 +10,10 @@ import {
   lineCells,
   lineValueText,
   newGroupRow,
+  shadeDepths,
 } from "../src/lib/groups";
 import { parseFilter, rowMatches } from "../src/lib/rows";
-import type { Column, Overview, Row, Schema } from "../src/lib/schema";
+import type { Column, Derived, Overview, Row, Schema } from "../src/lib/schema";
 
 const item: Column = { field: "item", label: "Item", type: "string", wide: true };
 const cost: Column = {
@@ -303,5 +304,58 @@ describe("filtering a grouped table", () => {
 
   test("knows nothing of groups in a table that is not grouped", () => {
     expect(groupTextOf({ ...schema, group_by: undefined }, overview)).toBeUndefined();
+  });
+});
+
+describe("a heading's value under an amount column", () => {
+  test("is formatted by the column's format", () => {
+    const spent: Column = {
+      field: "spent",
+      label: "Spent",
+      type: "amount",
+      format: { decimals: 2, grouped: true },
+    };
+    expect(lineValueText(spent, -1306.45)).toBe("−1,306.45");
+  });
+});
+
+describe("shading the rows of named groups", () => {
+  const share: Column = {
+    field: "share",
+    label: "Share",
+    type: "computed",
+    from: "share",
+    shaded_within: ["cen", "est"],
+  };
+  const derivedOf = (shares: (number | null)[]): Derived[] =>
+    shares.map((s) => (s === null ? null : { share: s }));
+
+  test("shades each row by the square root of its share of the largest", () => {
+    const depths = shadeDepths(schema, share, rows, derivedOf([0.25, 1, 0, 0.04]));
+    expect(depths).toEqual([15, 30, 0, 6]);
+  });
+
+  test("leaves rows outside the named groups unshaded", () => {
+    const central = { ...share, shaded_within: ["cen"] };
+    const depths = shadeDepths(schema, central, rows, derivedOf([0.25, 1, 1, 0.04]));
+    expect(depths).toEqual([15, null, 30, null]);
+  });
+
+  test("gives no shade to a row below zero or with no figure", () => {
+    const depths = shadeDepths(schema, share, rows, derivedOf([-1, 0.5, null, 0.5]));
+    expect(depths).toEqual([0, 30, 0, 30]);
+  });
+
+  test("gives no shade where no row is above zero", () => {
+    expect(shadeDepths(schema, share, rows, derivedOf([0, 0, -1, null]))).toEqual([0, 0, 0, 0]);
+  });
+
+  test("shades nothing under an empty list, a group no row is in, or no groups", () => {
+    const none = (within: string[]) => ({ ...share, shaded_within: within });
+    const d = derivedOf([1, 1, 1, 1]);
+    expect(shadeDepths(schema, none([]), rows, d)).toEqual([null, null, null, null]);
+    expect(shadeDepths(schema, none(["hbr"]), rows, d)).toEqual([null, null, null, null]);
+    const ungrouped = { ...schema, group_by: undefined };
+    expect(shadeDepths(ungrouped, share, rows, d)).toEqual([null, null, null, null]);
   });
 });

@@ -14,6 +14,7 @@
 // number rounds as its text says rather than as its binary value does.
 
 import type { NumberFormat } from "./schema";
+import type { Tone } from "./view";
 
 const MINUS = "−";
 
@@ -115,6 +116,14 @@ export function formatNumber(value: number, format: NumberFormat): string {
   return sign + text + (format.percent ? "%" : "");
 }
 
+/** The tone a figure is drawn in under its format: the format's `negative`
+ *  tone where the figure reads below zero, and none otherwise, so a value that
+ *  rounds to zero, and so carries no sign, is not toned. */
+export function figureTone(value: unknown, format: NumberFormat): Tone | null {
+  if (!format.negative || typeof value !== "number") return null;
+  return formatNumber(value, format).startsWith(MINUS) ? format.negative : null;
+}
+
 /** A stored value as text: nothing for null and absent. */
 function storedText(value: unknown): string {
   if (value == null) return "";
@@ -122,18 +131,22 @@ function storedText(value: unknown): string {
   return String(value);
 }
 
-/** A value in two parts, for a cell that draws the unit in a span of its own.
- *  A value that is not a number is given as it is stored, with no unit. */
+/** A value in parts, for a cell that draws the unit in a span of its own and
+ *  the figure in its tone (see figureTone). A value that is not a number is
+ *  given as it is stored, with no unit and no tone. Every place a format is
+ *  honoured draws its figure from these parts, so a negative reads in its tone
+ *  wherever it is shown. */
 export function numberParts(
   value: unknown,
   format: NumberFormat,
-): { number: string; unit: string | null } {
+): { number: string; unit: string | null; tone: Tone | null } {
   if (typeof value !== "number") {
-    return { number: storedText(value), unit: null };
+    return { number: storedText(value), unit: null, tone: null };
   }
   return {
     number: formatNumber(value, format),
     unit: format.unit ? format.unit : null,
+    tone: figureTone(value, format),
   };
 }
 

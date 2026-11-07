@@ -516,6 +516,7 @@ impl<T: TableLogic> Table for T {
         let mut schema = self.schema(ctx)?;
         schema.identify(self.name(), self.title());
         schema.link_rows(self.link())?;
+        schema.check_shading()?;
 
         // The values of the headings and the footer are checked against the
         // columns here, since a read is what builds the schema; a derive or a

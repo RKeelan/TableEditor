@@ -3,6 +3,7 @@
 // cell reads as text, how a column sorts, and how the filter matches.
 
 import type { CSSProperties } from "react";
+import { amountEdit, amountValue } from "./amount";
 import { dateText, isStoredDate } from "./dates";
 import { formattedText } from "./format";
 import {
@@ -68,6 +69,15 @@ export function writeCell(
           next[column.field] = column.int_only ? Math.round(n) : n;
         }
       }
+      break;
+    }
+    case "amount": {
+      // A plain number is stored as one and a sum as its text; anything else
+      // is a sum half typed, which writes nothing.
+      const edit = amountEdit(raw);
+      if (edit.kind === "clear") clearField(next, schema, column.field);
+      else if (edit.kind === "number") next[column.field] = edit.value;
+      else if (edit.kind === "sum") next[column.field] = edit.text;
       break;
     }
     case "boolean": {
@@ -345,12 +355,24 @@ export function cellValue(column: Column, row: Row, derived: Derived): unknown {
     : row[column.field];
 }
 
-/** The format a column's numbers read by: its own, on a `number` or a
- *  `computed` column, and none on any other type, which ignores one. */
+/** The format a column's numbers read by: its own, on a `number`, an
+ *  `amount` or a `computed` column, and none on any other type, which ignores
+ *  one. */
 export function formatOf(column: Column): NumberFormat | undefined {
-  return column.type === "number" || column.type === "computed"
+  return column.type === "number" ||
+    column.type === "amount" ||
+    column.type === "computed"
     ? column.format
     : undefined;
+}
+
+/** The figure a cell shows, or null where it shows none: an amount's stored
+ *  number or what its sum works out to, and any other column's value where
+ *  that is a number. */
+export function cellFigure(column: Column, row: Row, derived: Derived): number | null {
+  const value = cellValue(column, row, derived);
+  if (column.type === "amount") return amountValue(value);
+  return typeof value === "number" ? value : null;
 }
 
 /** Whether a column is a figure: a `number` or a `computed` column with a
@@ -375,6 +397,9 @@ export function cellMismatch(column: Column, row: Row): boolean {
       return false;
     case "number":
       return typeof value !== "number";
+    case "amount":
+      // An empty string is a cleared cell, as it is for a date.
+      return value !== "" && amountValue(value) === null;
     case "boolean":
       return typeof value !== "boolean";
     case "map":
@@ -408,6 +433,11 @@ export function cellText(column: Column, row: Row, derived: Derived): string {
   if (format && typeof value === "number") return formattedText(value, format);
 
   switch (column.type) {
+    case "amount": {
+      const figure = amountValue(value);
+      if (figure === null) return "";
+      return format ? formattedText(figure, format) : String(figure);
+    }
     case "select": {
       if (value == null || value === "") return "";
       return optionLabel(optionsForRow(column, row), String(value));
@@ -468,18 +498,18 @@ export function boxInput(before: string, after: string): "mark" | "write" {
   return after === before ? "mark" : "write";
 }
 
-/** The lowercased text a cell contributes to filtering. A select and a date
- *  contribute what they store as well as what they show, and a formatted number
+/** The lowercased text a cell contributes to filtering. A select, a date and
+ *  an amount contribute what they store as well as what they show, and a formatted number
  *  its plain number as well as its formatted one, so either can be searched
- *  for: "1234" finds 1,234.50, and "2026-11" and "nov-2026" both find
- *  02-Nov-2026. */
+ *  for: "1234" finds 1,234.50, "2026-11" and "nov-2026" both find
+ *  02-Nov-2026, and "*10" finds the sum 6.12*10. */
 export function cellSearchText(
   column: Column,
   row: Row,
   derived: Derived,
 ): string {
   const shown = cellText(column, row, derived);
-  if (column.type === "select" || column.type === "date") {
+  if (column.type === "select" || column.type === "date" || column.type === "amount") {
     const stored = row[column.field];
     const storedText = stored == null ? "" : String(stored);
     return `${storedText} ${shown}`.toLowerCase();
@@ -530,7 +560,8 @@ export function isBlankCell(
  *  What is compared is the value the cell shows, which for a computed column
  *  is the derived value. Two genuine numbers compare numerically, so a
  *  computed column of numbers puts 987 before 1234, and two booleans false
- *  before true. A date compares by the text it stores, since ISO text sorts by
+ *  before true. An amount compares by its figure, a sum by what it works out
+ *  to. A date compares by the text it stores, since ISO text sorts by
  *  date where the text a date reads as does not, and a month comes before the
  *  days in it. Everything else compares by the text the cell shows, which is
  *  what keeps a value that does not match its column sorting where it
@@ -544,8 +575,14 @@ export function compareByColumn(
   const blankB = isBlankCell(column, b.row, b.derived);
   if (blankA || blankB) return blankA === blankB ? 0 : blankA ? 1 : -1;
 
-  const left = cellValue(column, a.row, a.derived);
-  const right = cellValue(column, b.row, b.derived);
+  const left =
+    column.type === "amount"
+      ? cellFigure(column, a.row, a.derived)
+      : cellValue(column, a.row, a.derived);
+  const right =
+    column.type === "amount"
+      ? cellFigure(column, b.row, b.derived)
+      : cellValue(column, b.row, b.derived);
   if (typeof left === "number" && typeof right === "number") {
     return left - right;
   }

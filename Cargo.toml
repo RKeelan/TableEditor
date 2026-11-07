@@ -18,6 +18,8 @@ categories = ["web-programming::http-server", "development-tools", "encoding"]
 # `Web/` is 200-odd megabytes of installed dependencies away from being useful
 # and a consumer never builds it. Everything about how the page is made stays
 # in the repository, which `repository` points at.
+# The amount cases are the one file of the tests the crate carries, since
+# `src/amount.rs` reads them into its own tests.
 #
 # The patterns are gitignore patterns, so each is anchored with a leading
 # slash: an unanchored `README.md` would match one in every directory it can
@@ -28,6 +30,7 @@ include = [
     "/assets/index.html",
     "/assets/placeholder.html",
     "/examples/library/**",
+    "/tests/amount-cases.json",
     "/README.md",
     "/LICENSE",
 ]
