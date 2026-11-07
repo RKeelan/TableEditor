@@ -30,6 +30,10 @@ pub struct Schema {
     title: String,
     #[serde(skip_serializing_if = "is_false")]
     sortable: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    fixed_order: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    fixed_rows: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     muted_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,6 +57,8 @@ impl Schema {
             table: String::new(),
             title: String::new(),
             sortable: false,
+            fixed_order: false,
+            fixed_rows: false,
             muted_by: None,
             muted_by_derived: None,
             group_by: None,
@@ -71,6 +77,24 @@ impl Schema {
     /// order is itself meaningful.
     pub fn sortable(mut self) -> Self {
         self.sortable = true;
+        self
+    }
+
+    /// Keep the rows in the order the file holds them: the page draws no drag
+    /// handles, so they cannot be reordered there. A grouped table's rows are
+    /// never dragged, so it needs no such setting. Sorting by a column, where
+    /// the table is `sortable`, is unaffected.
+    pub fn fixed_order(mut self) -> Self {
+        self.fixed_order = true;
+        self
+    }
+
+    /// Keep the rows the file holds, neither more nor fewer: the page draws no
+    /// control for adding a row and no delete button, while the cells stay as
+    /// editable as their columns make them. It is a page setting only; a write
+    /// is taken as it always is.
+    pub fn fixed_rows(mut self) -> Self {
+        self.fixed_rows = true;
         self
     }
 
@@ -1563,6 +1587,11 @@ mod tests {
 
         let sorted = serde_json::to_value(Schema::new([]).sortable()).unwrap();
         assert_eq!(sorted["sortable"], true);
+        assert!(plain.get("fixed_order").is_none());
+        assert!(plain.get("fixed_rows").is_none());
+        let fixed = serde_json::to_value(Schema::new([]).fixed_order().fixed_rows()).unwrap();
+        assert_eq!(fixed["fixed_order"], true);
+        assert_eq!(fixed["fixed_rows"], true);
     }
 
     #[test]

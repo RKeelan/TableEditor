@@ -957,7 +957,8 @@ impl TableLogic for Donations {
 
 /// What each branch may spend in one year, against what its purchases on the
 /// page above come to, which it reads through the context and so follows a
-/// cost as it is typed there.
+/// cost as it is typed there. Its rows are the budgeted branches, set in the
+/// file, so only what each may spend is edited on the page.
 struct Allocations;
 
 impl TableLogic for Allocations {
@@ -990,14 +991,15 @@ impl TableLogic for Allocations {
             .map(|b| SelectOption::labelled(&b.code, &b.name))
             .collect();
         Ok(Schema::new([
-            Column::select("branch", "Branch", options),
+            Column::select("branch", "Branch", options).read_only(),
             Column::number("amount", "Allocated")
                 .format(Format::money())
                 .width_ch(9),
             Column::computed("spent", "Spent", "spent").format(money()),
             Column::computed("remaining", "Remaining", "remaining").format(money()),
         ])
-        .new_row(NewRow::new().with("year", Purchases::year(ctx))))
+        .fixed_order()
+        .fixed_rows())
     }
 
     fn validate(
