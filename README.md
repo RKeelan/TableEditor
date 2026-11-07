@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.8.1"
+table-editor = "=0.9.0"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.8.1", default-features = false }
+table-editor = { version = "=0.9.0", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec, the `amount` module and its `Amount` type, and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -1034,6 +1034,8 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 `0.8.0` shows and takes dates as `02-Nov-2026`. A `date` column and a `date` form field are shown in that form on every page, whatever the reader's browser or language, and are edited in a text box with a button beside it that opens the browser's calendar, while files and the wire keep ISO. A `date` column can hold a `YYYY-MM` month as well, shown as `Nov-2026`, through the new builder `Column::allow_month`, which sends an `allow_month` key only where a table sets it. A `computed` column's value is shown as it is derived, since its schema does not say it is a date, and a date a server writes into its own text is shown as written. To the Rust API it adds only that builder, so a consumer of `0.7.1` compiles against it unchanged apart from the pin. It takes a minor release for the reason `0.2.0` did: the page a consumer gets is a different page.
 
 `0.8.1` adds `Form::secondary`, which draws a form button in the plain outlined style, and `Button::undoable` with `Undoable`, a form button with no fields that hides its row, offers Undo in a toast and posts its action only when the wait is over. Gold marks the action a row exists for rather than any button that writes. Existing form buttons are drawn and behave as they were, so a consumer of `0.8.0` compiles against it unchanged apart from the pin.
+
+`0.9.0` lets a table take parameters, as a view does: `TableLogic::params` declares them, `TableLogic::shows` picks the rows a page holds, the arguments reach every hook through `Context::args`, and a write puts the posted rows back among the rest of the file. `TableLogic::below` draws other tables beneath a table on one page, each with its own file and saves, and a derive or a write carries their rows `alongside` so the figures of each follow typing in any. `Column::amount` stores a figure as a number or a sum of plain arithmetic, read by `Amount::value` and `amount::evaluate` outside the `server` feature; `Format::negative` draws a negative figure in a tone; `Column::strong` and `Column::shaded_within` emphasise a column. `Schema::cells_from` takes a `CellSettings` per cell from the derivation—a tone, read-only, an underlay shown while the cell is blank, and a note—and `Schema::notes_in`, `Column::with_notes` and `Column::in_note_of` keep notes on cells, edited in a popover. A view can carry cards beside its sections with `ViewData::card`, and a view or an overview can dock its cards at the foot of the window with `dock_cards`; `Section::freeze`, `Section::estimate_by` and `Section::notes_in` draw a section as a frozen table, tint its estimates, and show notes on its cells. To the Rust API it adds those builders, `Amount`, `CellSettings`, `Below`, `Context::with_args`, `ViewArgs::new` and `ViewArgs::with`, and the defaulted `TableLogic::params`, `TableLogic::shows` and `TableLogic::below`. One break is theoretical, as 0.7.0's was: a type implementing both `TableLogic` and `ViewLogic` that calls `params` by method syntax must now say which it means, and since the two take different arguments the compiler says so rather than picking one. A table with no parameters is written exactly as before, so a consumer of `0.8.1` compiles against it unchanged apart from the pin. Every consumer still gets a different page: a cell that takes input rests in a faint well, Esc abandons the edit in a cell, a table's first column and its headings' titles stay in view as it scrolls sideways and the column is held under half a narrow window, and the top bar's switcher scrolls rather than pushing the theme button off a phone's screen. It takes a minor release for the reason `0.2.0` did.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 
