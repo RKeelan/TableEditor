@@ -63,10 +63,27 @@ describe("reading the address", () => {
   });
 
   test("names a table, or nothing at all", () => {
-    expect(parseTarget("?table=books")).toEqual({ kind: "table", name: "books" });
+    expect(parseTarget("?table=books")).toEqual({ kind: "table", name: "books", args: {} });
     expect(parseTarget("")).toEqual({ kind: "none" });
     expect(parseTarget("?")).toEqual({ kind: "none" });
     expect(parseTarget("?view=")).toEqual({ kind: "none" });
+  });
+
+  test("carries a table's parameters", () => {
+    expect(parseTarget("?table=purchases&year=2025&branch=")).toEqual({
+      kind: "table",
+      name: "purchases",
+      args: { year: "2025", branch: "" },
+    });
+  });
+
+  test("reads back the address a table asked", () => {
+    const args = { year: "2025", branch: "", who: "Ada Ferreira" };
+    expect(parseTarget(tableHref("purchases", args))).toEqual({
+      kind: "table",
+      name: "purchases",
+      args,
+    });
   });
 
   test("prefers a view where an address somehow names both", () => {
@@ -112,6 +129,18 @@ describe("writing the address", () => {
       "?who=Ada+Ferreira&view=on-loan",
     );
     expect(tableHref("books")).toBe("?table=books");
+  });
+
+  test("writes a table's parameters after its name, in key order", () => {
+    expect(tableHref("purchases", { year: "2025", branch: "cen" })).toBe(
+      "?table=purchases&branch=cen&year=2025",
+    );
+    // A cleared parameter is an answer, and stays in the address.
+    expect(tableHref("purchases", { year: "" })).toBe("?table=purchases&year=");
+    // Neither word the address names a page by can be displaced.
+    expect(tableHref("purchases", { table: "books", view: "on-loan" })).toBe(
+      "?table=purchases",
+    );
   });
 
   test("round-trips what a query string would otherwise read as syntax", () => {
@@ -300,6 +329,19 @@ describe("correcting the address", () => {
         page({ genre: "Reference", subgenre: "" }),
       ),
     ).toBeNull();
+  });
+
+  test("corrects a table's address by the same rule", () => {
+    const table = {
+      params: [{ key: "year", label: "Year", type: "select" as const }],
+      args: { year: "2026" },
+    };
+    expect(correctedHref("?table=purchases&year=1999", table)).toBe(
+      "?table=purchases&year=2026",
+    );
+    expect(correctedHref("?table=purchases", table)).toBeNull();
+    // A table with no parameters answers with none, and corrects nothing.
+    expect(correctedHref("?table=books&year=1999", {})).toBeNull();
   });
 
   test("leaves a question the address never asked to the view", () => {
@@ -661,6 +703,7 @@ describe("what a bare address opens", () => {
     expect(resolveTarget(withFront({ table: "genres" }), { kind: "none" })).toEqual({
       kind: "table",
       name: "genres",
+      args: {},
     });
   });
 
@@ -668,11 +711,12 @@ describe("what a bare address opens", () => {
     expect(resolveTarget(withFront(), { kind: "none" })).toEqual({
       kind: "table",
       name: "books",
+      args: {},
     });
   });
 
   test("is whatever the address asked for, when it asked", () => {
-    const asked = { kind: "table", name: "genres" } as const;
+    const asked = { kind: "table", name: "genres", args: {} } as const;
     expect(resolveTarget(withFront({ view: "on-loan" }), asked)).toEqual(asked);
   });
 
@@ -726,7 +770,7 @@ describe("what the top bar offers", () => {
       name: "Library",
       tables: [{ table: "genres", title: "Genres", in_switcher: false }],
     };
-    expect(isServed(app, { kind: "table", name: "genres" })).toBe(true);
+    expect(isServed(app, { kind: "table", name: "genres", args: {} })).toBe(true);
     expect(switcherTables(app.tables)).toEqual([]);
   });
 
@@ -812,6 +856,7 @@ describe("what the top bar offers", () => {
     expect(resolveTarget(hidden, { kind: "none" })).toEqual({
       kind: "table",
       name: "assets",
+      args: {},
     });
   });
 });
@@ -825,12 +870,12 @@ describe("whether the app serves what was asked for", () => {
 
   test("says so for a view and a table it has", () => {
     expect(isServed(app, { kind: "view", name: "on-loan", args: {} })).toBe(true);
-    expect(isServed(app, { kind: "table", name: "books" })).toBe(true);
+    expect(isServed(app, { kind: "table", name: "books", args: {} })).toBe(true);
   });
 
   test("says so for one it has not, whichever kind was asked for", () => {
     expect(isServed(app, { kind: "view", name: "books", args: {} })).toBe(false);
-    expect(isServed(app, { kind: "table", name: "on-loan" })).toBe(false);
+    expect(isServed(app, { kind: "table", name: "on-loan", args: {} })).toBe(false);
     expect(isServed({ name: "Bare", tables: [] }, { kind: "view", name: "x", args: {} })).toBe(
       false,
     );

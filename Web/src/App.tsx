@@ -26,9 +26,13 @@ export function resolveTarget(app: AppPayload, asked: Target): Target {
   if (front && "view" in front) {
     return { kind: "view", name: front.view, args: {} };
   }
-  if (front && "table" in front) return { kind: "table", name: front.table };
+  if (front && "table" in front) {
+    return { kind: "table", name: front.table, args: {} };
+  }
   const first = app.tables[0];
-  return first ? { kind: "table", name: first.table } : { kind: "none" };
+  return first
+    ? { kind: "table", name: first.table, args: {} }
+    : { kind: "none" };
 }
 
 /** Whether the app serves what the address asked for. */
@@ -205,6 +209,8 @@ export function App() {
             <TableEditor
               key={target.name}
               table={target.name}
+              args={target.args}
+              onAsk={ask}
               views={app.views ?? []}
               pending={pending}
               go={go}

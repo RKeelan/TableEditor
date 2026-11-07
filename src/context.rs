@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Result, anyhow, bail};
 use serde::de::DeserializeOwned;
@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use crate::error::ApiError;
 use crate::jsonl;
 use crate::table::{By, Written};
+use crate::view::ViewArgs;
 
 /// What one file held the first time this context looked: its text, or the
 /// error that said it was not there.
@@ -17,7 +18,7 @@ type Cached = Result<String, String>;
 
 /// What a request that writes is to tell once it has written: the app's
 /// [`crate::App::after_write`], put there by the server.
-type AfterWrite = Box<dyn Fn(&Context, &Written<'_>) -> Option<String> + Send + Sync>;
+type AfterWrite = Arc<dyn Fn(&Context, &Written<'_>) -> Option<String> + Send + Sync>;
 
 /// The version a file that is not there has. No present file can take it,
 /// since a hash is sixteen hex digits, so a write that states the version of a
@@ -47,11 +48,16 @@ const ABSENT: &str = "absent";
 /// what they wrote through the context once they have written, so a table or
 /// view a repository wraps in one of its own still tells it, as long as the
 /// wrapper passes the request on.
+///
+/// A table's request carries the arguments the table was asked with, which
+/// [`Context::args`] hands to each of the table's hooks. Every other request's
+/// context carries none.
 pub struct Context {
     data_dir: PathBuf,
-    cache: Mutex<HashMap<String, Cached>>,
-    written: Mutex<Vec<String>>,
+    cache: Arc<Mutex<HashMap<String, Cached>>>,
+    written: Arc<Mutex<Vec<String>>>,
     after_write: Option<AfterWrite>,
+    args: ViewArgs,
 }
 
 impl Context {
@@ -59,9 +65,43 @@ impl Context {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
-            cache: Mutex::new(HashMap::new()),
-            written: Mutex::new(Vec::new()),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            written: Arc::new(Mutex::new(Vec::new())),
             after_write: None,
+            args: ViewArgs::default(),
+        }
+    }
+
+    /// The arguments a table was asked with: the query string of its read,
+    /// write or derive, settled against [`crate::TableLogic::params`] as a
+    /// view's are, so a parameter the address left out holds its default.
+    /// While `params` itself is being asked, they are what the address carried,
+    /// not yet settled.
+    ///
+    /// They are empty outside a table's request: a view is handed its own,
+    /// and the page being opened is about no table.
+    pub fn args(&self) -> &ViewArgs {
+        &self.args
+    }
+
+    /// The same context, carrying `args`. It is how a repository's own tests
+    /// ask a table's hooks about one year, say; the server builds a table's
+    /// context with the query string it was asked with.
+    pub fn with_args(mut self, args: ViewArgs) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// This request's context carrying other arguments. It shares what the
+    /// request has read and written, and what it tells the app, so it is the
+    /// same request seen with its arguments settled.
+    pub(crate) fn under(&self, args: ViewArgs) -> Self {
+        Self {
+            data_dir: self.data_dir.clone(),
+            cache: Arc::clone(&self.cache),
+            written: Arc::clone(&self.written),
+            after_write: self.after_write.clone(),
+            args,
         }
     }
 
@@ -71,7 +111,7 @@ impl Context {
         mut self,
         hook: impl Fn(&Context, &Written<'_>) -> Option<String> + Send + Sync + 'static,
     ) -> Self {
-        self.after_write = Some(Box::new(hook));
+        self.after_write = Some(Arc::new(hook));
         self
     }
 
@@ -569,6 +609,25 @@ mod tests {
         let ctx = Context::new(dir.path()).telling(|_, _| Some(" \n".to_string()));
         ctx.write("Rows.jsonl", "a\n").unwrap();
         assert_eq!(ctx.after_write(By::Table("rows")), None);
+    }
+
+    #[test]
+    fn a_context_under_other_arguments_is_the_same_request() {
+        let dir = fixture::temp_dir();
+        dir.write("Rows.jsonl", "{\"name\":\"a\"}\n");
+        let ctx = Context::new(dir.path()).with_args(ViewArgs::new().with("year", "2025"));
+        let version = ctx.version("Rows.jsonl").unwrap();
+
+        let settled = ctx.under(ViewArgs::new().with("year", "2026"));
+        assert_eq!(settled.args().get("year"), Some("2026"));
+        assert_eq!(ctx.args().get("year"), Some("2025"));
+
+        // What one read, the other sees, and what one wrote, both remember.
+        dir.write("Rows.jsonl", "{\"name\":\"b\"}\n");
+        assert_eq!(settled.version("Rows.jsonl").unwrap(), version);
+        settled.write("Rows.jsonl", "{\"name\":\"c\"}\n").unwrap();
+        assert_eq!(ctx.written(), ["Rows.jsonl"]);
+        assert_eq!(ctx.read("Rows.jsonl").unwrap(), "{\"name\":\"c\"}\n");
     }
 
     #[test]

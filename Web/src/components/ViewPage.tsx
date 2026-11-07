@@ -4,7 +4,6 @@ import { describeError } from "../lib/errors";
 import { pendingActions } from "../lib/pending";
 import type { Row } from "../lib/schema";
 import {
-  type ViewParam,
   type ViewPayload,
   type ViewSection,
   announce,
@@ -18,6 +17,7 @@ import {
   viewHref,
 } from "../lib/view";
 import { CardGrid } from "./CardGrid";
+import { ParamControl } from "./ParamControl";
 import { DetailPage } from "./DetailPage";
 import { FrozenSection } from "./FrozenSection";
 import { useNote } from "./NotePopover";
@@ -260,57 +260,6 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
 
       {docked && body === "rows" && <CardDock cards={cards} onAsk={onAsk} />}
     </div>
-  );
-}
-
-function ParamControl({
-  param,
-  value,
-  onAsk,
-}: {
-  param: ViewParam;
-  value: string;
-  onAsk: (key: string, value: string) => void;
-}) {
-  // Typed text asks when it is finished rather than on every keystroke, since
-  // each question is a fetch and an entry in the history. Enter asks without
-  // leaving the field, so a reader can try several answers from the keyboard.
-  const [typed, setTyped] = useState(value);
-  useEffect(() => setTyped(value), [value]);
-
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-sm text-muted">{param.label}</span>
-      {param.type === "select" ? (
-        <select
-          value={value}
-          onChange={(e) => onAsk(param.key, e.target.value)}
-          aria-label={param.label}
-          className="field h-9 w-full border border-border bg-page sm:w-56"
-        >
-          {!param.options?.some((o) => o.value === value) && (
-            <option value={value}>{value === "" ? "—" : value}</option>
-          )}
-          {param.options?.map((option, i) => (
-            <option key={`${i}-${option.value}`} value={option.value}>
-              {option.label ?? option.value}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <input
-          type="text"
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          onBlur={() => typed !== value && onAsk(param.key, typed)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && typed !== value) onAsk(param.key, typed);
-          }}
-          aria-label={param.label}
-          className="field h-9 w-full border border-border bg-page sm:w-56"
-        />
-      )}
-    </label>
   );
 }
 

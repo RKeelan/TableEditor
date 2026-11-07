@@ -18,7 +18,7 @@ use crate::head::Icon;
 use crate::jsonl;
 use crate::overview::Overview;
 use crate::schema::{RowLink, Schema};
-use crate::view::View;
+use crate::view::{Param, View, ViewArgs};
 
 /// Where the editor opens when the address names nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +222,40 @@ pub trait TableLogic: Send + Sync + 'static {
         true
     }
 
+    /// The controls in the table's toolbar, in the shape a view's take, such
+    /// as the year a budget shows. The default is none.
+    ///
+    /// They are rebuilt on every read, write and derive, as a schema is, so a
+    /// select can be filled from the file. The query string of each request
+    /// is settled against them as a view's is: a select's answer it does not
+    /// offer falls back to the default, and keys no parameter declares are
+    /// kept. What they settle to is [`Context::args`] for every other hook
+    /// the request calls. While this is being asked, `ctx.args()` is what the
+    /// address carried, not yet settled, so one parameter's options may follow
+    /// another's answer.
+    ///
+    /// A type implementing both this and [`crate::ViewLogic`] has two methods
+    /// called `params`, and calls either by naming its trait.
+    fn params(&self, _ctx: &Context) -> Result<Vec<Param>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// Whether the table's page shows `row` under the arguments in
+    /// `ctx.args()`. The default shows every row.
+    ///
+    /// A read sends the rows this keeps, in file order, and they are what
+    /// `derive`, `validate`, `overview` and `stamp` are handed, so an error's
+    /// line counts within them. A write to a table that declares parameters
+    /// keeps every row of the file this rejects and puts the rows it was sent
+    /// where the first row this keeps was, or at the end of the file where it
+    /// keeps none; a row sent is written whether or not this would keep it.
+    /// The whole file then goes through `serialize`, which may order it as it
+    /// likes. A write to a table that declares none replaces the file with
+    /// the rows it was sent, without reading it.
+    fn shows(&self, _row: &Self::Row, _ctx: &Context) -> bool {
+        true
+    }
+
     /// Rebuilt on every read, so sibling-derived options and widths are
     /// current.
     fn schema(&self, ctx: &Context) -> Result<Schema, ApiError>;
@@ -398,14 +432,27 @@ pub trait Table: Send + Sync {
     /// The view each row links into, from [`TableLogic::link`].
     fn row_link(&self) -> Option<RowLink>;
 
-    /// `GET /api/<table>`: the schema, the stored rows, their derivation, their
-    /// validation errors, their overview, any sibling data, and the version of
-    /// the file the rows were read from.
+    /// The keys of the parameters this table declares, from
+    /// [`TableLogic::params`], which the server checks against the ones the
+    /// address itself uses. The default is none, so a wrapper around another
+    /// table that does not forward this goes unchecked.
+    fn param_keys(&self, _ctx: &Context) -> Result<Vec<String>, ApiError> {
+        Ok(Vec::new())
+    }
+
+    /// `GET /api/<table>`: the schema, the stored rows the table's `shows`
+    /// keeps, their derivation, their validation errors, their overview, any
+    /// sibling data, the version of the whole file the rows were read from,
+    /// and the table's parameters with what they settled to.
+    ///
+    /// Each of the three takes the query string it was asked with as
+    /// [`Context::args`], and settles it against the table's parameters.
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError>;
 
     /// `PUT /api/<table>`: write the posted rows, stamped where the body lists
-    /// edits, and return their derivation and overview, the version the file
-    /// now has, and the rows the stamp changed.
+    /// edits, into the rows of the file the table's `shows` rejects where it
+    /// declares parameters, and return their derivation and overview, the version the file now has,
+    /// and the rows the stamp changed.
     ///
     /// A body that states the version its rows were read at is refused with a
     /// 409 where the file now holds something else, so a client holding a whole
@@ -447,12 +494,24 @@ impl<T: TableLogic> Table for T {
         self.link()
     }
 
+    fn param_keys(&self, ctx: &Context) -> Result<Vec<String>, ApiError> {
+        Ok(self
+            .params(ctx)?
+            .iter()
+            .map(|param| param.key().to_string())
+            .collect())
+    }
+
     fn handle_get(&self, ctx: &Context) -> Result<String, ApiError> {
+        let (params, ctx) = &self.settle(ctx)?;
         let file = self.file();
         let text = ctx.read(file)?;
-        let rows = self
+        let rows: Vec<T::Row> = self
             .parse(&text)
-            .map_err(|e| ApiError::from_parse(file, &e))?;
+            .map_err(|e| ApiError::from_parse(file, &e))?
+            .into_iter()
+            .filter(|row| self.shows(row, ctx))
+            .collect();
 
         let mut schema = self.schema(ctx)?;
         schema.identify(self.name(), self.title());
@@ -472,11 +531,16 @@ impl<T: TableLogic> Table for T {
             overview,
             siblings: self.siblings(ctx)?,
             version: ctx.version(file)?,
+            args: (!params.is_empty()).then(|| ctx.args().clone()),
+            params: params.clone(),
         })
     }
 
     fn handle_put(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
-        let saved = save(self, ctx, body);
+        // Settling the arguments writes nothing, so a failure there has
+        // nothing to tell the app.
+        let (params, ctx) = &self.settle(ctx)?;
+        let saved = save(self, ctx, params, body);
         // The app is told what was written whether or not the save went
         // through, since what it is told is what is on disk, and before the
         // answer is built, so that what it says is part of the answer.
@@ -492,6 +556,7 @@ impl<T: TableLogic> Table for T {
     }
 
     fn handle_derive(&self, ctx: &Context, body: &str) -> Result<String, ApiError> {
+        let (_, ctx) = &self.settle(ctx)?;
         let request: RowsRequest<T::Row> = parse_body(body)?;
         let mut rows = request.rows;
         let edits = edits_of(&request.edited, rows.len())?;
@@ -510,7 +575,12 @@ impl<T: TableLogic> Table for T {
 /// A save, up to what the app is told of it: the posted rows stamped and
 /// written, and the answer that says so, with the stamp's notice and not yet
 /// the app's.
-fn save<T: TableLogic>(table: &T, ctx: &Context, body: &str) -> Result<PutResponse, ApiError> {
+fn save<T: TableLogic>(
+    table: &T,
+    ctx: &Context,
+    params: &[Param],
+    body: &str,
+) -> Result<PutResponse, ApiError> {
     let file = table.file();
     let request: RowsRequest<T::Row> = parse_body(body)?;
     let mut rows = request.rows;
@@ -536,10 +606,14 @@ fn save<T: TableLogic>(table: &T, ctx: &Context, body: &str) -> Result<PutRespon
     // moved on from, and the retry would be refused over a write that had in
     // fact gone through.
     let (stamped, notice) = table.stamping(ctx, &mut rows, &edits, Stamping::Write)?;
-    let text = table
-        .serialize(&rows)
-        .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?;
     let (derived, errors, overview) = table.derivation(ctx, &rows)?;
+    let text = if table.scopes_rows(params) {
+        table.whole_file(ctx, rows)?
+    } else {
+        table
+            .serialize(&rows)
+            .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))?
+    };
     ctx.write(file, &text)?;
 
     Ok(PutResponse {
@@ -578,6 +652,53 @@ fn edits_of(edited: &[EditedLine], rows: usize) -> Result<Edits, ApiError> {
 /// together, all of one set of rows; and before that, for a write and a
 /// derivation, what they are stamped with.
 trait Derivation: TableLogic {
+    /// The table's parameters, and the request's context with the arguments
+    /// it carries settled against them.
+    fn settle(&self, ctx: &Context) -> Result<(Vec<Param>, Context), ApiError> {
+        let params = self.params(ctx)?;
+        let args = ctx.args().settled(&params);
+        Ok((params, ctx.under(args)))
+    }
+
+    /// Whether the table's page holds some of its file's rows rather than all
+    /// of them, so that a write has to put what it was sent in among the rest.
+    /// A table that declares parameters does; one that declares none holds
+    /// the whole file, and a write replaces the file with what it was sent
+    /// without reading it.
+    fn scopes_rows(&self, params: &[Param]) -> bool {
+        !params.is_empty()
+    }
+
+    /// The text of the whole file once `rows` are put into it: every row of
+    /// the file as the context reads it that `shows` rejects, in its place,
+    /// with `rows` where the first row it keeps was, or at the end where it
+    /// keeps none, all through `serialize`. Nothing is written.
+    ///
+    /// A file that is not there holds no rows, so a first write makes it.
+    fn whole_file(&self, ctx: &Context, rows: Vec<Self::Row>) -> Result<String, ApiError> {
+        let file = self.file();
+        let stored = match ctx.read_optional(file)? {
+            Some(text) => self
+                .parse(&text)
+                .map_err(|e| ApiError::from_parse(file, &e))?,
+            None => Vec::new(),
+        };
+        let mut posted = Some(rows);
+        let mut whole = Vec::with_capacity(stored.len());
+        for row in stored {
+            if !self.shows(&row, ctx) {
+                whole.push(row);
+            } else if let Some(rows) = posted.take() {
+                whole.extend(rows);
+            }
+        }
+        if let Some(rows) = posted {
+            whole.extend(rows);
+        }
+        self.serialize(&whole)
+            .map_err(|e| ApiError::server(format!("could not serialize {file}: {e}")))
+    }
+
     fn derivation(
         &self,
         ctx: &Context,
@@ -687,6 +808,13 @@ struct GetPayload<'a, R> {
     /// The version of the file `rows` were read from, which a write states
     /// back.
     version: String,
+    /// The table's parameters, absent where it declares none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    params: Vec<Param>,
+    /// What the parameters settled to, with every key the address carried;
+    /// absent with them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<ViewArgs>,
 }
 
 /// `PUT /api/<table>`.
@@ -741,7 +869,7 @@ mod tests {
     use super::*;
     use crate::fixture::{self, BOOKS_FILE, Book, Books, GENRES_FILE, Genre, Genres};
     use crate::overview::{Footer, RowGroup};
-    use crate::schema::Column;
+    use crate::schema::{Column, NewRow};
     use crate::view::{ViewArgs, ViewData, ViewLogic};
 
     #[test]
@@ -1921,5 +2049,391 @@ mod tests {
 
         assert_eq!(Mixed.switcher(), ["on-loan", "shelf", "books", "genres"]);
         assert_eq!(fixture::Plain::new().switcher(), ["books"]);
+    }
+
+    /// A table whose page shows one genre at a time, chosen by a parameter,
+    /// and which notes the genre each of its hooks was asked under.
+    #[derive(Default)]
+    struct ByGenre {
+        seen: Mutex<Vec<(&'static str, Option<String>)>>,
+    }
+
+    impl ByGenre {
+        fn note(&self, hook: &'static str, ctx: &Context) {
+            let genre = ctx.args().get("genre").map(str::to_string);
+            self.seen.lock().unwrap().push((hook, genre));
+        }
+
+        /// The genre each hook was asked under, the last time it was asked.
+        fn asked(&self, hook: &str) -> Option<String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(seen, _)| *seen == hook)
+                .and_then(|(_, genre)| genre.clone())
+        }
+    }
+
+    impl TableLogic for ByGenre {
+        type Row = Book;
+        fn name(&self) -> &'static str {
+            "by-genre"
+        }
+        fn file(&self) -> &'static str {
+            BOOKS_FILE
+        }
+        fn title(&self) -> &'static str {
+            "By genre"
+        }
+        fn params(&self, ctx: &Context) -> Result<Vec<Param>, ApiError> {
+            self.note("params", ctx);
+            Ok(vec![
+                Param::select("genre", "Genre", ["Reference", "Travel", "Poetry"])
+                    .default("Reference"),
+            ])
+        }
+        fn shows(&self, row: &Book, ctx: &Context) -> bool {
+            ctx.args().get("genre") == Some(row.genre.as_str())
+        }
+        fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
+            self.note("schema", ctx);
+            let genre = ctx.args().get_or("genre", "");
+            Ok(Schema::new([Column::string("title", "Title")])
+                .new_row(NewRow::new().with("title", "").with("genre", genre)))
+        }
+        fn validate(&self, rows: &[Book], ctx: &Context) -> Result<Vec<ValidationError>, ApiError> {
+            self.note("validate", ctx);
+            Ok(rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.title.is_empty())
+                .map(|(idx, _)| ValidationError::field(idx + 1, "title", "say what it is"))
+                .collect())
+        }
+        fn derive(&self, rows: &[Book], ctx: &Context) -> Result<Vec<Value>, ApiError> {
+            self.note("derive", ctx);
+            Ok(rows.iter().map(|_| serde_json::json!({})).collect())
+        }
+        fn stamp(
+            &self,
+            _rows: &mut [Book],
+            _edits: &Edits,
+            _stamping: Stamping,
+            ctx: &Context,
+        ) -> Result<Option<String>, ApiError> {
+            self.note("stamp", ctx);
+            Ok(None)
+        }
+        fn overview(&self, _rows: &[Book], ctx: &Context) -> Result<Overview, ApiError> {
+            self.note("overview", ctx);
+            Ok(Overview::new().footer(Footer::new(ctx.args().get_or("genre", "none"))))
+        }
+        fn siblings(&self, ctx: &Context) -> Result<Value, ApiError> {
+            self.note("siblings", ctx);
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    /// Four books, two of each of two genres, alternating.
+    const MIXED: &str = concat!(
+        r#"{"title":"Atlas","genre":"Travel","subgenre":"Maps"}"#,
+        "\n",
+        r#"{"title":"Bestiary","genre":"Reference","subgenre":"Nature"}"#,
+        "\n",
+        r#"{"title":"Coastline","genre":"Travel","subgenre":"Walks"}"#,
+        "\n",
+        r#"{"title":"Dictionary","genre":"Reference","subgenre":"Words"}"#,
+        "\n",
+    );
+
+    fn asked(pairs: &[(&str, &str)]) -> ViewArgs {
+        pairs.iter().fold(ViewArgs::new(), |args, (key, value)| {
+            args.with(*key, *value)
+        })
+    }
+
+    fn titles(file: &str) -> Vec<String> {
+        file.lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["title"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn settled_arguments_reach_every_hook_of_a_read() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let table = ByGenre::default();
+
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+        let v: Value = serde_json::from_str(&table.handle_get(&ctx).unwrap()).unwrap();
+        for hook in ["schema", "validate", "derive", "overview", "siblings"] {
+            assert_eq!(table.asked(hook).as_deref(), Some("Travel"), "{hook}");
+        }
+        assert_eq!(v["schema"]["new_row"]["defaults"]["genre"], "Travel");
+        assert_eq!(v["overview"]["footer"]["title"], "Travel");
+
+        // An address that names no genre is answered with the default, which
+        // `params` itself is asked before it is filled in.
+        let v: Value = serde_json::from_str(&table.handle_get(&dir.context()).unwrap()).unwrap();
+        assert_eq!(table.asked("params"), None);
+        assert_eq!(table.asked("schema").as_deref(), Some("Reference"));
+        assert_eq!(v["args"], serde_json::json!({ "genre": "Reference" }));
+    }
+
+    #[test]
+    fn settled_arguments_reach_the_stamp_of_a_derive_and_a_write() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let table = ByGenre::default();
+        let body = r#"{"rows":[{"title":"Atlas","genre":"Travel","subgenre":"Maps"}],
+                       "edited":[{"line":1,"fields":["title"]}]}"#;
+
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+        table.handle_derive(&ctx, body).unwrap();
+        assert_eq!(table.asked("stamp").as_deref(), Some("Travel"));
+        assert_eq!(table.asked("derive").as_deref(), Some("Travel"));
+
+        // An answer the select does not offer falls back to the default.
+        let ctx = dir.context().with_args(asked(&[("genre", "Opera")]));
+        table.handle_put(&ctx, body).unwrap();
+        assert_eq!(table.asked("stamp").as_deref(), Some("Reference"));
+        assert_eq!(table.asked("overview").as_deref(), Some("Reference"));
+    }
+
+    #[test]
+    fn a_read_sends_the_rows_shows_keeps_in_file_order() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let ctx = dir
+            .context()
+            .with_args(asked(&[("genre", "Travel"), ("from", "card")]));
+
+        let v: Value = serde_json::from_str(&ByGenre::default().handle_get(&ctx).unwrap()).unwrap();
+        let shown: Vec<&str> = v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(shown, ["Atlas", "Coastline"]);
+        assert_eq!(v["derived"].as_array().unwrap().len(), 2);
+        assert_eq!(v["params"][0]["key"], "genre");
+        // A key no parameter declares is kept.
+        assert_eq!(
+            v["args"],
+            serde_json::json!({ "genre": "Travel", "from": "card" })
+        );
+        // The version is of the whole file.
+        assert_eq!(v["version"], dir.context().version(BOOKS_FILE).unwrap());
+    }
+
+    #[test]
+    fn an_error_counts_its_line_within_the_rows_shown() {
+        let dir = fixture::temp_dir();
+        dir.write(
+            BOOKS_FILE,
+            &format!(
+                "{MIXED}{}\n",
+                r#"{"title":"","genre":"Travel","subgenre":"Maps"}"#
+            ),
+        );
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+
+        let v: Value = serde_json::from_str(&ByGenre::default().handle_get(&ctx).unwrap()).unwrap();
+        assert_eq!(v["errors"][0]["line"], 3);
+    }
+
+    #[test]
+    fn a_table_with_no_parameters_sends_neither_params_nor_args() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, fixture::MOSS);
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+
+        let v: Value = serde_json::from_str(&Books.handle_get(&ctx).unwrap()).unwrap();
+        assert!(v.get("params").is_none());
+        assert!(v.get("args").is_none());
+        assert_eq!(v["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_write_puts_the_rows_it_was_sent_where_the_first_row_shown_was() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let ctx = dir.context().with_args(asked(&[("genre", "Reference")]));
+        let body = r#"{"rows":[
+            {"title":"Encyclopaedia","genre":"Reference","subgenre":"All"},
+            {"title":"Dictionary","genre":"Reference","subgenre":"Words"},
+            {"title":"Field guide","genre":"Travel","subgenre":"Walks"}]}"#;
+
+        ByGenre::default().handle_put(&ctx, body).unwrap();
+        // The rows the page did not show stay where they were; what it sent
+        // replaces the two it did, from where the first of them was, and a
+        // row of another genre is written all the same.
+        assert_eq!(
+            titles(&dir.read(BOOKS_FILE)),
+            [
+                "Atlas",
+                "Encyclopaedia",
+                "Dictionary",
+                "Field guide",
+                "Coastline"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_write_where_no_row_was_shown_appends_the_rows_it_was_sent() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let ctx = dir.context().with_args(asked(&[("genre", "Poetry")]));
+        let body = r#"{"rows":[{"title":"Elegies","genre":"Poetry","subgenre":"Verse"}]}"#;
+
+        ByGenre::default().handle_put(&ctx, body).unwrap();
+        assert_eq!(
+            titles(&dir.read(BOOKS_FILE)),
+            ["Atlas", "Bestiary", "Coastline", "Dictionary", "Elegies"]
+        );
+    }
+
+    #[test]
+    fn a_write_of_no_rows_takes_out_only_the_rows_shown() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+
+        ByGenre::default()
+            .handle_put(&ctx, r#"{"rows":[]}"#)
+            .unwrap();
+        assert_eq!(titles(&dir.read(BOOKS_FILE)), ["Bestiary", "Dictionary"]);
+    }
+
+    #[test]
+    fn a_write_is_refused_after_a_change_to_rows_it_did_not_show() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let travel = || dir.context().with_args(asked(&[("genre", "Travel")]));
+        let read: Value =
+            serde_json::from_str(&ByGenre::default().handle_get(&travel()).unwrap()).unwrap();
+        let version = read["version"].as_str().unwrap();
+
+        // Another genre's row changes after the read.
+        dir.write(BOOKS_FILE, &MIXED.replace("Bestiary", "Herbal"));
+        let body = format!(
+            r#"{{"rows":[{{"title":"Atlas","genre":"Travel","subgenre":"Maps"}}],"version":"{version}"}}"#
+        );
+        let refused = ByGenre::default().handle_put(&travel(), &body).unwrap_err();
+        assert_eq!(refused.status, 409);
+        assert!(dir.read(BOOKS_FILE).contains("Herbal"));
+    }
+
+    #[test]
+    fn a_table_with_no_parameters_writes_over_a_file_it_cannot_read() {
+        let dir = fixture::temp_dir();
+        dir.write(GENRES_FILE, "not a row\n");
+        let body = format!(r#"{{"rows":[{}]}}"#, fixture::NATURAL_HISTORY);
+
+        Genres.handle_put(&dir.context(), &body).unwrap();
+        assert_eq!(
+            dir.read(GENRES_FILE),
+            format!("{}\n", fixture::NATURAL_HISTORY)
+        );
+    }
+
+    #[test]
+    fn a_table_with_parameters_refuses_to_write_into_a_file_it_cannot_read() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, "not a row\n");
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+        let body = r#"{"rows":[{"title":"Atlas","genre":"Travel","subgenre":"Maps"}]}"#;
+
+        let refused = ByGenre::default().handle_put(&ctx, body).unwrap_err();
+        assert_eq!(refused.status, 500);
+        assert!(refused.message.contains(BOOKS_FILE));
+        assert_eq!(dir.read(BOOKS_FILE), "not a row\n");
+    }
+
+    #[test]
+    fn the_merge_writes_nothing_itself() {
+        let dir = fixture::temp_dir();
+        dir.write(BOOKS_FILE, MIXED);
+        let ctx = dir.context().with_args(asked(&[("genre", "Travel")]));
+
+        let text = ByGenre::default().whole_file(&ctx, Vec::new()).unwrap();
+        assert_eq!(titles(&text), ["Bestiary", "Dictionary"]);
+        assert_eq!(dir.read(BOOKS_FILE), MIXED);
+    }
+
+    #[test]
+    #[should_panic(expected = "has a parameter keyed \"table\"")]
+    fn a_table_parameter_keyed_like_the_address_is_refused() {
+        struct Clashing;
+        impl TableLogic for Clashing {
+            type Row = Book;
+            fn name(&self) -> &'static str {
+                "clashing"
+            }
+            fn file(&self) -> &'static str {
+                BOOKS_FILE
+            }
+            fn title(&self) -> &'static str {
+                "Clashing"
+            }
+            fn params(&self, _ctx: &Context) -> Result<Vec<Param>, ApiError> {
+                Ok(vec![Param::string("table", "Table")])
+            }
+            fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+                Ok(Schema::new([Column::string("title", "Title")]))
+            }
+            fn validate(
+                &self,
+                _rows: &[Book],
+                _ctx: &Context,
+            ) -> Result<Vec<ValidationError>, ApiError> {
+                Ok(Vec::new())
+            }
+        }
+        struct Clash;
+        impl App for Clash {
+            fn name(&self) -> &str {
+                "Clash"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&Clashing]
+            }
+        }
+
+        let _ = crate::Server::new(Clash);
+    }
+
+    #[test]
+    fn the_arguments_are_empty_outside_a_table_request() {
+        struct Asking(Mutex<Option<usize>>);
+        impl ViewLogic for Asking {
+            fn name(&self) -> &'static str {
+                "asking"
+            }
+            fn title(&self) -> &'static str {
+                "Asking"
+            }
+            fn render(&self, _args: &ViewArgs, ctx: &Context) -> Result<ViewData, ApiError> {
+                *self.0.lock().unwrap() = Some(ctx.args().len());
+                Ok(ViewData::new())
+            }
+        }
+
+        let dir = fixture::temp_dir();
+        assert!(dir.context().args().is_empty());
+
+        let view = Asking(Mutex::new(None));
+        let query = BTreeMap::from([("genre".to_string(), "Travel".to_string())]);
+        View::handle_get(&view, &query, &dir.context()).unwrap();
+        assert_eq!(*view.0.lock().unwrap(), Some(0));
     }
 }

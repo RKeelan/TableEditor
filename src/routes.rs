@@ -32,6 +32,7 @@ use crate::context::Context;
 use crate::error::ApiError;
 use crate::head;
 use crate::table::{App, Front, Table, listed_in_order};
+use crate::view::ViewArgs;
 
 const JSON: &str = "application/json";
 const HTML: &str = "text/html; charset=utf-8";
@@ -360,7 +361,9 @@ fn dispatch(
             read_body(request)?
         }
     };
-    let ctx = context(named)?;
+    // The query string is the arguments the table is asked with, which it
+    // settles against its own parameters.
+    let ctx = context(named)?.with_args(ViewArgs::from_query(&parse_query(request.url())));
 
     match action {
         Action::Get => route.table.handle_get(&ctx),

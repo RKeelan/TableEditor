@@ -237,27 +237,32 @@ export interface ActionResult {
   confirmation: string;
 }
 
-/** What the address asks for: a view with its parameters, a table, or nothing,
- *  in which case the app's own front page decides. */
+/** What the address asks for: a view or a table, each with its parameters,
+ *  or nothing, in which case the app's own front page decides. */
 export type Target =
   | { kind: "view"; name: string; args: Record<string, string> }
-  | { kind: "table"; name: string }
+  | { kind: "table"; name: string; args: Record<string, string> }
   | { kind: "none" };
 
-/** Read the address. A view's parameters are the rest of the query string, so
+/** Read the address. A page's parameters are the rest of the query string, so
  *  a page is a link: the same address always asks the same question. */
 export function parseTarget(search: string): Target {
   const query = new URLSearchParams(search);
-  const view = query.get("view");
-  if (view !== null && view !== "") {
+  const rest = (named: string) => {
     const args: Record<string, string> = {};
     for (const [key, value] of query) {
-      if (key !== "view") args[key] = value;
+      if (key !== named) args[key] = value;
     }
-    return { kind: "view", name: view, args };
+    return args;
+  };
+  const view = query.get("view");
+  if (view !== null && view !== "") {
+    return { kind: "view", name: view, args: rest("view") };
   }
   const table = query.get("table");
-  if (table !== null && table !== "") return { kind: "table", name: table };
+  if (table !== null && table !== "") {
+    return { kind: "table", name: table, args: rest("table") };
+  }
   return { kind: "none" };
 }
 
@@ -283,7 +288,8 @@ export function viewHref(name: string, args: Record<string, string>): string {
 }
 
 /** The address as the page actually answered it, or nothing where the two
- *  already agree.
+ *  already agree. A table's page answers with its parameters as a view's
+ *  does, and is corrected by the same rule.
  *
  *  A select's answer can be refused—a subgenre belonging to the genre chosen
  *  before this one—and the controls then show what the view settled on. An
@@ -294,11 +300,14 @@ export function viewHref(name: string, args: Record<string, string>): string {
  *  Only keys the address carried are rewritten. One it never mentioned is
  *  being answered by a default, and writing that in would fill a bare address
  *  with every question the page can ask. */
-export function correctedHref(search: string, page: ViewPayload): string | null {
+export function correctedHref(
+  search: string,
+  page: { params?: readonly ViewParam[]; args?: Record<string, string> },
+): string | null {
   const asked = new URLSearchParams(search);
   let changed = false;
-  for (const param of page.params) {
-    const settled = page.args[param.key] ?? "";
+  for (const param of page.params ?? []) {
+    const settled = page.args?.[param.key] ?? "";
     if (asked.has(param.key) && asked.get(param.key) !== settled) {
       asked.set(param.key, settled);
       changed = true;
@@ -365,8 +374,20 @@ export function announce(page: ViewPayload): string {
   return `${page.title}: ${parts.join("; ")}.`;
 }
 
-export function tableHref(name: string): string {
-  return `?table=${encodeURIComponent(name)}`;
+/** The address of a table asked a particular question. Its parameters follow
+ *  the table's name, in key order, by the rules `viewHref` gives: the same
+ *  question is always the same address, and a cleared parameter is kept as an
+ *  empty key. No parameter may be keyed `table` or `view`. */
+export function tableHref(
+  name: string,
+  args: Record<string, string> = {},
+): string {
+  const query = new URLSearchParams();
+  query.set("table", name);
+  for (const key of Object.keys(args).sort()) {
+    if (key !== "table" && key !== "view") query.set(key, args[key]);
+  }
+  return `?${query.toString()}`;
 }
 
 /** Where a row of a table links to: the address, and the name a screen

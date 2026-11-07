@@ -12,6 +12,7 @@ import {
   retryDelay,
   saveBanner,
   waitingToSave,
+  writeThenRead,
   writer,
 } from "../src/lib/save";
 
@@ -211,6 +212,7 @@ describe("what the shell waits for before it navigates", () => {
 interface Asked {
   write: Pending;
   version: string;
+  args: Record<string, string>;
   land: (version: string) => void;
   /** Land it with an answer spelled out, notice and all. */
   answer: (result: PutResult) => void;
@@ -239,11 +241,12 @@ function driven(): {
 
   const writes = writer({
     pending: () => ({ rows: screen.rows, key: screen.key, edited: screen.edited }),
-    put: (write, version) =>
+    put: (write, version, args) =>
       new Promise<PutResult>((resolve, reject) => {
         asked.push({
           write,
           version,
+          args,
           land: (next) => resolve({ derived: [], errors: [], version: next }),
           answer: resolve,
           refuse: reject,
@@ -263,6 +266,123 @@ function typed(screen: Screen, title: string): void {
   screen.rows = [{ title }];
   screen.key = JSON.stringify(screen.rows);
 }
+
+describe("a table read under other arguments", () => {
+  test("writes carry the arguments their rows were read under", async () => {
+    const { writes, asked, screen } = driven();
+    writes.loaded("[]", "v0", { year: "2025" });
+    expect(writes.args()).toEqual({ year: "2025" });
+
+    typed(screen, "Moss");
+    const saved = writes.save();
+    await settle();
+    expect(asked[0]!.args).toEqual({ year: "2025" });
+    asked[0]!.land("v1");
+    await saved;
+  });
+
+  test("a table read with no arguments writes with none", async () => {
+    const { writes, asked, screen } = driven();
+    writes.loaded("[]", "v0");
+    typed(screen, "Moss");
+    void writes.save();
+    await settle();
+    expect(asked[0]!.args).toEqual({});
+  });
+
+  test("writes what is pending under the old arguments before it reads under the new", async () => {
+    const { writes, asked, screen } = driven();
+    writes.loaded("[]", "v0", { year: "2025" });
+    const events: string[] = [];
+
+    // One write is in flight, and more is typed behind it.
+    typed(screen, "M");
+    void writes.save();
+    await settle();
+    typed(screen, "Moss");
+
+    // The year changes now.
+    const switched = writeThenRead(
+      writes,
+      async () => {
+        events.push("read");
+        writes.loaded("[]", "v9", { year: "2026" });
+      },
+      () => false,
+    );
+    await settle();
+    expect(events).toEqual([]);
+
+    asked[0]!.land("v1");
+    await settle();
+    // What was typed behind the first write goes next, under the old year,
+    // stating the version the first left behind, and the read still waits.
+    expect(asked).toHaveLength(2);
+    expect(asked[1]!.args).toEqual({ year: "2025" });
+    expect(asked[1]!.version).toBe("v1");
+    expect(asked[1]!.write.key).toBe(JSON.stringify([{ title: "Moss" }]));
+    expect(events).toEqual([]);
+
+    asked[1]!.land("v2");
+    expect(await switched).toBe(true);
+    expect(events).toEqual(["read"]);
+
+    // What is typed afterwards is written under the new year.
+    typed(screen, "Lichen");
+    void writes.save();
+    await settle();
+    expect(asked[2]!.args).toEqual({ year: "2026" });
+    expect(asked[2]!.version).toBe("v9");
+  });
+
+  test("reads at once where nothing is pending", async () => {
+    const { writes, asked } = driven();
+    writes.loaded("[]", "v0", { year: "2025" });
+    let read = false;
+    await writeThenRead(
+      writes,
+      async () => {
+        read = true;
+      },
+      () => false,
+    );
+    expect(read).toBe(true);
+    expect(asked).toHaveLength(0);
+  });
+
+  test("stays on the rows on screen where their write fails", async () => {
+    const { writes, asked, screen, states } = driven();
+    writes.loaded("[]", "v0", { year: "2025" });
+    typed(screen, "Moss");
+    let read = false;
+    const switched = writeThenRead(
+      writes,
+      async () => {
+        read = true;
+      },
+      () => states.at(-1)?.kind === "failed",
+    );
+    await settle();
+    asked[0]!.refuse(new Error("the server is down"));
+    expect(await switched).toBe(false);
+    expect(read).toBe(false);
+    expect(writes.args()).toEqual({ year: "2025" });
+  });
+
+  test("reads where the write was refused, since it cannot go through", async () => {
+    const { writes, asked, screen, states } = driven();
+    writes.loaded("[]", "v0", { year: "2025" });
+    typed(screen, "Moss");
+    const switched = writeThenRead(
+      writes,
+      async () => {},
+      () => states.at(-1)?.kind === "failed",
+    );
+    await settle();
+    asked[0]!.refuse(new ApiError(409, "Purchases.jsonl changed on disk"));
+    expect(await switched).toBe(true);
+  });
+});
 
 describe("the writes of one table", () => {
   test("are not made before the table has been read", async () => {
