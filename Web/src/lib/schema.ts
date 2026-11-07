@@ -147,6 +147,9 @@ export interface Overview {
   groups?: RowGroup[];
   footer?: Footer;
   cards?: Card[];
+  /** Whether the cards sit in a band at the foot of the window rather than
+   *  above the table. */
+  dock_cards?: boolean;
   sections?: ViewSection[];
 }
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getView } from "../lib/api";
 import { describeError } from "../lib/errors";
 import { pendingActions } from "../lib/pending";
-import type { Column, Row } from "../lib/schema";
+import type { Row } from "../lib/schema";
 import {
   type ViewParam,
   type ViewPayload,
@@ -12,13 +12,18 @@ import {
   bodyOf,
   correctedHref,
   isEmptySection,
+  isEstimate,
+  noteOf,
   rowCardFor,
   viewHref,
 } from "../lib/view";
 import { CardGrid } from "./CardGrid";
 import { DetailPage } from "./DetailPage";
+import { FrozenSection } from "./FrozenSection";
+import { useNote } from "./NotePopover";
 import { OutsideLink } from "./parts";
 import { SectionTable } from "./SectionTable";
+import { CardDock, Summary } from "./Summary";
 
 interface Props {
   view: string;
@@ -146,6 +151,8 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
   const stale = loading || error !== null;
   const controls = page.params.filter((param) => param.hidden !== true);
   const body = bodyOf(page);
+  const cards = page.cards ?? [];
+  const docked = cards.length > 0 && page.dock_cards === true;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -226,14 +233,32 @@ export function ViewPage({ view, args, views, tables, onAsk }: Props) {
         ) : body === "cards" ? (
           <CardGrid groups={page.groups ?? []} onAsk={onAsk} />
         ) : (
-          page.sections.map((section, i) => (
-            <SectionBlock
-              key={`${i}-${section.heading ?? ""}`}
-              section={section}
-            />
-          ))
+          <>
+            {/* The cards sum up the sections, and sit above them, as a table's
+                overview's do, unless they are docked. */}
+            {cards.length > 0 && !docked && (
+              <div className="summary-block mb-6">
+                <Summary cards={cards} sections={[]} onAsk={onAsk} />
+              </div>
+            )}
+            {page.sections.map((section, i) =>
+              section.freeze ? (
+                <FrozenSection
+                  key={`${i}-${section.heading ?? ""}`}
+                  section={section}
+                />
+              ) : (
+                <SectionBlock
+                  key={`${i}-${section.heading ?? ""}`}
+                  section={section}
+                />
+              ),
+            )}
+          </>
         )}
       </div>
+
+      {docked && body === "rows" && <CardDock cards={cards} onAsk={onAsk} />}
     </div>
   );
 }
@@ -306,7 +331,7 @@ function SectionBlock({ section }: { section: ViewSection }) {
           {/* Narrow: a card per row, which needs no sideways scrolling. */}
           <div className="mt-2 flex flex-col gap-2 sm:hidden">
             {section.rows.map((row, i) => (
-              <RowCard key={i} columns={section.columns} row={row} />
+              <RowCard key={i} section={section} row={row} />
             ))}
           </div>
 
@@ -318,17 +343,27 @@ function SectionBlock({ section }: { section: ViewSection }) {
   );
 }
 
-function RowCard({ columns, row }: { columns: readonly Column[]; row: Row }) {
-  const card = rowCardFor(columns, row);
+function RowCard({ section, row }: { section: ViewSection; row: Row }) {
+  const card = rowCardFor(section.columns, row);
+  const first = section.columns[0];
   return (
-    <div className="rounded-lg border border-border bg-surface p-3">
+    <div
+      className={
+        "rounded-lg border border-border bg-surface p-3" +
+        (isEstimate(section, row) ? " card-estimate" : "")
+      }
+    >
       {/* The title is the card's one tappable thing, so it is given a finger's
           worth of height rather than a line of text's. A link is capped at the
           card's width as well as told it may break: breaking is allowed inside
           a box but is not counted when the box asks how wide it wants to be,
           so an inline-block holding one long word would otherwise size itself
           to the whole word and hang out of the card. */}
-      <p className="break-words font-medium">
+      <NotedLine
+        as="p"
+        note={first ? noteOf(section, row, first.field) : null}
+        className="break-words font-medium"
+      >
         {card.href ? (
           <OutsideLink
             href={card.href}
@@ -339,17 +374,45 @@ function RowCard({ columns, row }: { columns: readonly Column[]; row: Row }) {
         ) : (
           card.title
         )}
-      </p>
+      </NotedLine>
       {card.lines.length > 0 && (
         <dl className="mt-1.5 flex flex-col gap-0.5">
           {card.lines.map((line, i) => (
             <div key={`${i}-${line.label}`} className="flex gap-2 text-[12px]">
               <dt className="min-w-24 shrink-0 text-muted">{line.label}</dt>
-              <dd className="min-w-0 break-words">{line.text}</dd>
+              <NotedLine
+                as="dd"
+                note={noteOf(section, row, line.field)}
+                className="min-w-0 break-words"
+              >
+                {line.text}
+              </NotedLine>
             </div>
           ))}
         </dl>
       )}
     </div>
+  );
+}
+
+/** A line of a row's card that may carry the note of the cell it stands for,
+ *  marked in its corner as the cell would be. */
+function NotedLine({
+  as: Tag,
+  note,
+  className,
+  children,
+}: {
+  as: "p" | "dd";
+  note: string | null;
+  className: string;
+  children: React.ReactNode;
+}) {
+  const noted = useNote(note);
+  return (
+    <Tag {...noted.handlers} className={className + noted.className}>
+      {children}
+      {note !== null && <span className="sr-only">Note: {note}</span>}
+    </Tag>
   );
 }

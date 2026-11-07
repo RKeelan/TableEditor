@@ -5,8 +5,11 @@ import {
   type ViewSection,
   controlWidthOfColumn,
   hrefFor,
+  isEstimate,
+  noteOf,
   viewCellText,
 } from "../lib/view";
+import { useNote } from "./NotePopover";
 import { OutsideLink } from "./parts";
 
 /** A section's rows as a table in a box of its own, which scrolls sideways
@@ -52,12 +55,19 @@ export function SectionTable({
         </thead>
         <tbody>
           {section.rows.map((row, i) => (
-            <tr key={i} className="border-b border-border last:border-0">
+            <tr
+              key={i}
+              className={
+                "border-b border-border last:border-0" +
+                (isEstimate(section, row) ? " row-estimate" : "")
+              }
+            >
               {section.columns.map((column, j) => (
                 <ViewCell
                   key={`${j}-${column.field}`}
                   column={column}
                   row={row}
+                  note={noteOf(section, row, column.field)}
                   summary={summary}
                 />
               ))}
@@ -70,21 +80,29 @@ export function SectionTable({
 }
 
 /** Whether a column's cells are numbers, which line up on the right. */
-function isNumeric(column: Column): boolean {
+export function isNumeric(column: Column): boolean {
   return isFigure(column) || column.type === "number";
 }
 
-function ViewCell({
+/** One cell of a section: its column's value as a table would show it, a
+ *  link where the column has one, and a mark in its corner where it has a
+ *  note, which it shows when pointed at or tapped. */
+export function ViewCell({
   column,
   row,
-  summary,
+  note,
+  summary = false,
+  className = "",
 }: {
   column: Column;
   row: Row;
-  summary: boolean;
+  note: string | null;
+  summary?: boolean;
+  className?: string;
 }) {
   const text = viewCellText(column, row);
   const href = hrefFor(column, row);
+  const noted = useNote(note);
   // A formatted number draws its unit in a span of its own; anything else,
   // formatted column or not, reads as its text.
   const format = formatOf(column);
@@ -101,20 +119,25 @@ function ViewCell({
   );
   return (
     <td
+      {...noted.handlers}
       className={
         (summary ? "px-4 py-2" : "px-3 py-1.5") +
         " align-top" +
         (isNumeric(column) ? " text-right tabular-nums" : "") +
-        (column.wide ? "" : " whitespace-nowrap")
+        (column.wide ? "" : " whitespace-nowrap") +
+        noted.className +
+        (className ? ` ${className}` : "")
       }
     >
       <span
         className="inline-block max-w-full overflow-hidden text-ellipsis align-top"
         style={{ width: controlWidthOfColumn(column) }}
-        title={text || undefined}
+        // The note says what the cell is, so its text is the one tooltip.
+        title={note === null ? text || undefined : undefined}
       >
         {href ? <OutsideLink href={href}>{shown}</OutsideLink> : shown}
       </span>
+      {note !== null && <span className="sr-only">Note: {note}</span>}
     </td>
   );
 }

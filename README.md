@@ -220,7 +220,23 @@ A failure returns `{ "error": "…" }`: 400 for an unreadable or undeserializabl
 
 There is no PUT and no derive on the page itself: a view is read. A view nobody serves is a 404, and any method but GET on one is a 405. `note` is omitted where a view supplies none, as are a section's `heading` and `note`, and a parameter carries `"hidden": true` only when it has no control.
 
-A view answers with one of three bodies. `sections` is the one above and is always present, empty where the page is one of the other two; `groups` and `detail` are present only when the view built them. A view that built two of them is a 500 naming both, since the page draws one.
+A page of sections may carry cards that sum it up, after its note, and a section may say how it is drawn and where its rows' estimates and notes are:
+
+```json
+{ "cards": [ { "title": "Spent",
+               "figure": { "value": 39322.05,
+                           "format": { "decimals": 2, "grouped": true, "unit": "CAD" } } } ],
+  "dock_cards": true,
+  "sections": [ { "heading": "Central Lending Library", "freeze": true,
+                  "estimate_by": "forecast", "notes_in": "notes",
+                  "columns": [ … ],
+                  "rows": [ { "month": "Dec 2026", "events": 521.1, "forecast": true,
+                              "notes": { "events": "Winter reading night." } } ] } ] }
+```
+
+`cards` is omitted where a view gives none, and `dock_cards`, `freeze`, `estimate_by` and `notes_in` where they are not set.
+
+A view answers with one of three bodies. `sections` is the one above and is always present, empty where the page is one of the other two; `groups` and `detail` are present only when the view built them. A view that built two of them is a 500 naming both, since the page draws one. Cards are a summary rather than a body, so they come with sections or alone; with `groups` or `detail` they are a 500 naming both, since those pages have nowhere to draw them.
 
 ```json
 { "groups": [ { "heading": "Open",
@@ -498,6 +514,8 @@ Ok(Overview::new()
 
 The three rows are as wide as the widest of them and no wider than the page. The cards share one width and one height, set by the one that needs most, and each section is as wide as its content. The table takes whatever width the block has beyond its columns' own through its `wide` columns, or its first column where none is wide. Below 860px each row stacks at the page's width, and a section is drawn as a table at every width rather than as the cards a view's section becomes on a phone. The summary and the table scroll together, with the table's header held at the top and its footer at the foot, unless the table is wider than the page, when its box scrolls sideways instead. A card's link leaves the table the way a row's does, once what was typed has been written. Without cards or sections, the table's box scrolls on its own, as it does for a table with no overview.
 
+`Overview::dock_cards` puts the cards in a band along the foot of the window instead, where they stay in view however far the rows are scrolled, and sends `"dock_cards": true`. The band is drawn as a view's docked cards are (see What the browser does with a view), and the table and its sections are drawn as though the overview had no cards.
+
 ## What the editor does with the table
 
 * Editing saves. There is no save button: a change is written a moment after it is made, and the page says when it last was.
@@ -567,6 +585,22 @@ A select's answer has to be one of the options it offered. One that is not falls
 `Section::rows` takes anything that serialises, so a view hands over its own row type rather than building `serde_json::Value` by hand. A row that cannot be serialised is an error naming the section it was going into.
 
 Sections carry their own columns, so two sections can differ: one listing what is overdue wants a column of how late, and one listing what is merely out does not. Sections that should line up are given the same columns. A view's `number` and `computed` columns take a `format` as a table's do.
+
+A page of sections can be summed up in cards, which are the cards a table's overview draws above it. `ViewData::card` and `ViewData::cards` give them, and `ViewData::dock_cards` docks them at the foot of the window rather than drawing them above the sections:
+
+```rust
+Ok(ViewData::new()
+    .card(Card::new("Spent").figure(spent, Format::money().unit("CAD")))
+    .dock_cards()
+    .section(Section::new(columns)
+        .heading("Central Lending Library")
+        .freeze()
+        .estimate_by("forecast")
+        .notes_in("notes")
+        .rows(months)?))
+```
+
+Three things on `Section` are for a section of figures read across, as a year of pay or of spending is. `Section::freeze` draws it as a table at every width, with its heading and header row held at the top of the page while it passes and its first column held at the left as its rows scroll sideways; it is one flag because the three are only wanted together, and the name is Excel's. `Section::estimate_by` names a field, and a row holding `true` there is an estimate, drawn tinted and in italics, so a forecast month reads apart from a recorded one; as with `muted_by`, the field need not be a column. `Section::notes_in` names the field holding each row's notes: an object keyed by the field of the column a note is on, whose values are the notes' text. A section's notes are read rather than edited. All three apply to a section in a table's overview as well.
 
 A view does not edit, autosave, undo, drag, sort, or filter. Nothing in the editor's write machinery is reached; the one thing a view writes is an action, below.
 
@@ -692,7 +726,13 @@ The sentence `act` returns is shown to the reader, and the page is then fetched 
 
 The page is the title, the note, the parameter controls, then whichever body arrived. `?view=<name>&<param>=<value>` is the whole of the question, so a page can be linked to, bookmarked, and reloaded. A parameter marked hidden gets no control, and a view all of whose parameters are hidden gets no control row at all.
 
-A body of sections is each section's heading, its note, and its rows. A section with no rows still shows its heading, and says there are none.
+A body of sections is each section's heading, its note, and its rows. A section with no rows still shows its heading, and says there are none. A page's cards are drawn above its sections, in one row as wide as the widest card needs, each card that wide, and stacked at the page's width below 860px.
+
+Docked cards sit in a band along the foot of the window instead, which stays where it is as the page above it scrolls. The page above ends where the band begins, at every width, so the last row of a long section is never hidden behind it. Each card is as wide as the widest card's content, and they sit from the left, while the band's background runs the full width of the window. Below 860px they wrap three to a row, or as many as there are where there are fewer, with a smaller title and figure and their units left out. A docked card that is a link stays one.
+
+A frozen section is a table at every width, as wide as its content and no wider than the page. Its rows scroll sideways in a box of their own, its first column staying at the left, and its heading and header row are held at the top of the page's scroll while the section passes, the header row following the rows sideways. An estimate row is tinted with the info tone across every cell and set in italics; the tint is opaque on a frozen first column, so what scrolls beneath it does not show through.
+
+A cell with a note has a mark in its corner, in the accent. With a mouse, the note shows while the pointer is over the cell; on a phone, a tap on the cell shows it, and a second tap shuts it and goes to the cell itself, following its link where it has one. Esc, a press anywhere else, or the page scrolling shuts it, and Esc still reaches a cell being edited. It sits beside its cell where there is room, and under or over it where there is not, never behind docked cards. On a phone, where an unfrozen section is a card per row, the line a note belongs to carries the mark. A screen reader reads the note after the cell's text.
 
 A body of cards is each group's heading with the count of what is in it, then the cards, three across on a desktop, two from 620px, and one below that. A card whose every status is neutral reads quieter than the rest, since it is on the page as a fact rather than as something waiting to be done about. A card with a link is a link: a plain click answers it in the page already open, and a middle click or a held modifier opens it in a tab, because it is a real address.
 
@@ -732,7 +772,7 @@ An empty address opens whatever `front` names, and the launcher leaves the addre
 
 A cell is its column's type as a table would show it. `width_ch` gives it room for that many characters of text and cuts longer text short, with the whole of it in the cell's tooltip; the number counts the text alone, since a view's cell has no input around it to make room for, where a table's adds its border, padding and dropdown arrow. A column naming no width takes what its content needs, rather than the 16 or 40 characters a table's would fall back to.
 
-At 380px the parameter controls are full width and stacked, and each section is a stack of cards, one per row: the first column is the card's title, a link where that column has an `href`, and the rest are label-and-value lines with the empty ones left out. A title too long for the card is broken across lines, including one long word with nowhere to break. Above 640px a section is a table under its heading. The page never scrolls sideways at any width; a section with more columns than fit scrolls inside its own box at the wider sizes, where there is a table to scroll.
+At 380px the parameter controls are full width and stacked, and each section that is not frozen is a stack of cards, one per row: the first column is the card's title, a link where that column has an `href`, and the rest are label-and-value lines with the empty ones left out. A title too long for the card is broken across lines, including one long word with nowhere to break. Above 640px a section is a table under its heading. The page never scrolls sideways at any width; a section with more columns than fit scrolls inside its own box at the wider sizes, where there is a table to scroll, and a frozen section at every width.
 
 A cell's `href` is followed only when it is an absolute `http:` or `https:` URL carrying no username or password. Anything else—another scheme, a relative or scheme-relative address, or text that is no URL—is shown as text, since a row is data from a file and a link in one must not be a way to run something by clicking a cell. A link that is followed opens in a tab of its own and tells that tab nothing about this one. A detail row's link and a link button are held to the same rule.
 
@@ -857,9 +897,9 @@ A release never ships the placeholder. `./Release.ps1` builds the bundle, packag
 
 ## Developing the bundle
 
-`examples/library` is a consumer to develop against: an app called Library with four tables carrying every column type and modifier between them, four views over those tables, and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
+`examples/library` is a consumer to develop against: an app called Library with four tables carrying every column type and modifier between them, five views over those tables, and invented data in `examples/library/Data`. It binds 8791, which is picked to stay out of the way of a real editor on the same machine—each app takes a port of its own, and a launch refuses a port another app is serving rather than taking it.
 
-The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page and, where the branch has a budget, carrying it as its figure; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and three actions that write to `Books.jsonl`: Lend it out, a gold button whose form carries all four kinds of field, Withdraw, a plain undoable button beside it, and Mark returned, a gold undoable button on a book that is out; and On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it. The top bar goes by subject rather than by kind—All branches, Branches, Purchases, On loan, Books—so a table sits between two views. Book is a detail page with one hidden parameter, a title, and two sections, and names no way back of its own; its one action, Write the inscription, opens in a side panel headed with the book's title, carries an argument naming the book so that the panel and its draft follow the row when a save retitles it, and has a copyable multi-line field, filled with the book's inscription or a draft of one, and writes it back exactly as it stands in the box. The Books table links each row to Book and the Branches table links each row to Branch, so a row link is checked against a page with no way back of its own and against one whose own is replaced by the table's. The Books table mutes a book whose Withdrawn cell is true, and one of the books is withdrawn, so a muted row can be looked at in both themes and brought back by setting the cell. The Genres table, which the Books table's genres and subgenres are chosen from, is left out of the top bar and reached by its address, `?table=genres`, so the heading a hidden table's page carries can be looked at. The Purchases table is grouped by branch, a group for each branch in the Branches table's order, each headed with the branch's name, its code and what it spent, with what every branch spent in its footer; Harbour Branch, closed and with no budget, has bought nothing, so its group is empty, carries a second fact and a note, and is where a first row is added to a group. Above its rows are a card of what was spent, which links to the front page, where the budgets are, and one of what is on order, which is what has not been received, and a small table of each branch's share of the spending, so the summary's figures can be watched following a cost as it is typed.
+The views are one of each body. All branches is a card per branch, grouped by whether it is open, each card linking to that branch's own page and, where the branch has a budget, carrying it as its figure; Branch is one branch in detail, with sections in both columns, a ranked one, one that folds on a phone, a link button, a button that cannot be pressed, and three actions that write to `Books.jsonl`: Lend it out, a gold button whose form carries all four kinds of field, Withdraw, a plain undoable button beside it, and Mark returned, a gold undoable button on a book that is out; On loan is two sections of rows with notes, a link column, and four parameters—a select, a pair where the second's options follow the first's answer, and a typed one—under a card counting each section; and Spending is a year of each budgeted branch's spending by month, one frozen section per branch, wide enough to scroll sideways on a phone and long enough to scroll past the band of four docked cards below it. Its months from the current one on are estimate rows, a month's Purchases cell carries a note listing what was bought that month from the Purchases table, so the note follows an edit there, and December's Events cell carries a note of two lines. All branches is the front page, and Branch is reached from a card, its one parameter being hidden and its `in_switcher` false, so the top bar does not offer it. The top bar goes by subject rather than by kind—All branches, Branches, Purchases, Spending, On loan, Books—so a table sits between two views. Book is a detail page with one hidden parameter, a title, and two sections, and names no way back of its own; its one action, Write the inscription, opens in a side panel headed with the book's title, carries an argument naming the book so that the panel and its draft follow the row when a save retitles it, and has a copyable multi-line field, filled with the book's inscription or a draft of one, and writes it back exactly as it stands in the box. The Books table links each row to Book and the Branches table links each row to Branch, so a row link is checked against a page with no way back of its own and against one whose own is replaced by the table's. The Books table mutes a book whose Withdrawn cell is true, and one of the books is withdrawn, so a muted row can be looked at in both themes and brought back by setting the cell. The Genres table, which the Books table's genres and subgenres are chosen from, is left out of the top bar and reached by its address, `?table=genres`, so the heading a hidden table's page carries can be looked at. The Purchases table is grouped by branch, a group for each branch in the Branches table's order, each headed with the branch's name, its code and what it spent, with what every branch spent in its footer; Harbour Branch, closed and with no budget, has bought nothing, so its group is empty, carries a second fact and a note, and is where a first row is added to a group. Above its rows are a card of what was spent, which links to the front page, where the budgets are, and one of what is on order, which is what has not been received, and a small table of each branch's share of the spending, so the summary's figures can be watched following a cost as it is typed.
 
 Two of its books are there to be looked at rather than read: one whose title is a single unbroken 61-character word, and one whose link is a `javascript:` URL. They are what the claims about a wrapped title and a refused link are checked against, so a change to either rule shows up by opening the example at a narrow width. The second is lent from the Central branch, so its refused link is on that branch's page as well as in a table. Three more fields hold line breaks for the same reason: two inscriptions in the Inscription column, one written with `\n` and one with `\r\n`, and a note of two lines in the one-line Notes column.
 
@@ -872,7 +912,7 @@ Bun serves the UI with hot reloading and forwards `/api` to the example, so the 
 
 The example writes to its own `Data/*.jsonl`, so edits made while developing show up as changes to those files. They are committed, and reverting them is how to get back to the data the example ships with.
 
-Each of the example's hooks says on its standard error when it is called—`library: wrote Books.jsonl`—which a server run with `--api-only` shows. Where `LIBRARY_NOTICE` is set, every write answers with it as the sentence `after_write` has for the reader, so the notice beside the time of the last save, and after an action's own sentence, can be looked at.
+Each of the example's hooks says on its standard error when it is called—`library: wrote Books.jsonl`—which a server run with `--api-only` shows. Where `LIBRARY_NOTICE` is set, every write answers with it as the sentence `after_write` has for the reader, so the notice beside the time of the last save, and after an action's own sentence, can be looked at. Where `LIBRARY_DOCK` is set, the Purchases table docks its overview's cards, so a table's docked cards can be looked at beside its summary's section.
 
 ## Versions
 

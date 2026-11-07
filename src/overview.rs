@@ -30,8 +30,14 @@ pub struct Overview {
     footer: Option<Footer>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     cards: Vec<Card>,
+    #[serde(skip_serializing_if = "is_false")]
+    dock_cards: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     sections: Vec<Section>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Overview {
@@ -69,6 +75,14 @@ impl Overview {
     /// Cards after those already given, in the order the iterator gives them.
     pub fn cards(mut self, cards: impl IntoIterator<Item = Card>) -> Self {
         self.cards.extend(cards);
+        self
+    }
+
+    /// Draw the cards in a band along the foot of the window rather than
+    /// above the table, so they stay in view however far the rows are
+    /// scrolled. The page above ends where the band begins.
+    pub fn dock_cards(mut self) -> Self {
+        self.dock_cards = true;
         self
     }
 
@@ -316,6 +330,22 @@ mod tests {
             serde_json::to_value(sectioned).unwrap(),
             json!({ "sections": [{ "columns": [
                 { "field": "branch", "label": "Branch", "type": "string" } ], "rows": [] }] })
+        );
+    }
+
+    #[test]
+    fn docked_cards_say_so_and_undocked_ones_say_nothing() {
+        let docked = Overview::new().card(Card::new("Spent")).dock_cards();
+        assert_eq!(
+            serde_json::to_value(docked).unwrap(),
+            json!({ "cards": [{ "title": "Spent" }], "dock_cards": true })
+        );
+        let undocked = Overview::new().card(Card::new("Spent"));
+        assert!(
+            serde_json::to_value(undocked)
+                .unwrap()
+                .get("dock_cards")
+                .is_none()
         );
     }
 

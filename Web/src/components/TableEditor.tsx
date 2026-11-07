@@ -89,7 +89,7 @@ import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
 import { typedInto } from "./parts";
 import { SpeakButton } from "./SpeakButton";
-import { Summary } from "./Summary";
+import { CardDock, Summary } from "./Summary";
 
 // A short debounce for the live derive, which redraws validation and computed
 // columns as the user types, and a longer one before the write to disk.
@@ -597,8 +597,10 @@ export function TableEditor({ table, views, pending, go }: Props) {
 
   // The cards and sections above the table. Where there are any, the table
   // shares a block with them, and the box it is drawn in stops being a
-  // scroll container of its own.
-  const cards = overview?.cards ?? [];
+  // scroll container of its own. Docked cards are in a band at the foot of
+  // the window instead, and leave the table its own box.
+  const docked = overview?.dock_cards === true ? (overview.cards ?? []) : [];
+  const cards = docked.length > 0 ? [] : (overview?.cards ?? []);
   const sections = overview?.sections ?? [];
   const summarised = cards.length > 0 || sections.length > 0;
 
@@ -1017,6 +1019,8 @@ export function TableEditor({ table, views, pending, go }: Props) {
             : " Sorted; dragging is off and writes keep the stored order.")}
         {!sort && filtering && !grouped && " Dragging is off while a filter is on."}
       </p>
+
+      {docked.length > 0 && <CardDock cards={docked} onAsk={leaveTo} />}
 
       {Object.entries(datalists).map(([id, options]) => (
         <datalist key={id} id={`dl-${id}`}>

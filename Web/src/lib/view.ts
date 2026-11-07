@@ -24,6 +24,14 @@ export interface ViewParam {
 export interface ViewSection {
   heading?: string;
   note?: string;
+  /** Drawn as a table at every width, its heading and header row held at the
+   *  top of the page while it passes and its first column at the left of its
+   *  box. */
+  freeze?: boolean;
+  /** The field that marks a row as an estimate, where it holds `true`. */
+  estimate_by?: string;
+  /** The field holding each row's notes, keyed by column field. */
+  notes_in?: string;
   columns: Column[];
   rows: Row[];
 }
@@ -215,6 +223,10 @@ export interface ViewPayload {
   params: ViewParam[];
   args: Record<string, string>;
   note?: string;
+  /** Cards summing up a page of sections, or a page of nothing else. */
+  cards?: Card[];
+  /** Whether the cards sit in a band at the foot of the window. */
+  dock_cards?: boolean;
   sections: ViewSection[];
   groups?: CardGroup[];
   detail?: Detail;
@@ -340,7 +352,12 @@ export function announce(page: ViewPayload): string {
     return `${page.title}: ${parts.join("; ")}.`;
   }
 
-  if (page.sections.length === 0) return `${page.title}: nothing to show.`;
+  const cards = page.cards ?? [];
+  if (page.sections.length === 0) {
+    return cards.length > 0
+      ? `${page.title}: ${counted(cards.length, "card", "cards")}.`
+      : `${page.title}: nothing to show.`;
+  }
   const parts = page.sections.map((section) => {
     const count = counted(section.rows.length, "row", "rows");
     return section.heading ? `${section.heading}, ${count}` : count;
@@ -510,7 +527,7 @@ export function viewCellText(column: Column, row: Row): string {
 export interface RowCard {
   title: string;
   href: string | null;
-  lines: { label: string; text: string }[];
+  lines: { field: string; label: string; text: string }[];
 }
 
 export function rowCardFor(columns: readonly Column[], row: Row): RowCard {
@@ -519,7 +536,11 @@ export function rowCardFor(columns: readonly Column[], row: Row): RowCard {
     title: first ? viewCellText(first, row) : "",
     href: first ? hrefFor(first, row) : null,
     lines: rest
-      .map((column) => ({ label: column.label, text: viewCellText(column, row) }))
+      .map((column) => ({
+        field: column.field,
+        label: column.label,
+        text: viewCellText(column, row),
+      }))
       .filter((line) => line.text !== ""),
   };
 }
@@ -537,6 +558,36 @@ export function controlWidthOfColumn(column: Column): string | undefined {
   return column.width_ch === undefined
     ? undefined
     : `${column.width_ch + unitChars(column)}ch`;
+}
+
+/** The note on a row's cell in a section, or nothing where it has none. The
+ *  section's `notes_in` field holds an object keyed by column field; a note
+ *  that is not text, or is only spaces, is none. */
+export function noteOf(
+  section: ViewSection,
+  row: Row,
+  field: string,
+): string | null {
+  if (!section.notes_in) return null;
+  const notes = row[section.notes_in];
+  if (notes === null || typeof notes !== "object" || Array.isArray(notes)) {
+    return null;
+  }
+  const text = (notes as Record<string, unknown>)[field];
+  return typeof text === "string" && text.trim() !== "" ? text : null;
+}
+
+/** Whether a row of a section is an estimate, which only `true` in the field
+ *  the section's `estimate_by` names says. */
+export function isEstimate(section: ViewSection, row: Row): boolean {
+  return section.estimate_by !== undefined && row[section.estimate_by] === true;
+}
+
+/** How many docked cards sit in a row of the band below 860px: three, or as
+ *  many as there are where there are fewer, so that a pair is not drawn in a
+ *  row of three with a gap at its end. */
+export function dockColumns(cards: number): number {
+  return Math.max(1, Math.min(3, cards));
 }
 
 /** Whether a section has anything in it. An empty one is still shown, with its
