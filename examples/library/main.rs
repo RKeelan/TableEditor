@@ -167,6 +167,10 @@ struct Purchase {
     /// is a record of the transfer and not edited here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transfer: Option<bool>,
+    /// What a purchase passed on from another branch is worth, which the
+    /// transfer sets and which stands as its cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    valued_at: Option<f64>,
     /// Notes on its cells, by the field of the column each is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     notes: Option<BTreeMap<String, String>>,
@@ -618,9 +622,13 @@ impl Purchases {
 
 impl Purchase {
     /// What the purchase cost, worked out where it was typed as a sum, or
-    /// nothing where no cost is typed or what is typed is not one.
+    /// what the transfer valued it at where none is typed, or nothing where
+    /// neither is given or what is typed is not a figure or a sum.
     fn spent(&self) -> Option<f64> {
-        self.cost.as_ref().and_then(Amount::value)
+        match &self.cost {
+            Some(cost) => cost.value(),
+            None => self.valued_at,
+        }
     }
 }
 
@@ -750,8 +758,9 @@ impl TableLogic for Purchases {
     /// Each purchase's share of what every branch spent, left out where it
     /// has no cost or nothing was spent, and what is said about its cells: a
     /// cost over what one purchase may cost without the board's sign-off is
-    /// in the bad tone; a quote stands in for a cost not yet invoiced; and a
-    /// purchase passed on from another branch is read-only in every cell.
+    /// in the bad tone; a quote stands in for a cost not yet invoiced; a
+    /// purchase passed on from another branch is read-only in every cell; and
+    /// the value a transfer sets is shown as its cost.
     fn derive(&self, rows: &[Purchase], _ctx: &Context) -> Result<Vec<Value>, ApiError> {
         let total: f64 = rows.iter().filter_map(Purchase::spent).sum();
         Ok(rows
@@ -776,6 +785,14 @@ impl TableLogic for Purchases {
                         CellSettings::new()
                             .underlay(quote)
                             .note("Quoted, not yet invoiced."),
+                    );
+                }
+                if let (None, Some(value)) = (&row.cost, row.valued_at) {
+                    cells.insert(
+                        "cost",
+                        CellSettings::new()
+                            .figure(value)
+                            .note("Valued by the transfer from Central."),
                     );
                 }
                 if row.transfer == Some(true) {

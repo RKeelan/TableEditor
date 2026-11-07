@@ -177,11 +177,13 @@ export interface Overview {
 export type Row = Record<string, unknown>;
 
 /** What a derivation says about one cell: a tone for it, that it cannot be
- *  edited, a figure shown while it is blank, and a note about it. */
+ *  edited, a figure shown while it is blank, a figure shown in place of what
+ *  it holds, and a note about it. */
 export interface CellSettings {
   tone?: Tone;
   read_only?: boolean;
   underlay?: number;
+  figure?: number;
   note?: string;
 }
 
