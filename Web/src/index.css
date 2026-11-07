@@ -1442,13 +1442,14 @@
   overflow: hidden;
 }
 
-/* Below 860px the docked cards wrap three to a row, with a smaller title and
-   figure and no unit, so the band takes little of a phone's height. It is
+/* Below 860px the docked cards wrap as many to a row as fit, up to four, with
+   a smaller title and figure and no unit, so the band takes little of a
+   phone's height. It is
    outside the layers because it overrides the card's own utilities. */
 @media (max-width: 859px) {
   .card-dock-cards {
     grid-auto-flow: row;
-    grid-template-columns: repeat(var(--dock-columns, 3), minmax(0, 1fr));
+    grid-template-columns: repeat(var(--dock-columns, 4), minmax(0, 1fr));
     gap: 0.4rem;
   }
   .card-dock-cards > * {
@@ -1467,5 +1468,15 @@
   .card-dock-cards > * > :not(h4, .card-figure) {
     margin-top: 0.15rem;
     font-size: 0.75rem;
+  }
+  .card-dock-cards > * > :not(h4, .card-figure) * {
+    font-size: inherit;
+  }
+}
+/* On a phone the band is padded less than the page, so four cards of a
+   household's figures fit across it. */
+@media (max-width: 639px) {
+  .card-dock {
+    padding: 0.5rem;
   }
 }

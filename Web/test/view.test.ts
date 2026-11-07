@@ -935,11 +935,18 @@ describe("an estimate row", () => {
 });
 
 describe("docked cards on a narrow screen", () => {
-  test("sit three to a row, or as many as there are", () => {
-    expect(dockColumns(1)).toBe(1);
-    expect(dockColumns(2)).toBe(2);
-    expect(dockColumns(3)).toBe(3);
-    expect(dockColumns(7)).toBe(3);
-    expect(dockColumns(0)).toBe(1);
+  test("sit as many to a row as fit, up to four", () => {
+    // Four cards of 80 with gaps of 6 need 338.
+    expect(dockColumns(4, 338, 80, 6)).toBe(4);
+    expect(dockColumns(4, 337, 80, 6)).toBe(3);
+    expect(dockColumns(4, 200, 80, 6)).toBe(2);
+    expect(dockColumns(7, 2000, 80, 6)).toBe(4);
+  });
+
+  test("sit no more to a row than there are, and never fewer than one", () => {
+    expect(dockColumns(2, 2000, 80, 6)).toBe(2);
+    expect(dockColumns(1, 2000, 80, 6)).toBe(1);
+    expect(dockColumns(0, 2000, 80, 6)).toBe(1);
+    expect(dockColumns(4, 50, 80, 6)).toBe(1);
   });
 });

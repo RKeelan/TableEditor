@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import {
   type Card,
   type ViewSection,
@@ -87,7 +88,8 @@ function SummarySection({ section }: { section: ViewSection }) {
  *
  *  Each card is as wide as the widest card's content, and they sit from the
  *  left; the band's background runs the full width of the window. Below 860px
- *  they wrap three to a row, smaller, their units left out. */
+ *  they are smaller, their units left out, and wrap as many to a row as fit at
+ *  the widest card's width, up to four. */
 export function CardDock({
   cards,
   onAsk,
@@ -95,12 +97,43 @@ export function CardDock({
   cards: readonly Card[];
   onAsk: (href: string) => void;
 }) {
+  const dock = useRef<HTMLDivElement>(null);
+  const band = useRef<HTMLDivElement>(null);
+  // How many cards fit in a row, which the stylesheet reads below 860px. It
+  // is worked out again whenever the cards are drawn, since a figure typed
+  // elsewhere can widen one, and whenever the dock changes width.
+  const fit = () => {
+    const outer = dock.current;
+    const inner = band.current;
+    if (!outer || !inner) return;
+    const cards = [...inner.children] as HTMLElement[];
+    let widest = 0;
+    for (const card of cards) {
+      const width = card.style.width;
+      card.style.width = "max-content";
+      widest = Math.max(widest, card.getBoundingClientRect().width);
+      card.style.width = width;
+    }
+    const style = getComputedStyle(outer);
+    const available =
+      outer.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const gap = parseFloat(getComputedStyle(inner).columnGap) || 0;
+    inner.style.setProperty(
+      "--dock-columns",
+      String(dockColumns(cards.length, available, widest, gap)),
+    );
+  };
+  useLayoutEffect(fit);
+  useLayoutEffect(() => {
+    const outer = dock.current;
+    if (!outer) return;
+    const observer = new ResizeObserver(() => fit());
+    observer.observe(outer);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <div className="card-dock">
-      <div
-        className="card-dock-cards"
-        style={{ "--dock-columns": dockColumns(cards.length) } as React.CSSProperties}
-      >
+    <div ref={dock} className="card-dock">
+      <div ref={band} className="card-dock-cards">
         {cards.map((card, i) => (
           <CardBlock key={`${i}-${card.title}`} card={card} onAsk={onAsk} />
         ))}
