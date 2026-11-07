@@ -141,8 +141,27 @@ impl Param {
 pub struct ViewArgs(BTreeMap<String, String>);
 
 impl ViewArgs {
+    /// No arguments. With [`ViewArgs::with`], it is how a repository's own
+    /// tests build what a view or a table is asked.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The same arguments, with `key` set to `value`, as an address carrying
+    /// `key=value` would have them.
+    pub fn with(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.0.insert(key.into(), value.into());
+        self
+    }
+
     pub(crate) fn from_query(query: &BTreeMap<String, String>) -> Self {
         Self(query.clone())
+    }
+
+    /// These arguments, as an address carried them, settled against
+    /// `params` by [`ViewArgs::resolve`]'s rules.
+    pub(crate) fn settled(&self, params: &[Param]) -> Self {
+        Self::resolve(&self.0, params)
     }
 
     /// Settle what the view is rendering from, now that its parameters are

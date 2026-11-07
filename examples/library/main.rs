@@ -103,9 +103,11 @@ struct Branch {
     hours: BTreeMap<String, String>,
 }
 
-/// Something a branch bought, under the code of the branch that bought it.
+/// Something a branch bought, under the code of the branch that bought it
+/// and the budget year it was bought out of.
 #[derive(Debug, Serialize, Deserialize)]
 struct Purchase {
+    year: i32,
     branch: String,
     item: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -553,10 +555,18 @@ impl TableLogic for Branches {
 
 // ── Purchases ───────────────────────────────────────────────────────────────
 
-/// What each branch bought, in a group of its own under a heading with what
-/// it spent, and what every branch spent pinned at the foot, under a summary
-/// of the spending and of each branch's share of it.
+/// What each branch bought in one budget year, in a group of its own under a
+/// heading with what it spent, and what every branch spent pinned at the
+/// foot, under a summary of the spending and of each branch's share of it.
 struct Purchases;
+
+impl Purchases {
+    /// The year a page of purchases is about, which the Year parameter has
+    /// always settled by the time a hook asks.
+    fn year(ctx: &Context) -> Option<i32> {
+        ctx.args().get("year")?.parse().ok()
+    }
+}
 
 impl TableLogic for Purchases {
     type Row = Purchase;
@@ -573,9 +583,25 @@ impl TableLogic for Purchases {
         "Purchases"
     }
 
+    /// The budget year, offering each year the file has purchases in, latest
+    /// first, and opening on the latest.
+    fn params(&self, ctx: &Context) -> Result<Vec<Param>, ApiError> {
+        let rows: Vec<Purchase> = ctx.rows(PURCHASES_FILE)?;
+        let mut years: Vec<String> = rows.iter().map(|row| row.year.to_string()).collect();
+        years.sort_unstable_by(|a, b| b.cmp(a));
+        years.dedup();
+        let latest = years.first().cloned().unwrap_or_default();
+        Ok(vec![Param::select("year", "Year", years).default(latest)])
+    }
+
+    fn shows(&self, row: &Purchase, ctx: &Context) -> bool {
+        Self::year(ctx) == Some(row.year)
+    }
+
     /// Grouped by branch, which is not a column: the heading says which
     /// branch a group is, and a row is added to a branch through its group.
-    fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
+    /// A new row is bought out of the year on screen.
+    fn schema(&self, ctx: &Context) -> Result<Schema, ApiError> {
         Ok(Schema::new([
             Column::string("item", "Item").wide(),
             Column::number("cost", "Cost")
@@ -587,7 +613,12 @@ impl TableLogic for Purchases {
         ])
         .group_by("branch")
         .sortable()
-        .new_row(NewRow::new().with("item", "").carry_forward(["ordered"])))
+        .new_row(
+            NewRow::new()
+                .with("item", "")
+                .with("year", Self::year(ctx))
+                .carry_forward(["ordered"]),
+        ))
     }
 
     fn validate(

@@ -81,15 +81,18 @@ import {
   retryDelay,
   saveBanner,
   waitingToSave,
+  writeThenRead,
   writer,
 } from "../lib/save";
-import { type RowTarget, savedRowTarget } from "../lib/view";
+import { type RowTarget, savedRowTarget, tableHref } from "../lib/view";
 import { DateBox } from "./DateBox";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
+import { ParamControl } from "./ParamControl";
 import { typedInto } from "./parts";
 import { SpeakButton } from "./SpeakButton";
 import { CardDock, Summary } from "./Summary";
+import { useTableParams } from "./useTableParams";
 
 // A short debounce for the live derive, which redraws validation and computed
 // columns as the user types, and a longer one before the write to disk.
@@ -116,6 +119,11 @@ const GROUPED_CONTROLS_WITH_LINK = 104;
 
 interface Props {
   table: string;
+  /** The arguments the address asks the table with. */
+  args: Record<string, string>;
+  /** How the table asks the shell for another address, which a parameter's
+   *  control does. */
+  onAsk: (href: string) => void;
   /** What the app serves, so a row's link can say which page it opens. */
   views: readonly { view: string; title: string }[];
   /** How the shell reaches the pending save before it navigates away. */
@@ -125,7 +133,7 @@ interface Props {
   go: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
 }
 
-export function TableEditor({ table, views, pending, go }: Props) {
+export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   const [schema, setSchema] = useState<Schema | null>(null);
   const [entries, setEntries] = useState<RowEntry[]>([]);
   const [derived, setDerived] = useState<unknown[]>([]);
@@ -138,6 +146,11 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const [filterNote, setFilterNote] = useState(false);
   const [sort, setSort] = useState<Sort | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  // Whether the table is being read under other arguments, during which the
+  // rows on screen are the last question's and take no typing.
+  const [switching, setSwitching] = useState(false);
+  const { askedRef, askedKey, settled, controls: paramControls, answered, ask } =
+    useTableParams({ table, asked: args, onAsk, pending });
   const [notice, setNotice] = useState<string | null>(null);
   // The rows as they were last written, which is what a row's link may point
   // at: the page it opens reads the file.
@@ -229,11 +242,11 @@ export function TableEditor({ table, views, pending, go }: Props) {
   }, []);
 
   const put = useCallback(
-    (write: Pending, version: string) => {
+    (write: Pending, version: string, under: Record<string, string>) => {
       const id = ++reqSeq.current;
       const of = reading.current;
       const { entries: sent, upTo } = writing.current;
-      return putTable(table, write.rows, version, write.edited).then((res) => {
+      return putTable(table, under, write.rows, version, write.edited).then((res) => {
         // The derivation is of the rows as stamped, so it is taken only where
         // the rows on screen, before the stamp is taken in, are the rows sent.
         applyDerived(id, write.key, res);
@@ -302,16 +315,23 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const dirty = unwritten(rowsKey);
 
   // ── Load ──────────────────────────────────────────────────────────────────
+  // Reads can be asked faster than they are answered, so only the latest
+  // read's answer is allowed to land.
+  const loads = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++loads.current;
+    const under = askedRef.current;
     setLoadError(null);
     try {
-      const data = await getTable(table);
+      const data = await getTable(table, under);
+      if (mine !== loads.current) return;
       const loaded = toEntries(data.rows);
       const key = JSON.stringify(data.rows);
       entriesRef.current = loaded;
       rowsKeyRef.current = key;
       reading.current += 1;
-      writes.loaded(key, data.version);
+      writes.loaded(key, data.version, data.args ?? under);
+      answered(data, under);
       setSchema(data.schema);
       setEntries(loaded);
       setSaved(loaded);
@@ -321,13 +341,34 @@ export function TableEditor({ table, views, pending, go }: Props) {
       setUndoable([]);
       appliedSeq.current = ++reqSeq.current;
     } catch (e) {
-      setLoadError(describeError(e));
+      if (mine === loads.current) setLoadError(describeError(e));
     }
-  }, [table, writes]);
+  }, [table, writes, askedRef, answered]);
 
+  // The table is read when it opens and whenever the address asks it
+  // something else: by a control, or by Back and Forward. What is pending is
+  // written first, under the arguments its rows were read with, and until the
+  // read lands the rows on screen are dimmed and take no typing: they answer
+  // the last question, and what was typed into them would be lost.
+  //
+  // Where that write fails, the rows stay, since they are the only copy of
+  // what was typed, and the address is put back to the question they answer.
+  // A control cannot get here that way, since it asks only once what is
+  // pending has been written; Back and Forward can.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let live = true;
+    setSwitching(true);
+    void writeThenRead(writes, load, () => saveRef.current.kind === "failed")
+      .then((read) => {
+        if (!read) window.history.replaceState(null, "", tableHref(table, writes.args()));
+      })
+      .finally(() => {
+        if (live) setSwitching(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [askedKey, load, writes, table]);
 
   /** Write now rather than when the timer says so, and wait for it. The write
    *  queues behind one already in flight, so what is on screen reaches the
@@ -390,7 +431,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
       const id = ++reqSeq.current;
       const asked = rowsKeyRef.current;
       const sent = entriesRef.current;
-      deriveTable(table, entryRows(sent), editedLines(sent))
+      deriveTable(table, writes.args(), entryRows(sent), editedLines(sent))
         .then((res) => {
           // The stamp is taken in with the derivation, and only where the
           // derivation is: the rows on screen are then the rows asked about,
@@ -912,6 +953,15 @@ export function TableEditor({ table, views, pending, go }: Props) {
           spellCheck={false}
           className="field h-9 min-w-0 flex-1 border border-border bg-page sm:w-80 sm:flex-none"
         />
+        {paramControls.map((param, i) => (
+          <ParamControl
+            key={`${i}-${param.key}`}
+            param={param}
+            value={settled[param.key] ?? ""}
+            onAsk={(key, value) => void ask(key, value)}
+            inline
+          />
+        ))}
         <div className="flex items-center gap-2 sm:ml-auto sm:gap-3">
           {errors.length > 0 && (
             <span className="font-mono text-[11px] text-bad">
@@ -972,9 +1022,12 @@ export function TableEditor({ table, views, pending, go }: Props) {
         <div
           ref={bodyRef}
           onScroll={markStuck}
+          inert={switching}
+          aria-busy={switching || undefined}
           className={
-            "summary-body mt-3 min-h-0 flex-1 overflow-y-auto" +
-            (footer ? " has-footer" : "")
+            "summary-body mt-3 min-h-0 flex-1 overflow-y-auto transition-opacity" +
+            (footer ? " has-footer" : "") +
+            (switching ? " opacity-50" : "")
           }
         >
           <div className="summary-block">
@@ -998,10 +1051,13 @@ export function TableEditor({ table, views, pending, go }: Props) {
         <div
           ref={paneRef}
           onScroll={markStuck}
+          inert={switching}
+          aria-busy={switching || undefined}
           className={
-            "table-box mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40" +
+            "table-box mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-border bg-surface/40 transition-opacity" +
             boxState +
-            (footer ? " has-footer" : "")
+            (footer ? " has-footer" : "") +
+            (switching ? " opacity-50" : "")
           }
         >
           {grid}

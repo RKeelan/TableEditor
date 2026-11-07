@@ -179,8 +179,8 @@ fn reserved_url_character(name: &str) -> Option<char> {
         .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~')))
 }
 
-/// The parameter keys a view may not use, because the address already means
-/// something by them.
+/// The parameter keys a view or a table may not use, because the address
+/// already means something by them.
 const RESERVED_PARAM_KEYS: [&str; 2] = ["view", "table"];
 
 /// Whether a name is one file inside `Data/` rather than a path out of it.
@@ -246,6 +246,18 @@ impl Server {
                 panic!(
                     "table \"{}\" has {bad:?} in its name; a name is part of an address, so it \
                      takes letters, digits, and - _ . ~ only",
+                    table.route()
+                );
+            }
+        }
+
+        // A table's parameters go into the address beside `table`, as a
+        // view's go beside `view`, so the same two words are reserved.
+        for table in app.tables() {
+            for key in table.param_keys(&Context::new(".")).unwrap_or_default() {
+                assert!(
+                    !RESERVED_PARAM_KEYS.contains(&key.as_str()),
+                    "table \"{}\" has a parameter keyed \"{key}\"; the address uses that word                      to say which page it is on",
                     table.route()
                 );
             }

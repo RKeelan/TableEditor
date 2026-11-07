@@ -109,8 +109,14 @@ impl TableLogic for Books {
     }
 }
 
-/// A lookup table, reached by address rather than offered in the top bar.
+/// A lookup table, reached by address rather than offered in the top bar,
+/// whose page shows one kind of genre at a time. A genre that names no kind
+/// is non-fiction.
 struct Genres;
+
+fn kind_of(genre: &Value) -> &str {
+    genre["kind"].as_str().unwrap_or("non-fiction")
+}
 
 impl TableLogic for Genres {
     type Row = Value;
@@ -129,6 +135,16 @@ impl TableLogic for Genres {
 
     fn in_switcher(&self) -> bool {
         false
+    }
+
+    fn params(&self, _ctx: &Context) -> Result<Vec<Param>, ApiError> {
+        Ok(vec![
+            Param::select("kind", "Kind", ["fiction", "non-fiction"]).default("non-fiction"),
+        ])
+    }
+
+    fn shows(&self, row: &Value, ctx: &Context) -> bool {
+        Some(kind_of(row)) == ctx.args().get("kind")
     }
 
     fn schema(&self, _ctx: &Context) -> Result<Schema, ApiError> {
@@ -328,6 +344,29 @@ fn the_api_answers_over_http() {
     let (status, body) = request(port, "GET", "/api/genres", "");
     assert_eq!(status, 200);
     assert_eq!(json(&body)["rows"], json!([{ "genre": "Reference" }]));
+    assert_eq!(json(&body)["args"], json!({ "kind": "non-fiction" }));
+
+    // A table's query string is settled against its parameters, and what is
+    // written under it goes in beside the rows its page did not show.
+    let fable = r#"{"rows":[{"genre":"Fable","kind":"fiction"}]}"#;
+    let (status, _) = request(port, "PUT", "/api/genres?kind=fiction", fable);
+    assert_eq!(status, 200);
+    assert_eq!(
+        std::fs::read_to_string(data.join(GENRES_FILE)).unwrap(),
+        "{\"genre\":\"Reference\"}\n{\"genre\":\"Fable\",\"kind\":\"fiction\"}\n"
+    );
+    let (status, body) = request(port, "GET", "/api/genres?kind=fiction&from=card", "");
+    assert_eq!(status, 200);
+    let fiction = json(&body);
+    assert_eq!(
+        fiction["rows"],
+        json!([{ "genre": "Fable", "kind": "fiction" }])
+    );
+    assert_eq!(
+        fiction["args"],
+        json!({ "kind": "fiction", "from": "card" })
+    );
+    assert_eq!(fiction["params"][0]["key"], "kind");
 
     // The table file does not exist yet.
     let (status, body) = request(port, "GET", "/api/books", "");

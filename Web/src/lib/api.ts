@@ -3,7 +3,13 @@
 // the API and renders whatever the schema describes.
 import { ApiError } from "./errors";
 import type { Overview, Row, Schema, ValidationError } from "./schema";
-import type { ActionResult, TableEntry, ViewEntry, ViewPayload } from "./view";
+import type {
+  ActionResult,
+  TableEntry,
+  ViewEntry,
+  ViewParam,
+  ViewPayload,
+} from "./view";
 
 /** `GET api/app`: the shell's name, what it serves, the order its switcher
  *  offers them in, and what a bare address opens. `views`, `switcher` and
@@ -18,9 +24,12 @@ export interface AppPayload {
   front?: { view: string } | { table: string };
 }
 
-/** `GET api/<table>`. `version` is the file the rows were read from, as it was
- *  when they were read; a write states it back. `overview` is absent where
- *  the table says nothing about its rows taken together. */
+/** `GET api/<table>`. `version` is the whole file the rows were read from,
+ *  as it was when they were read; a write states it back. `overview` is
+ *  absent where the table says nothing about its rows taken together.
+ *  `params` and `args` are the table's parameters and what the address
+ *  settled to, in the shapes a view's take, and both are absent where the
+ *  table has no parameters. */
 export interface TableGet {
   schema: Schema;
   rows: Row[];
@@ -29,6 +38,8 @@ export interface TableGet {
   overview?: Overview;
   siblings: unknown;
   version: string;
+  params?: ViewParam[];
+  args?: Record<string, string>;
 }
 
 /** The fields of one row the reader typed into since it was last written,
@@ -100,20 +111,30 @@ async function asJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** A query string carrying a page's arguments, or nothing where there are
+ *  none, so a page with no parameters asks the address it always did. */
+export function querySuffix(args: Record<string, string>): string {
+  const query = new URLSearchParams(args).toString();
+  return query === "" ? "" : `?${query}`;
+}
+
 export function getApp(): Promise<AppPayload> {
   return fetch(`${api()}/app`).then((r) => asJson<AppPayload>(r));
 }
 
-/** Read a table, past the browser's cache.
+/** Read a table under `args`, past the browser's cache.
  *
  *  The server says the same thing in `Cache-Control`; this is the same
  *  requirement stated by the one request that most depends on it, since a body
  *  served from a cache would leave the editor holding a version the file does
  *  not have and every save refused. */
-export function getTable(table: string): Promise<TableGet> {
-  return fetch(`${api()}/${table}`, { cache: "no-store" }).then((r) =>
-    asJson<TableGet>(r),
-  );
+export function getTable(
+  table: string,
+  args: Record<string, string>,
+): Promise<TableGet> {
+  return fetch(`${api()}/${table}${querySuffix(args)}`, {
+    cache: "no-store",
+  }).then((r) => asJson<TableGet>(r));
 }
 
 /** `GET api/views/<view>`: a page the server computed, with its parameters as
@@ -122,11 +143,9 @@ export function getView(
   view: string,
   args: Record<string, string>,
 ): Promise<ViewPayload> {
-  const query = new URLSearchParams(args).toString();
-  const suffix = query === "" ? "" : `?${query}`;
-  return fetch(`${api()}/views/${encodeURIComponent(view)}${suffix}`).then((r) =>
-    asJson<ViewPayload>(r),
-  );
+  return fetch(
+    `${api()}/views/${encodeURIComponent(view)}${querySuffix(args)}`,
+  ).then((r) => asJson<ViewPayload>(r));
 }
 
 /** `POST api/views/<view>/actions/<name>`: what a form on the page asks to be
@@ -145,10 +164,8 @@ export function postAction(
   fields: Record<string, string>,
   options: { keepalive?: boolean; signal?: AbortSignal } = {},
 ): Promise<ActionResult> {
-  const query = new URLSearchParams(args).toString();
-  const suffix = query === "" ? "" : `?${query}`;
   const path = `${api()}/views/${encodeURIComponent(view)}/actions/${encodeURIComponent(action)}`;
-  return fetch(`${path}${suffix}`, {
+  return fetch(`${path}${querySuffix(args)}`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ fields }),
@@ -173,16 +190,18 @@ export function rowsBody(
 /** Write the rows, returning the derivation of what was written, the version
  *  the file now has, and the rows the server stamped.
  *
- *  `version` is the file as it was when these rows were read. The server
- *  refuses the write with a 409 where the file holds something else, so a
- *  change made after the read is never written over. */
+ *  `args` are the arguments the rows were read under, which say which rows of
+ *  the file these replace. `version` is the file as it was when these rows
+ *  were read. The server refuses the write with a 409 where the file holds
+ *  something else, so a change made after the read is never written over. */
 export function putTable(
   table: string,
+  args: Record<string, string>,
   rows: readonly Row[],
   version: string,
   edited: readonly EditedLine[] = [],
 ): Promise<PutResult> {
-  return fetch(`${api()}/${table}`, {
+  return fetch(`${api()}/${table}${querySuffix(args)}`, {
     method: "PUT",
     headers: JSON_HEADERS,
     body: rowsBody(rows, edited, version),
@@ -190,13 +209,14 @@ export function putTable(
 }
 
 /** Stamp as a preview, derive and validate without writing, which backs the
- *  live indicators. */
+ *  live indicators. `args` are the arguments the rows were read under. */
 export function deriveTable(
   table: string,
+  args: Record<string, string>,
   rows: readonly Row[],
   edited: readonly EditedLine[] = [],
 ): Promise<DeriveResult> {
-  return fetch(`${api()}/${table}/derive`, {
+  return fetch(`${api()}/${table}/derive${querySuffix(args)}`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: rowsBody(rows, edited),

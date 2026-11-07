@@ -146,10 +146,14 @@ export interface WriterParts {
   /** What is on screen. Read when a write starts rather than when it was asked
    *  for, so a write that waited its turn sends what is there by then. */
   pending: () => Pending;
-  /** Write the rows, stating the version the file had when they were read. It
-   *  is handed the text they compare as along with them, since that is what
-   *  the answer is about. */
-  put: (write: Pending, version: string) => Promise<PutResult>;
+  /** Write the rows, stating the version the file had when they were read,
+   *  under the arguments they were read with. It is handed the text they
+   *  compare as along with them, since that is what the answer is about. */
+  put: (
+    write: Pending,
+    version: string,
+    args: Record<string, string>,
+  ) => Promise<PutResult>;
   /** What the page says it is doing, called on each change. A `failed` state
    *  carries the attempt count, which is what a caller retrying on a timer
    *  waits out. */
@@ -158,9 +162,9 @@ export interface WriterParts {
 
 /** One table's writes. */
 export interface Writer {
-  /** Adopt the table as just read: the text its rows compare as, and the
-   *  version of the file they came from. */
-  loaded: (key: string, version: string) => void;
+  /** Adopt the table as just read: the text its rows compare as, the version
+   *  of the file they came from, and the arguments they were read under. */
+  loaded: (key: string, version: string, args?: Record<string, string>) => void;
   /** Write what is on screen, once whatever is already in flight is done. The
    *  promise settles when the write this call asked for has been made or
    *  dropped, so a caller leaving the table can wait for it. */
@@ -172,6 +176,9 @@ export interface Writer {
   /** Whether a write has been refused because the file changed, which holds
    *  until the table is read again. */
   stale: () => boolean;
+  /** The arguments the rows on screen were read under, which every write and
+   *  derive of them carries. */
+  args: () => Record<string, string>;
 }
 
 /** The writes of one table, made one at a time.
@@ -198,6 +205,10 @@ export function writer(parts: WriterParts): Writer {
   // screen were read, or as the write before left it. Null until the table has
   // been read.
   let stated: string | null = null;
+  // The arguments the rows on screen were read under. A table's arguments say
+  // which of the file's rows its page holds, so a write of those rows says
+  // which rows of the file they replace.
+  let under: Record<string, string> = {};
   // The text the rows last written compare as.
   let written: string | null = null;
   // Set when the server refuses a write because the file changed after the
@@ -231,7 +242,7 @@ export function writer(parts: WriterParts): Writer {
     const of = reading;
     parts.report({ kind: "saving" });
     try {
-      const result = await parts.put(write, from);
+      const result = await parts.put(write, from, under);
       // An answer is adopted only while it is still this table's to adopt: the
       // version it hands over is the one the next write has to state, and a
       // table read again in the meantime has a version of its own.
@@ -264,10 +275,11 @@ export function writer(parts: WriterParts): Writer {
   };
 
   return {
-    loaded: (key, version) => {
+    loaded: (key, version, args = {}) => {
       reading += 1;
       written = key;
       stated = version;
+      under = args;
       stale = false;
       failures = 0;
       parts.report({ kind: "idle" });
@@ -288,5 +300,31 @@ export function writer(parts: WriterParts): Writer {
 
     written: () => written,
     stale: () => stale,
+    args: () => under,
   };
+}
+
+/** Read the table under other arguments: write what is on screen, under the
+ *  arguments its rows were read with, and only then read. Says whether it
+ *  read.
+ *
+ *  The order is the point. Rows read under one year and written under the
+ *  next would replace that year's rows with the last one's, and a read that
+ *  landed first would replace what was typed before it was written. The
+ *  write queues behind any already in flight, as every write does, so what
+ *  is written is what is on screen when it starts.
+ *
+ *  Where the write fails, nothing is read: the rows on screen are the only
+ *  copy of what was typed, and the editor keeps trying to write them under
+ *  their own arguments. A write the server refused is no reason to stay,
+ *  since it cannot go through however long the page waits. */
+export async function writeThenRead(
+  writes: Pick<Writer, "save">,
+  read: () => Promise<void>,
+  failing: () => boolean,
+): Promise<boolean> {
+  await writes.save();
+  if (failing()) return false;
+  await read();
+  return true;
 }
