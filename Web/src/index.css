@@ -231,6 +231,17 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
   }
+  /* In a table, a control that takes input rests in a faint well, so the
+     cells that can be typed into stand apart from figures worked out from
+     them, which sit bare. Hovering raises it, and focus lights it up as
+     anywhere else. The marks below come later and win. */
+  .editor-grid .field:where(:not(:focus)) {
+    background: color-mix(in srgb, var(--ink) 7%, transparent);
+    border-color: color-mix(in srgb, var(--ink) 9%, transparent);
+  }
+  .editor-grid .field:where(:not(:focus)):hover {
+    background: var(--raised);
+  }
   .field::placeholder {
     color: var(--muted);
   }

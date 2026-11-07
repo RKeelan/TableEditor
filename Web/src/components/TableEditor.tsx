@@ -55,6 +55,7 @@ import {
 import {
   type RowEntry,
   appendEntry,
+  cancelEdit,
   editEntry,
   editedLines,
   entryRows,
@@ -177,6 +178,10 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // but it is still an edit the server may stamp, so it is derived all the
   // same; whether it is then written is up to what the derive answers.
   const latestEdit = useMemo(() => lastEdit(entries), [entries]);
+  // Counts edits abandoned with Esc. Abandoning one can leave the rows as the
+  // file has them and nothing recorded as typed, which would ask for no derive,
+  // while what is on screen was derived from what had been typed.
+  const [abandoned, setAbandoned] = useState(0);
 
   /** Put entries on screen, the refs first, so a write that starts in the
    *  same tick sends them. */
@@ -376,7 +381,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
   // value typed over itself is derived, and stamped where the table stamps it,
   // though it changes no row.
   useEffect(() => {
-    if (!dirty && latestEdit === 0) return;
+    if (!dirty && latestEdit === 0 && abandoned === 0) return;
     if (deriveTimer.current) clearTimeout(deriveTimer.current);
     deriveTimer.current = setTimeout(() => {
       // A page that can no longer save has nothing to show a fresh derivation
@@ -401,7 +406,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
     return () => {
       if (deriveTimer.current) clearTimeout(deriveTimer.current);
     };
-  }, [rowsKey, latestEdit, dirty, table, applyDerived, show, writes]);
+  }, [rowsKey, latestEdit, abandoned, dirty, table, applyDerived, show, writes]);
 
   // ── Autosave, debounced ───────────────────────────────────────────────────
   // Asked for only by rows that differ from the last write: where a preview
@@ -497,6 +502,16 @@ export function TableEditor({ table, views, pending, go }: Props) {
     },
     [schema],
   );
+
+  // Esc abandons the edit in the focused cell: the row goes back to what it
+  // was when the cell was focused. Where that is what the file holds, nothing
+  // is written; where a write already took what was typed, putting it back is
+  // written in turn.
+  const cancelCell = useCallback((before: RowEntry) => {
+    forgetUndo();
+    setEntries((prev) => cancelEdit(prev, before));
+    setAbandoned((n) => n + 1);
+  }, []);
 
   const setMapEntry = useCallback(
     (id: number, column: Column, key: string, value: string) => {
@@ -748,6 +763,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
         onCell={setCell}
         onMark={markCell}
         onMapEntry={setMapEntry}
+        onCancel={cancelCell}
         onDelete={onDelete}
         onDragStart={() => (dragSource.current = idx)}
         onDrop={() => onDrop(idx)}
@@ -767,7 +783,7 @@ export function TableEditor({ table, views, pending, go }: Props) {
   const grid = (
     <table
       ref={tableRef}
-      className={"border-collapse text-left" + (summarised ? " w-full" : "")}
+      className={"editor-grid border-collapse text-left" + (summarised ? " w-full" : "")}
       style={{ "--controls": `${controls}px` } as React.CSSProperties}
     >
       <thead>
@@ -1045,6 +1061,8 @@ interface RowProps {
   onCell: (id: number, column: Column, raw: string) => void;
   onMark: (id: number, column: Column) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
+  /** Put the row back as it was when the focused cell was entered. */
+  onCancel: (before: RowEntry) => void;
   onDelete: (id: number) => void;
   onDragStart: () => void;
   onDrop: () => void;
@@ -1056,8 +1074,29 @@ function TableRow(p: RowProps) {
   // A sticky cell needs a background of its own, since the rest of the row
   // slides underneath it.
   const stuck = rowErr ? "stuck-error" : "stuck";
+  // The row as it was when the focus last came into one of its cells, which
+  // is what Esc puts back. Moving between the parts of one cell, such as a
+  // date's box and its calendar button, keeps it.
+  const entered = useRef<RowEntry | null>(null);
   return (
     <tr
+      // A map's panel is rendered elsewhere in the page and its events reach
+      // the row through React all the same; the panel handles its own Esc, so
+      // only what is in the row's own cells counts.
+      onFocus={(e) => {
+        if (!e.currentTarget.contains(e.target as Node)) return;
+        const cell = (e.target as HTMLElement).closest("td");
+        const from = e.relatedTarget as Node | null;
+        if (cell && !(from && cell.contains(from))) entered.current = p.entry;
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || e.defaultPrevented || !entered.current) return;
+        if (!e.currentTarget.contains(e.target as Node)) return;
+        if (!abandonsOnEscape(e.target as HTMLElement)) return;
+        e.preventDefault();
+        p.onCancel(entered.current);
+        (e.target as HTMLElement).blur();
+      }}
       data-row={p.position}
       data-entry={p.entry.id}
       data-muted={p.muted || undefined}
@@ -1133,6 +1172,15 @@ function TableRow(p: RowProps) {
       ))}
     </tr>
   );
+}
+
+/** Whether Esc in this control abandons its cell's edit: a box that is typed
+ *  into, of one line or several. A select, a boolean and a map's chips commit
+ *  on a choice, and have nothing half-typed to abandon. */
+function abandonsOnEscape(target: HTMLElement): boolean {
+  if (target instanceof HTMLTextAreaElement) return !target.readOnly;
+  if (!(target instanceof HTMLInputElement) || target.readOnly) return false;
+  return target.type === "text" || target.type === "number";
 }
 
 // ── Headings and the footer ────────────────────────────────────────────────
