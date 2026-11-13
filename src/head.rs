@@ -10,7 +10,8 @@
 //! The files are served at the root, but every link to them is relative, as
 //! are the icons the manifest names: a repository may be served behind a
 //! reverse proxy under a path prefix, where `/icon.svg` would reach the
-//! proxy's root rather than the app.
+//! proxy's root rather than the app. A page reached under a prefix without
+//! its closing slash reloads itself with one, so the links resolve inside it.
 
 use serde::Serialize;
 
@@ -84,16 +85,33 @@ pub(crate) fn rewrite(page: &str, app: &dyn App) -> String {
     page.replacen(TITLE, &title, 1).replacen(MARKER, &links, 1)
 }
 
-/// The head's links to the icon's files, and the theme colour.
+/// The script that puts the closing slash on a page reached without one. It
+/// goes before every relative link in the head.
+///
+/// A proxy serving the app under a prefix commonly answers `/prefix` with the
+/// page rather than redirecting to `/prefix/`, and from `/prefix` every
+/// relative link resolves against the proxy's root. The script runs before
+/// the browser reads the links, and replaces the address rather than adding
+/// one to the history. The server's own paths, `/` and `/index.html`, are left
+/// as they are.
+const CLOSING_SLASH: &str = concat!(
+    "<script>",
+    r#"if(!/\/(index\.html)?$/.test(location.pathname))"#,
+    r#"location.replace(location.pathname+"/"+location.search+location.hash)"#,
+    "</script>",
+);
+
+/// The head's links to the icon's files, and the theme colour, after the
+/// [`CLOSING_SLASH`] script.
 ///
 /// Each link is relative to the page, which is served at the root (`/` or
 /// `/index.html`) and never leaves it: the bundle moves between tables and
 /// views by the query string alone. So under a prefix, a page reached at
-/// `/prefix/` finds its icon at `/prefix/icon.svg`. One reached at `/prefix`,
-/// with no closing slash, resolves the links against the proxy's root instead.
+/// `/prefix/` finds its icon at `/prefix/icon.svg`.
 fn links(icon: &Icon) -> String {
     format!(
         concat!(
+            "{}",
             r#"<link rel="icon" type="image/svg+xml" href="icon.svg" />"#,
             r#"<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />"#,
             r#"<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />"#,
@@ -101,6 +119,7 @@ fn links(icon: &Icon) -> String {
             r#"<link rel="manifest" href="manifest.json" />"#,
             r#"<meta name="theme-color" content="{}" />"#,
         ),
+        CLOSING_SLASH,
         escape(icon.theme_color)
     )
 }
@@ -325,10 +344,18 @@ mod tests {
     }
 
     #[test]
+    fn the_closing_slash_is_put_on_before_the_links_are_read() {
+        let page = rewrite(PAGE, &Iconic(Books));
+        let script = page.find(CLOSING_SLASH).expect("the script");
+        assert!(script < page.find("<link").unwrap(), "{page}");
+    }
+
+    #[test]
     fn a_page_for_an_app_without_an_icon_has_no_links() {
         let page = rewrite(PAGE, &Plain::new());
         assert!(!page.contains("<link"), "{page}");
         assert!(!page.contains("theme-color"), "{page}");
+        assert!(!page.contains("<script"), "{page}");
         assert!(!page.contains(MARKER));
     }
 
