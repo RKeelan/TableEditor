@@ -346,6 +346,9 @@ pub enum ColumnType {
     Computed,
     /// A key-to-value object, rendered as one chip per entry.
     Map,
+    /// An ordered list of distinct strings, rendered as one chip per item and
+    /// chosen from `options`, or typed where `allow_new_items` is set.
+    List,
     /// A day, stored as a `YYYY-MM-DD` string.
     Date,
     /// A figure that may be typed as a sum: stored as a number where what is
@@ -401,6 +404,8 @@ pub struct Column {
     notes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     in_note_of: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    allow_new_items: bool,
     #[serde(flatten)]
     map: Option<MapSpec>,
 }
@@ -431,6 +436,7 @@ impl Column {
             shaded_within: None,
             notes: false,
             in_note_of: None,
+            allow_new_items: false,
             map: None,
         }
     }
@@ -504,6 +510,29 @@ impl Column {
             map: Some(spec),
             ..Self::base(field, label, ColumnType::Map)
         }
+    }
+
+    /// An ordered list of distinct strings chosen from `options`, rendered as
+    /// one chip per item. A plain string is an item that shows itself; a
+    /// [`SelectOption::labelled`] item is shown by its label and stored by its
+    /// value. With no options and no [`Column::allow_new_items`], nothing can
+    /// be added.
+    pub fn list(
+        field: impl Into<String>,
+        label: impl Into<String>,
+        options: impl IntoIterator<Item = impl Into<SelectOption>>,
+    ) -> Self {
+        Self {
+            options: options.into_iter().map(Into::into).collect(),
+            ..Self::base(field, label, ColumnType::List)
+        }
+    }
+
+    /// Let a `list` column take an item its `options` do not offer, typed
+    /// with the options as suggestions.
+    pub fn allow_new_items(mut self) -> Self {
+        self.allow_new_items = true;
+        self
     }
 
     /// A figure that may be typed as a sum. See [`ColumnType::Amount`].
@@ -1166,6 +1195,28 @@ mod tests {
     }
 
     #[test]
+    fn list_column_serializes_to_the_documented_shape() {
+        let column = Column::list(
+            "genres",
+            "Genres",
+            [SelectOption::labelled("ref", "Reference"), "Travel".into()],
+        );
+        assert_eq!(
+            serde_json::to_value(column).unwrap(),
+            json!({ "field": "genres", "label": "Genres", "type": "list",
+                    "options": [{ "value": "ref", "label": "Reference" },
+                                { "value": "Travel" }] })
+        );
+        assert_eq!(
+            serde_json::to_value(
+                Column::list("tags", "Tags", Vec::<String>::new()).allow_new_items()
+            )
+            .unwrap(),
+            json!({ "field": "tags", "label": "Tags", "type": "list", "allow_new_items": true })
+        );
+    }
+
+    #[test]
     fn a_chip_shows_the_key_only_where_a_table_asks_for_it() {
         let by_label = serde_json::to_value(MapSpec::new("Branch", "Count")).unwrap();
         assert!(by_label.get("chip").is_none());
@@ -1230,6 +1281,7 @@ mod tests {
             (Column::select_by("f", "F", OptionsBy::new("g")), "select"),
             (Column::computed("f", "F", "k"), "computed"),
             (Column::map("f", "F", MapSpec::new("K", "V")), "map"),
+            (Column::list("f", "F", ["a"]), "list"),
             (Column::date("f", "F"), "date"),
             (Column::amount("f", "F"), "amount"),
         ] {

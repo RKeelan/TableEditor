@@ -45,6 +45,7 @@ export type ColumnType =
   | "select"
   | "computed"
   | "map"
+  | "list"
   | "date"
   | "amount";
 
@@ -91,6 +92,8 @@ export interface Column {
   value_options?: SelectOption[];
   allow_new_keys?: boolean;
   allow_new_values?: boolean;
+  /** Let a `list` column take an item its `options` do not offer. */
+  allow_new_items?: boolean;
   /** What a chip shows before the value. Absent means the key's label. */
   chip?: "label" | "key";
   /** Whether each cell can carry a note, kept in the schema's `notes_in`
