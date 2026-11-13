@@ -70,6 +70,12 @@ struct Book {
     withdrawn: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     shelved: BTreeMap<String, String>,
+    /// The forms the library holds the book in, chosen from a fixed list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    formats: Vec<String>,
+    /// Words a reader might look the book up by, typed freely.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    keywords: Vec<String>,
     /// When a lent book is due back, as `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     due: String,
@@ -316,6 +322,16 @@ impl TableLogic for Books {
                     ]),
             ),
             Column::string("due", "Due").width_ch(10),
+            Column::list(
+                "formats",
+                "Formats",
+                [
+                    SelectOption::labelled("hb", "Hardback"),
+                    SelectOption::labelled("pb", "Paperback"),
+                    SelectOption::labelled("audio", "Audiobook"),
+                ],
+            ),
+            Column::list("keywords", "Keywords", ["coast", "harbour", "moss"]).allow_new_items(),
             Column::string("link", "Catalogue").width_ch(30),
             Column::computed("shelf", "Shelf mark", "shelf").width_ch(18),
             Column::multiline("inscription", "Inscription").width_ch(24),

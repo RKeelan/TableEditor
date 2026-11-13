@@ -21,7 +21,7 @@ import { describeError } from "../lib/errors";
 import { groupInsertIndex, groupRows, newGroupRow } from "../lib/groups";
 import type { Page } from "../lib/page";
 import { writeNote } from "../lib/cells";
-import { newRow, writeCell, writeMapEntry } from "../lib/rows";
+import { newRow, writeCell, writeListItems, writeMapEntry } from "../lib/rows";
 import {
   type Pending,
   type SaveState,
@@ -451,6 +451,25 @@ export function useTable({
     [schema],
   );
 
+  const setListItems = useCallback(
+    (id: number, column: Column, items: readonly string[]) => {
+      if (!schema) return;
+      forgetUndo();
+      const seq = ++editSeq.current;
+      setEntries((prev) => {
+        const entry = prev.find((e) => e.id === id);
+        if (!entry) return prev;
+        const next = editEntry(
+          prev,
+          id,
+          writeListItems(entry.row, column, items, schema),
+        );
+        return markEdited(next, id, column.field, seq);
+      });
+    },
+    [schema],
+  );
+
   // A note is typed into as a cell is: the notes field is counted as typed
   // into, and an emptied note takes its key, and an empty object the field,
   // with it.
@@ -540,6 +559,7 @@ export function useTable({
     setCell,
     cancelCell,
     setMapEntry,
+    setListItems,
     setNote,
     onDelete,
     undo,

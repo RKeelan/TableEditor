@@ -23,6 +23,7 @@ import {
   hasLineBreak,
   isFigure,
   linesText,
+  listItems,
   mapEntries,
   newRow,
   nextSort,
@@ -36,6 +37,7 @@ import {
   widthChOf,
   withLineBreaksOf,
   writeCell,
+  writeListItems,
   writeMapEntry,
 } from "../src/lib/rows";
 import { apiRoot, rowsBody } from "../src/lib/api";
@@ -266,6 +268,49 @@ describe("map cells", () => {
     const row: Row = { title: "Moss", shelved: { hb: "one" } };
     const next = removeMapEntry(row, shelved, "hb", schemaOf());
     expect(next).toEqual({ title: "Moss" });
+  });
+});
+
+describe("list cells", () => {
+  const formats: Column = {
+    field: "formats",
+    label: "Formats",
+    type: "list",
+    options: [{ value: "hb", label: "Hardback" }, { value: "Paperback" }],
+  };
+
+  test("read the strings the row carries, in order", () => {
+    expect(listItems(["pb", "hb"])).toEqual(["pb", "hb"]);
+    expect(listItems(undefined)).toEqual([]);
+    expect(listItems("hb")).toEqual([]);
+  });
+
+  test("keep each item once, trimmed, in the order it was added", () => {
+    const next = writeListItems({}, formats, ["hb", " Paperback ", "hb", ""], schemaOf());
+    expect(next.formats).toEqual(["hb", "Paperback"]);
+  });
+
+  test("write a list that empties as an absent field", () => {
+    const next = writeListItems({ title: "Moss", formats: ["hb"] }, formats, [], schemaOf());
+    expect(next).toEqual({ title: "Moss" });
+  });
+
+  test("keep an empty list where new rows start with one", () => {
+    const next = writeListItems({ formats: ["hb"] }, formats, [], schemaOf({ formats: [] }));
+    expect(next.formats).toEqual([]);
+  });
+
+  test("show their items by label and are searched by both", () => {
+    const row: Row = { formats: ["hb", "Paperback"] };
+    expect(cellText(formats, row, null)).toBe("Hardback, Paperback");
+    expect(cellSearchText(formats, row, null)).toBe("hb paperback hardback, paperback");
+  });
+
+  test("mark a value that is not a list of strings", () => {
+    expect(cellMismatch(formats, { formats: "hb" })).toBe(true);
+    expect(cellMismatch(formats, { formats: [1] })).toBe(true);
+    expect(cellMismatch(formats, { formats: ["hb"] })).toBe(false);
+    expect(cellMismatch(formats, {})).toBe(false);
   });
 });
 

@@ -76,6 +76,7 @@ import {
 } from "../lib/cells";
 import { useCellNote } from "./CellNote";
 import { DateBox } from "./DateBox";
+import { ListCell } from "./ListCell";
 import { MapCell } from "./MapCell";
 import { MultilineField } from "./MultilineField";
 import { ParamControl } from "./ParamControl";
@@ -590,6 +591,7 @@ function TableSection({
         onCell={t.setCell}
         onMark={t.markCell}
         onMapEntry={t.setMapEntry}
+        onListItems={t.setListItems}
         schema={schema}
         onNote={t.setNote}
         onCancel={t.cancelCell}
@@ -919,6 +921,7 @@ interface RowProps {
   onCell: (id: number, column: Column, raw: string) => void;
   onMark: (id: number, column: Column) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
+  onListItems: (id: number, column: Column, items: readonly string[]) => void;
   /** Put the row back as it was when the focused cell was entered. */
   onCancel: (before: RowEntry) => void;
   onDelete: (id: number) => void;
@@ -1041,6 +1044,7 @@ function TableRow(p: RowProps) {
           onCell={p.onCell}
           onMark={p.onMark}
           onMapEntry={p.onMapEntry}
+          onListItems={p.onListItems}
           schema={p.schema}
           onNote={p.onNote}
         />
@@ -1197,6 +1201,7 @@ interface CellProps {
    *  reads. */
   onMark: (id: number, column: Column) => void;
   onMapEntry: (id: number, column: Column, key: string, value: string) => void;
+  onListItems: (id: number, column: Column, items: readonly string[]) => void;
   /** The table's schema, for the cell's note and its settings. */
   schema?: Schema;
   onNote?: (id: number, field: string, text: string) => void;
@@ -1219,6 +1224,7 @@ function Cell({
   onCell,
   onMark,
   onMapEntry,
+  onListItems,
   schema,
   onNote,
 }: CellProps) {
@@ -1390,6 +1396,18 @@ function Cell({
         error={error}
         onSet={(col, key, v) => onMapEntry(entry.id, col, key, v)}
         onRemove={(col, key) => onMapEntry(entry.id, col, key, "")}
+      />
+    );
+  }
+
+  if (column.type === "list") {
+    return (
+      <ListCell
+        column={column}
+        row={row}
+        rowId={entry.id}
+        error={error}
+        onItems={(col, items) => onListItems(entry.id, col, items)}
       />
     );
   }

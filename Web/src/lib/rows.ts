@@ -329,6 +329,45 @@ export function writeMapEntry(
   return next;
 }
 
+/** A list cell's items in the order the row carries them. A value that is
+ *  not a list of strings has none. */
+export function listItems(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+/** The row that results from setting a list cell's items.
+ *
+ *  Items are trimmed, empty ones dropped, and a repeat of an item already
+ *  there is dropped, so the list holds each item once in the order it was
+ *  added. A list that empties is written as an absent field, unless the
+ *  schema's `new_row.defaults` gives the field an empty list, which says a row
+ *  of this table always carries it. */
+export function writeListItems(
+  row: Row,
+  column: Column,
+  items: readonly string[],
+  schema: Schema,
+): Row {
+  const kept: string[] = [];
+  for (const item of items) {
+    const trimmed = item.trim();
+    if (trimmed !== "" && !kept.includes(trimmed)) kept.push(trimmed);
+  }
+  const next: Row = { ...row };
+  if (kept.length > 0) {
+    next[column.field] = kept;
+  } else if (Array.isArray(schema.new_row.defaults[column.field])) {
+    next[column.field] = [];
+  } else {
+    delete next[column.field];
+  }
+  for (const dependant of column.cascades_to ?? []) {
+    clearField(next, schema, dependant);
+  }
+  return next;
+}
+
 /** Remove one entry, which is the same as clearing its value. */
 export function removeMapEntry(
   row: Row,
@@ -404,6 +443,8 @@ export function cellMismatch(column: Column, row: Row): boolean {
       return typeof value !== "boolean";
     case "map":
       return value === null || typeof value !== "object" || Array.isArray(value);
+    case "list":
+      return !Array.isArray(value) || value.some((item) => typeof item !== "string");
     case "select":
       return column.numeric_value
         ? typeof value !== "number"
@@ -448,6 +489,11 @@ export function cellText(column: Column, row: Row, derived: Derived): string {
     }
     case "date": {
       return typeof value === "string" ? dateText(value, column.allow_month) : "";
+    }
+    case "list": {
+      return listItems(value)
+        .map((item) => optionLabel(column.options, item))
+        .join(", ");
     }
     case "map": {
       return mapEntries(value)
@@ -509,6 +555,9 @@ export function cellSearchText(
   derived: Derived,
 ): string {
   const shown = cellText(column, row, derived);
+  if (column.type === "list") {
+    return `${listItems(row[column.field]).join(" ")} ${shown}`.toLowerCase();
+  }
   if (column.type === "select" || column.type === "date" || column.type === "amount") {
     const stored = row[column.field];
     const storedText = stored == null ? "" : String(stored);
