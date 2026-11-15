@@ -449,11 +449,12 @@ function TableSection({
   // of the body it scrolls in. Either is away from the box's edge, so each is
   // measured: the row as laid out, and its first cell as drawn. The table is
   // too wide when it is wider than the box, which under a summary then
-  // scrolls sideways instead.
+  // scrolls on its own, short enough that its sideways scrollbar is in view.
   const [headStuck, setHeadStuck] = useState(false);
   const [footStuck, setFootStuck] = useState(false);
   const [narrow, setNarrow] = useState(false);
   const [tooWide, setTooWide] = useState(false);
+  const [boxHeight, setBoxHeight] = useState<number | undefined>(undefined);
   const markStuck = useCallback(() => {
     const pane = paneRef.current;
     const grid = tableRef.current;
@@ -478,6 +479,15 @@ function TableSection({
     );
     setNarrow(drawnTable.right < box.right - pane.clientLeft - 0.5);
     setTooWide(drawnTable.width > pane.clientWidth + 1);
+    // The box is held to what the body shows below the box's top when the
+    // body is scrolled to its start, so where nothing is above the table the
+    // whole box is in view; a tall summary above leaves it no less than half
+    // the body.
+    const body = bodyRef.current;
+    if (body) {
+      const above = box.top - body.getBoundingClientRect().top + body.scrollTop;
+      setBoxHeight(Math.max(body.clientHeight - above, body.clientHeight / 2));
+    }
   }, []);
 
   const loaded = schema !== null;
@@ -824,8 +834,9 @@ function TableSection({
         // The summary, the table and the tables below it scroll as one body,
         // which holds the table's header at its top and its footer at its foot
         // while its rows pass. The box the table is drawn in is not a scroll
-        // container of its own, unless the table is wider than it, when it
-        // scrolls sideways instead and gives up the holding.
+        // container of its own, unless the table is wider than it, when the
+        // box scrolls both ways, short enough to show its sideways scrollbar,
+        // and holds the header and footer itself.
         <div
           ref={bodyRef}
           onScroll={markStuck}
@@ -847,6 +858,7 @@ function TableSection({
                 boxState +
                 (tooWide ? " too-wide" : "")
               }
+              style={tooWide ? { maxHeight: boxHeight } : undefined}
             >
               {grid}
             </div>

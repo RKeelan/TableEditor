@@ -707,15 +707,17 @@
   /* Under a summary the table's box is not a scroll container of its own, so
      its header sticks to the top of the body the summary and the table
      scroll in, and its footer to that body's foot. Where the table is wider
-     than the box, which the component measures, the box scrolls sideways
-     instead: that gives up the sticking, and keeps the controls and the first
-     column in place as the rest scrolls under them. */
+     than the box, which the component measures, the box scrolls both ways
+     instead, held by the component short enough that its sideways
+     scrollbar is in view: the header and footer stick in the box, and the
+     controls and the first column stay in place as the rest scrolls under
+     them. */
   .summary-block > .table-box {
     margin-top: 2.25rem;
     overflow: clip;
   }
   .summary-block > .table-box.too-wide {
-    overflow-x: auto;
+    overflow: auto;
   }
 
   /* A table below another on its page is as wide as its columns, no wider
