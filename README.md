@@ -10,7 +10,7 @@ The browser holds no per-repository knowledge. Every table sends a column schema
 ## Depending on the crate
 
 ```toml
-table-editor = "=0.9.3"
+table-editor = "=0.9.5"
 ```
 
 An exact version rather than a range, matching the policy the crate's own dependencies follow: an upgrade is a deliberate edit, and the schema the server sends is a contract with the page shipped beside it.
@@ -18,7 +18,7 @@ An exact version rather than a range, matching the policy the crate's own depend
 The default `server` feature is the editor: the HTTP server, the launcher, the column schema, the loopback probes, and the embedded bundle. A crate that only reads and writes the table files turns it off:
 
 ```toml
-table-editor = { version = "=0.9.3", default-features = false }
+table-editor = { version = "=0.9.5", default-features = false }
 ```
 
 What remains is the file format alone—the `jsonl` codec, the `amount` module and its `Amount` type, and the `ParseError`, `ValidationError`, and `ApiError` types—which depends on nothing but `serde` and `serde_json`. Neither `clap`, `tiny_http`, nor `anyhow` is built in that configuration.
@@ -1054,6 +1054,10 @@ So, before 1.0, each `0.x` is a compatibility line for the Rust API. A release t
 `0.9.2` puts the closing slash on a page reached under a path prefix without one, so its icon's links resolve inside the prefix rather than against the proxy's root. It changes nothing in the Rust API.
 
 `0.9.3` adds the `list` column type, an ordered array of distinct strings chosen from options or typed, through `Column::list`, `Column::allow_new_items` and `ColumnType::List`. `ColumnType` is `#[non_exhaustive]`, so a consumer of `0.9.2` compiles against it unchanged apart from the pin and gets the page it had.
+
+`0.9.4` keeps a table wider than the page in a box that scrolls both ways under a summary, no taller than the window leaves below its top, so its sideways scrollbar is in view rather than at the foot of the rows. It changes nothing in the Rust API.
+
+`0.9.5` reads a table again when its file changes on disk, while doing so takes nothing from the reader, and adds `GET /api/<table>/version`, which the page polls to find out. It changes nothing in the Rust API.
 
 A published version is permanent. crates.io allows a version to be yanked, which stops new resolution picking it up, but never replaced and never deleted, and anything already depending on it keeps working. A mistake is fixed by publishing the next version, not by editing this one.
 
