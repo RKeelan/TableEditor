@@ -176,6 +176,10 @@ export interface Writer {
   /** Whether a write has been refused because the file changed, which holds
    *  until the table is read again. */
   stale: () => boolean;
+  /** The version of the file the next write states: the file as the rows on
+   *  screen were read from it, or as the last write left it. Nothing before
+   *  the table has been read. */
+  version: () => string | null;
   /** The arguments the rows on screen were read under, which every write and
    *  derive of them carries. */
   args: () => Record<string, string>;
@@ -300,6 +304,7 @@ export function writer(parts: WriterParts): Writer {
 
     written: () => written,
     stale: () => stale,
+    version: () => stated,
     args: () => under,
   };
 }

@@ -16,8 +16,16 @@ export interface PageTable {
   derive: () => void;
   /** Write what is on screen, once whatever is in flight is done. */
   save: () => Promise<void>;
-  /** Read the table again, under the page's arguments as they are now. */
-  load: () => Promise<void>;
+  /** Read the table again, under the page's arguments as they are now. Where
+   *  `adopt` is given, the read is one the reader did not ask for: its answer
+   *  is taken only where `adopt` still says so when it arrives, and a read
+   *  that fails says nothing. */
+  load: (adopt?: () => boolean) => Promise<void>;
+  /** The version of the file the rows on screen stand for, or nothing before
+   *  the table has been read. */
+  version: () => string | null;
+  /** Whether reading the table again would take nothing from the reader. */
+  quiet: () => boolean;
   /** The table's pending write, as leaving the page waits for it. */
   pending: PendingSave;
 }

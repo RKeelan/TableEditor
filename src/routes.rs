@@ -4,8 +4,8 @@
 //! the files of the app's icon, then the page. `GET /api/health` and `POST /api/shutdown` manage the
 //! process, `GET /api/app` describes the shell, `/api/views/<view>` reaches a
 //! view and `/api/views/<view>/actions/<name>` reaches what one of its buttons
-//! writes, and `/api/<table>` reaches a table's read, write, and derive
-//! endpoints.
+//! writes, and `/api/<table>` reaches a table's read, write, derive and
+//! version endpoints.
 //!
 //! A request that names no endpoint this server has is answered before the
 //! `Data/` directory is looked for, so a wrong method or a wrong path says so
@@ -295,24 +295,38 @@ fn decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A parsed `/api/<table>` route: which table, and whether the `/derive`
-/// suffix was present.
+/// A parsed `/api/<table>` route: which table, and which of its endpoints.
 struct ApiRoute<'a> {
     table: &'a dyn Table,
-    derive: bool,
+    endpoint: Endpoint,
 }
 
-/// Parse an `/api/<table>` or `/api/<table>/derive` path into a route. Returns
-/// `None` for any other path, so the caller falls through to static serving.
+/// The endpoints under one table's path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    /// `/api/<table>`, read and written.
+    Rows,
+    /// `/api/<table>/derive`.
+    Derive,
+    /// `/api/<table>/version`.
+    Version,
+}
+
+/// Parse an `/api/<table>`, `/api/<table>/derive` or `/api/<table>/version`
+/// path into a route. Returns `None` for any other path, so the caller falls
+/// through to static serving.
 fn parse_api_route<'a>(app: &'a dyn App, path: &str) -> Option<ApiRoute<'a>> {
     let rest = path.strip_prefix("/api/")?;
-    let (name, derive) = match rest.strip_suffix("/derive") {
-        Some(n) => (n, true),
-        None => (rest, false),
+    let (name, endpoint) = if let Some(n) = rest.strip_suffix("/derive") {
+        (n, Endpoint::Derive)
+    } else if let Some(n) = rest.strip_suffix("/version") {
+        (n, Endpoint::Version)
+    } else {
+        (rest, Endpoint::Rows)
     };
     Some(ApiRoute {
         table: app.table(&decode(name))?,
-        derive,
+        endpoint,
     })
 }
 
@@ -322,15 +336,17 @@ enum Action {
     Get,
     Put,
     Derive,
+    Version,
 }
 
 /// The action a method reaches on a table route, or `None` when the endpoint
 /// does not take that method.
-fn action(method: &Method, derive: bool) -> Option<Action> {
-    match (method, derive) {
-        (&Method::Get, false) => Some(Action::Get),
-        (&Method::Put, false) => Some(Action::Put),
-        (&Method::Post, true) => Some(Action::Derive),
+fn action(method: &Method, endpoint: Endpoint) -> Option<Action> {
+    match (method, endpoint) {
+        (&Method::Get, Endpoint::Rows) => Some(Action::Get),
+        (&Method::Put, Endpoint::Rows) => Some(Action::Put),
+        (&Method::Post, Endpoint::Derive) => Some(Action::Derive),
+        (&Method::Get, Endpoint::Version) => Some(Action::Version),
         _ => None,
     }
 }
@@ -348,12 +364,12 @@ fn dispatch(
     app: &Arc<dyn App>,
     named: Option<&Path>,
 ) -> Result<String, ApiError> {
-    let Some(action) = action(method, route.derive) else {
+    let Some(action) = action(method, route.endpoint) else {
         return Err(ApiError::new(405, "method not allowed for this endpoint"));
     };
 
     let body = match action {
-        Action::Get => String::new(),
+        Action::Get | Action::Version => String::new(),
         Action::Put | Action::Derive => {
             if let Some(refusal) = refuse_write(request) {
                 return Err(refusal);
@@ -380,6 +396,12 @@ fn serve_table(
 ) -> Result<String, ApiError> {
     let page = Page::of(app.as_ref(), table);
     match action {
+        // The version is of the whole file, whatever the page is asked, so it
+        // needs neither the page nor the table's hooks: it is what a page
+        // holding the table polls to learn whether the file has changed.
+        Action::Version => to_json(&VersionPayload {
+            version: ctx.version(table.data_file())?,
+        }),
         Action::Get => table.handle_get(&ctx.placed(page.placement(table, &ctx)?)),
         Action::Put => {
             let ctx = writing(ctx, app);
@@ -615,6 +637,13 @@ fn from_our_page(fetch_site: Option<&str>, origin: Option<&str>, host: Option<&s
     }
 }
 
+/// `GET /api/<table>/version`: the version of the table's file as it is now,
+/// in the form a read carries it.
+#[derive(Serialize)]
+struct VersionPayload {
+    version: String,
+}
+
 /// `GET /api/health`: that the server is up, and which app it serves, so a
 /// second app does not adopt a port another one already holds.
 #[derive(Serialize)]
@@ -742,7 +771,7 @@ mod tests {
         for name in ["books", "genres"] {
             let route = parse_api_route(&app, &format!("/api/{name}")).expect("known table route");
             assert_eq!(route.table.route(), name);
-            assert!(!route.derive);
+            assert_eq!(route.endpoint, Endpoint::Rows);
         }
     }
 
@@ -751,7 +780,15 @@ mod tests {
         let app = Library::new();
         let route = parse_api_route(&app, "/api/books/derive").expect("derive route");
         assert_eq!(route.table.route(), "books");
-        assert!(route.derive);
+        assert_eq!(route.endpoint, Endpoint::Derive);
+    }
+
+    #[test]
+    fn route_recognizes_version_suffix() {
+        let app = Library::new();
+        let route = parse_api_route(&app, "/api/books/version").expect("version route");
+        assert_eq!(route.table.route(), "books");
+        assert_eq!(route.endpoint, Endpoint::Version);
     }
 
     #[test]
@@ -764,18 +801,27 @@ mod tests {
 
     #[test]
     fn methods_map_to_the_endpoint_they_reach() {
-        assert_eq!(action(&Method::Get, false), Some(Action::Get));
-        assert_eq!(action(&Method::Put, false), Some(Action::Put));
-        assert_eq!(action(&Method::Post, true), Some(Action::Derive));
+        assert_eq!(action(&Method::Get, Endpoint::Rows), Some(Action::Get));
+        assert_eq!(action(&Method::Put, Endpoint::Rows), Some(Action::Put));
+        assert_eq!(
+            action(&Method::Post, Endpoint::Derive),
+            Some(Action::Derive)
+        );
+        assert_eq!(
+            action(&Method::Get, Endpoint::Version),
+            Some(Action::Version)
+        );
     }
 
     #[test]
     fn a_method_the_endpoint_does_not_take_has_no_action() {
         // The 405 these produce is settled without resolving `Data/`.
-        assert_eq!(action(&Method::Post, false), None);
-        assert_eq!(action(&Method::Get, true), None);
-        assert_eq!(action(&Method::Put, true), None);
-        assert_eq!(action(&Method::Delete, false), None);
+        assert_eq!(action(&Method::Post, Endpoint::Rows), None);
+        assert_eq!(action(&Method::Get, Endpoint::Derive), None);
+        assert_eq!(action(&Method::Put, Endpoint::Derive), None);
+        assert_eq!(action(&Method::Delete, Endpoint::Rows), None);
+        assert_eq!(action(&Method::Put, Endpoint::Version), None);
+        assert_eq!(action(&Method::Post, Endpoint::Version), None);
     }
 
     #[test]

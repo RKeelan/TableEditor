@@ -436,8 +436,20 @@ fn the_api_answers_over_http() {
     let (_, body) = request(port, "GET", "/api/books", "");
     let read_at = json(&body)["version"].as_str().unwrap().to_string();
 
+    // The version endpoint answers with the version a read carries, which is
+    // how a page polls for a change without reading the table.
+    let (status, body) = request(port, "GET", "/api/books/version", "");
+    assert_eq!(status, 200);
+    assert_eq!(json(&body)["version"], read_at.as_str());
+    let (status, _) = request(port, "POST", "/api/books/version", "");
+    assert_eq!(status, 405);
+
     let outside = "{\"title\":\"The Harbour Road\",\"year\":2003}\n";
     std::fs::write(data.join(BOOKS_FILE), outside).unwrap();
+
+    let (_, body) = request(port, "GET", "/api/books/version", "");
+    let polled = json(&body)["version"].as_str().unwrap().to_string();
+    assert_ne!(polled, read_at);
 
     let stale = format!(
         r#"{{"rows":[{{"title":"A Field Guide to Moss","year":1994}}],"version":"{read_at}"}}"#
@@ -460,6 +472,7 @@ fn the_api_answers_over_http() {
     let (_, body) = request(port, "GET", "/api/books", "");
     let now = json(&body)["version"].as_str().unwrap().to_string();
     assert_ne!(now, read_at);
+    assert_eq!(now, polled);
 
     let restored = format!(
         r#"{{"rows":[{{"title":"A Field Guide to Moss","year":1994}},{{"title":"","year":2001}}],"version":"{now}"}}"#

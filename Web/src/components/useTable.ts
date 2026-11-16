@@ -1,5 +1,6 @@
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type DeriveResult, type TableGet, deriveTable, getTable, putTable } from "../lib/api";
+import { quiet } from "../lib/reload";
 import {
   type RowEntry,
   appendEntry,
@@ -86,6 +87,8 @@ export function useTable({
   const [undoable, setUndoable] = useState<
     { removed: RowEntry; index: number }[]
   >([]);
+  const undoableRef = useRef(undoable);
+  undoableRef.current = undoable;
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deriveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -251,13 +254,14 @@ export function useTable({
   // Reads can be asked faster than they are answered, so only the latest
   // read's answer is allowed to land.
   const loads = useRef(0);
-  const load = useCallback(async () => {
+  const load = useCallback(async (adopt?: () => boolean) => {
     const mine = ++loads.current;
     const under = askedRef.current;
-    setLoadError(null);
+    if (!adopt) setLoadError(null);
     try {
       const data = await getTable(table, under);
       if (mine !== loads.current) return;
+      if (adopt && !adopt()) return;
       const loaded = toEntries(data.rows);
       const key = JSON.stringify(data.rows);
       entriesRef.current = loaded;
@@ -275,7 +279,9 @@ export function useTable({
       setUndoable([]);
       appliedSeq.current = ++reqSeq.current;
     } catch (e) {
-      if (mine === loads.current) setLoadError(describeError(e));
+      // A read the reader did not ask for leaves the table as it was where
+      // it fails: the rows on screen are still the file as last read.
+      if (mine === loads.current && !adopt) setLoadError(describeError(e));
     }
   }, [table, writes, askedRef, onRead]);
 
@@ -382,6 +388,14 @@ export function useTable({
         derive: deriveNow,
         save: () => writes.save(),
         load,
+        version: () => writes.version(),
+        quiet: () =>
+          quiet(
+            schemaRef.current !== null,
+            saveRef.current,
+            unwritten(rowsKeyRef.current),
+            undoableRef.current.length > 0,
+          ),
         pending: {
           flush,
           waiting: () => waitingToSave(saveRef.current, unwritten(rowsKeyRef.current)),
