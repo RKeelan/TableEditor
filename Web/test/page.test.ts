@@ -17,6 +17,8 @@ function table(
     derive: () => void asked.push("derive"),
     save: async () => void asked.push("save"),
     load: async () => void asked.push("load"),
+    version: () => null,
+    quiet: () => true,
     pending: {
       flush: async () => void asked.push("flush"),
       waiting: () => state.waiting ?? false,

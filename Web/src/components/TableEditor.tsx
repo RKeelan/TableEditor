@@ -83,6 +83,7 @@ import { ParamControl } from "./ParamControl";
 import { typedInto } from "./parts";
 import { SpeakButton } from "./SpeakButton";
 import { CardDock, Summary } from "./Summary";
+import { useAutoReload } from "./useAutoReload";
 import { useTable } from "./useTable";
 import { useTableParams } from "./useTableParams";
 
@@ -137,6 +138,10 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
   // The arguments the rows on screen were read under, which the address is
   // put back to where a write fails before a new question can be read.
   const readUnder = useRef<Record<string, string>>(args);
+  // What holds the tables, so that a read the reader did not ask for can tell
+  // whether the focus is in one of them.
+  const body = useRef<HTMLDivElement>(null);
+  useAutoReload({ page, body, switching });
 
   const onFirstRead = useCallback(
     (data: TableGet, under: Record<string, string>) => {
@@ -267,17 +272,19 @@ export function TableEditor({ table, args, onAsk, views, pending, go }: Props) {
         </div>
       </div>
 
-      <TableSection
-        table={table}
-        page={page}
-        askedRef={askedRef}
-        onRead={onFirstRead}
-        views={views}
-        pending={pending}
-        go={go}
-        onReport={onReport}
-        first={{ filter, setFilter, filterNote, setFilterNote, switching, lower }}
-      />
+      <div ref={body} className="contents">
+        <TableSection
+          table={table}
+          page={page}
+          askedRef={askedRef}
+          onRead={onFirstRead}
+          views={views}
+          pending={pending}
+          go={go}
+          onReport={onReport}
+          first={{ filter, setFilter, filterNote, setFilterNote, switching, lower }}
+        />
+      </div>
     </div>
   );
 }

@@ -140,6 +140,14 @@ export function getTable(
   }).then((r) => asJson<TableGet>(r));
 }
 
+/** `GET api/<table>/version`: the version the table's file has now, in the
+ *  form a read carries it, without reading the table. */
+export function getVersion(table: string): Promise<string> {
+  return fetch(`${api()}/${table}/version`, { cache: "no-store" })
+    .then((r) => asJson<{ version: string }>(r))
+    .then((body) => body.version);
+}
+
 /** `GET api/views/<view>`: a page the server computed, with its parameters as
  *  the query string the address carried. */
 export function getView(
