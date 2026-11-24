@@ -58,6 +58,7 @@ import {
   withLineBreaksOf,
 } from "../lib/rows";
 import { type RowEntry, entryRows, visibleIndices } from "../lib/entries";
+import { gridMove, gridTarget } from "../lib/grid";
 import {
   type PendingSave,
   type SaveState,
@@ -631,6 +632,7 @@ function TableSection({
   const grid = (
     <table
       ref={tableRef}
+      onKeyDown={moveInGrid}
       className={
         "editor-grid border-collapse text-left" +
         (stacked ? " w-full" : "") +
@@ -908,6 +910,62 @@ function TableSection({
 function fillFields(columns: readonly Column[]): ReadonlySet<string> {
   const wide = columns.filter((column) => column.wide);
   return new Set((wide.length > 0 ? wide : columns.slice(0, 1)).map((c) => c.field));
+}
+
+// ── Moving between cells ────────────────────────────────────────────────────
+const CONTROL =
+  "input:not([type=hidden]):not([disabled]), select:not([disabled]), " +
+  "textarea:not([disabled]), button:not([disabled])";
+
+/** The control a cell is entered by: the first in it the keyboard can reach,
+ *  or null for a cell with nothing to edit. */
+function cellControl(cell: HTMLTableCellElement): HTMLElement | null {
+  for (const control of cell.querySelectorAll<HTMLElement>(CONTROL)) {
+    if (control.tabIndex >= 0) return control;
+  }
+  return null;
+}
+
+/** Tab, Enter and their Shift forms in a cell of the grid move to the next
+ *  cell that can be edited, as gridMove and gridTarget say. A key in a row's
+ *  controls, or in a panel a cell opened, is left to the browser, as is Tab
+ *  past either end of the grid. Enter past either end stays put. */
+function moveInGrid(e: React.KeyboardEvent<HTMLTableElement>) {
+  const target = e.target as HTMLElement;
+  const cell = target.closest("td");
+  const row = cell?.parentElement;
+  if (!cell || !(row instanceof HTMLTableRowElement) || !row.hasAttribute("data-row")) return;
+  if (!e.currentTarget.contains(row)) return;
+  const move = gridMove({
+    key: e.key,
+    shiftKey: e.shiftKey,
+    ctrlKey: e.ctrlKey,
+    altKey: e.altKey,
+    metaKey: e.metaKey,
+    defaultPrevented: e.defaultPrevented,
+    tag: target.tagName.toLowerCase(),
+  });
+  if (move === null) return;
+  // Each row's first cell holds its controls rather than a column.
+  const cellsOf = (r: HTMLTableRowElement) => Array.from(r.cells).slice(1);
+  const column = cellsOf(row).indexOf(cell);
+  if (column < 0) return;
+  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLTableRowElement>("tr[data-row]"));
+  const controls = rows.map((r) => cellsOf(r).map(cellControl));
+  const to = gridTarget(
+    controls.map((r) => r.map((c) => c !== null)),
+    rows.indexOf(row),
+    column,
+    move,
+  );
+  if (to === null) {
+    if (move === "down" || move === "up") e.preventDefault();
+    return;
+  }
+  e.preventDefault();
+  const control = controls[to[0]][to[1]] as HTMLElement;
+  control.focus();
+  if (control instanceof HTMLInputElement) control.select();
 }
 
 // ── Row ─────────────────────────────────────────────────────────────────────
