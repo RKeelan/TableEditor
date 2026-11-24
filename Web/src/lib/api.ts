@@ -1,7 +1,7 @@
 // Fetch client for the editor's server. The server owns the file I/O, the
 // schema, the validation, and the derivation; the browser reads and writes over
 // the API and renders whatever the schema describes.
-import { ApiError } from "./errors";
+import { ApiError, NoAnswerError } from "./errors";
 import type { Overview, Row, Schema, ValidationError } from "./schema";
 import type {
   ActionResult,
@@ -159,6 +159,12 @@ export function getView(
   ).then((r) => asJson<ViewPayload>(r));
 }
 
+/** How long an action waits for the server's answer before giving up on it.
+ *  An answer lost on the way, as on a phone whose connection dropped, would
+ *  otherwise leave its Save button saying it is saving until the page is
+ *  reloaded. */
+export const ACTION_TIMEOUT_MS = 30_000;
+
 /** `POST api/views/<view>/actions/<name>`: what a form on the page asks to be
  *  written.
  *
@@ -167,21 +173,39 @@ export function getView(
  *  the page was. The body is the form's answers, all of them text, which is
  *  what a control on a page produces. `keepalive` lets the request outlive the
  *  page that sent it, which is what an action sent on the way out needs, and
- *  `signal` stops waiting for it. */
+ *  `signal` stops waiting for it.
+ *
+ *  An answer that has not arrived within `timeoutMs` is given up on, and the
+ *  promise rejects with a `NoAnswerError`. */
 export function postAction(
   view: string,
   action: string,
   args: Record<string, string>,
   fields: Record<string, string>,
-  options: { keepalive?: boolean; signal?: AbortSignal } = {},
+  options: {
+    keepalive?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {},
 ): Promise<ActionResult> {
+  const { timeoutMs = ACTION_TIMEOUT_MS, signal, keepalive } = options;
+  const deadline = AbortSignal.timeout(timeoutMs);
   const path = `${api()}/views/${encodeURIComponent(view)}/actions/${encodeURIComponent(action)}`;
   return fetch(`${path}${querySuffix(args)}`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify({ fields }),
-    ...options,
-  }).then((r) => asJson<ActionResult>(r));
+    keepalive,
+    signal:
+      signal === undefined ? deadline : AbortSignal.any([signal, deadline]),
+  })
+    .then((r) => asJson<ActionResult>(r))
+    .catch((e: unknown) => {
+      if (deadline.aborted && !signal?.aborted) {
+        throw new NoAnswerError(Math.round(timeoutMs / 1000));
+      }
+      throw e;
+    });
 }
 
 /** The rows the other tables on a page have on screen, by table. */
