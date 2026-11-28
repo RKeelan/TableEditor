@@ -134,7 +134,9 @@ export function App() {
   /** Leave a table only once what was typed in it is written, whether through
    *  the switcher or a row's link. See `leave` for what is waited for and what
    *  is not. An undoable action held back is sent and waited for the same way,
-   *  since this page is what can show a refusal of it. */
+   *  since this page is what can show a refusal of it. A link to another
+   *  program, such as a workbook's, goes the same way though the page stays,
+   *  so the program opens the files as written. */
   const go = async (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     if (!isPageClick(event)) return;
     event.preventDefault();
@@ -162,9 +164,11 @@ export function App() {
                   <Switch
                     key={`${o.kind}-${o.name}`}
                     href={
-                      o.kind === "view"
-                        ? viewHref(o.name, {})
-                        : tableHref(o.name)
+                      o.kind === "link"
+                        ? o.url
+                        : o.kind === "view"
+                          ? viewHref(o.name, {})
+                          : tableHref(o.name)
                     }
                     title={o.title}
                     active={target?.kind === o.kind && target.name === o.name}

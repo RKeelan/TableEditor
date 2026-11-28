@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use table_editor::{
     Amount, ApiError, App, Below, Button, Card, CardGroup, CellSettings, Column, Context, Datalist,
-    Detail, DetailRow, DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, MapSpec,
-    NewRow, OptionsBy, Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption, Server,
-    ServerArgs, Speak, Stamping, Status, Table, TableLogic, Tone, Undoable, ValidationError, View,
-    ViewArgs, ViewData, ViewLink, ViewLogic, Written,
+    Detail, DetailRow, DetailSection, Edits, Field, Fields, Footer, Form, Format, Front, Link,
+    MapSpec, NewRow, OptionsBy, Overview, Param, RowGroup, RowLink, Schema, Section, SelectOption,
+    Server, ServerArgs, Speak, Stamping, Status, Table, TableLogic, Tone, Undoable,
+    ValidationError, View, ViewArgs, ViewData, ViewLink, ViewLogic, Written,
 };
 
 const BOOKS_FILE: &str = "Books.jsonl";
@@ -1965,9 +1965,19 @@ impl App for Library {
         ]
     }
 
+    /// A catalogue kept elsewhere, which the top bar offers beside the
+    /// books.
+    fn links(&self) -> Vec<Link> {
+        vec![Link::new(
+            "catalogue",
+            "Catalogue",
+            "https://openlibrary.org/",
+        )]
+    }
+
     /// The top bar goes by subject rather than by kind: the branches, what
-    /// they bought and spent, then what is out on loan and the books
-    /// themselves.
+    /// they bought and spent, then what is out on loan, the books themselves,
+    /// and the catalogue.
     fn switcher(&self) -> Vec<&'static str> {
         vec![
             "all-branches",
@@ -1976,6 +1986,7 @@ impl App for Library {
             "spending",
             "on-loan",
             "books",
+            "catalogue",
         ]
     }
 

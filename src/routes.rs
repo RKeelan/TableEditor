@@ -660,9 +660,9 @@ fn health_payload(app: &dyn App) -> Result<String, ApiError> {
 }
 
 /// `GET /api/app`: what the shell needs to draw its header, its switcher, and
-/// whatever a bare address opens. An app with no views, no order of its own
-/// for the switcher, and no declared front page sends none of those keys, so
-/// its payload is `name`, `subtitle` and `tables` alone.
+/// whatever a bare address opens. An app with no views, no links, no order of
+/// its own for the switcher, and no declared front page sends none of those
+/// keys, so its payload is `name`, `subtitle` and `tables` alone.
 #[derive(Serialize)]
 struct AppPayload<'a> {
     name: &'a str,
@@ -671,6 +671,8 @@ struct AppPayload<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     views: Vec<ViewEntry<'a>>,
     tables: Vec<TableEntry<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    links: Vec<LinkEntry<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     switcher: Option<Vec<&'static str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -696,6 +698,13 @@ struct ViewEntry<'a> {
     in_switcher: bool,
 }
 
+#[derive(Serialize)]
+struct LinkEntry<'a> {
+    link: &'a str,
+    title: &'a str,
+    url: &'a str,
+}
+
 fn is_true(value: &bool) -> bool {
     *value
 }
@@ -711,11 +720,12 @@ enum FrontEntry<'a> {
 fn app_payload(app: &dyn App) -> Result<String, ApiError> {
     let views = app.views();
     let tables = app.tables();
-    // Views then tables, each as `in_switcher` lists them, is an order a page
-    // works out from the two lists, so the switcher is sent only where the
-    // app orders it otherwise.
+    let links = app.links();
+    // Views, tables and links, the first two as `in_switcher` lists them, is
+    // an order a page works out from the three lists, so the switcher is sent
+    // only where the app orders it otherwise.
     let switcher = app.switcher();
-    let switcher = (switcher != listed_in_order(&views, &tables)).then_some(switcher);
+    let switcher = (switcher != listed_in_order(&views, &tables, &links)).then_some(switcher);
     to_json(&AppPayload {
         name: app.name(),
         subtitle: app.subtitle(),
@@ -733,6 +743,14 @@ fn app_payload(app: &dyn App) -> Result<String, ApiError> {
                 table: t.route(),
                 title: t.heading(),
                 in_switcher: t.listed(),
+            })
+            .collect(),
+        links: links
+            .iter()
+            .map(|l| LinkEntry {
+                link: l.name(),
+                title: l.title(),
+                url: l.url(),
             })
             .collect(),
         switcher,
@@ -762,7 +780,7 @@ mod tests {
     use crate::error::ValidationError;
     use crate::fixture::{Books, GENRES_FILE, Genre, Library, Plain};
     use crate::schema::{Column, Schema};
-    use crate::table::{Front, TableLogic};
+    use crate::table::{Front, Link, TableLogic};
     use crate::view::{Param, View, ViewArgs, ViewData, ViewLogic};
 
     #[test]
@@ -1152,6 +1170,66 @@ mod tests {
                 r#""front":{"view":"on-loan"}}"#
             )
         );
+    }
+
+    /// The fixture's two views and two tables with two links, offered in
+    /// whatever order a test names.
+    struct Linked(Vec<&'static str>);
+
+    impl App for Linked {
+        fn name(&self) -> &str {
+            "Linked"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&Books, &crate::fixture::Genres]
+        }
+        fn views(&self) -> Vec<&dyn View> {
+            vec![&crate::fixture::OnLoan, &crate::fixture::Shelf]
+        }
+        fn links(&self) -> Vec<Link> {
+            vec![
+                Link::new(
+                    "ledger",
+                    "Ledger",
+                    "ms-excel:ofe|u|https://example.com/Ledger.xlsx",
+                ),
+                Link::new("catalogue", "Catalogue", "https://example.com/"),
+            ]
+        }
+        fn switcher(&self) -> Vec<&'static str> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn an_app_with_links_sends_them_after_the_tables() {
+        // Asserted as text, since the order of the keys is part of what a
+        // consumer reads.
+        assert_eq!(
+            app_payload(&Linked(vec![
+                "on-loan",
+                "shelf",
+                "books",
+                "genres",
+                "ledger",
+                "catalogue"
+            ]))
+            .unwrap(),
+            concat!(
+                r#"{"name":"Linked","#,
+                r#""views":[{"view":"on-loan","title":"On loan"},{"view":"shelf","title":"Shelf"}],"#,
+                r#""tables":[{"table":"books","title":"Books"},{"table":"genres","title":"Genres"}],"#,
+                r#""links":[{"link":"ledger","title":"Ledger","url":"ms-excel:ofe|u|https://example.com/Ledger.xlsx"},"#,
+                r#"{"link":"catalogue","title":"Catalogue","url":"https://example.com/"}]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn an_app_that_puts_a_link_among_its_pages_sends_the_order() {
+        let order = vec!["on-loan", "ledger", "books", "catalogue", "shelf", "genres"];
+        let v: Value = serde_json::from_str(&app_payload(&Linked(order.clone())).unwrap()).unwrap();
+        assert_eq!(v["switcher"], json!(order));
     }
 
     #[test]

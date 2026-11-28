@@ -183,6 +183,25 @@ fn reserved_url_character(name: &str) -> Option<char> {
 /// already means something by them.
 const RESERVED_PARAM_KEYS: [&str; 2] = ["view", "table"];
 
+/// The schemes a link may not take, since following one runs something in the
+/// page rather than leading away from it.
+const REFUSED_SCHEMES: [&str; 3] = ["javascript", "data", "vbscript"];
+
+/// The refused scheme an address has, read as a browser reads it: leading
+/// spaces and control characters dropped, tabs and line breaks dropped
+/// wherever they are, and case ignored.
+fn refused_scheme(url: &str) -> Option<&'static str> {
+    let read: String = url
+        .trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let (scheme, _) = read.split_once(':')?;
+    REFUSED_SCHEMES
+        .into_iter()
+        .find(|refused| scheme.eq_ignore_ascii_case(refused))
+}
+
 /// Panic where the tables an app puts below others do not make pages: each
 /// is a table the app serves, other than the one it is below, named once,
 /// below one table only, and with no tables below it.
@@ -265,7 +284,11 @@ impl Server {
     /// when a table's rows link to a view the app does not serve, or with a
     /// parameter that view does not declare. Panics when [`App::switcher`]
     /// names a page the app does not serve, names one twice, names one its
-    /// `in_switcher` keeps out, or leaves out one its `in_switcher` keeps in.
+    /// `in_switcher` keeps out, or leaves out one its `in_switcher` keeps in
+    /// or one of [`App::links`]. Panics when a link takes a reserved name, a
+    /// name with a character an address would escape, or the name of a table,
+    /// a view or another link, and when its address has the scheme
+    /// `javascript:`, `data:` or `vbscript:`.
     /// Panics when a table names a table below it that the app does not serve,
     /// names itself or one table twice, names a table another table also
     /// names, or names a table that has tables below it itself.
@@ -383,6 +406,40 @@ impl Server {
             }
         }
 
+        // A link's name is what the switcher places it by, so it is held to
+        // a page's rules and may not be one a page or another link has.
+        let links = app.links();
+        let mut linked: Vec<&'static str> = Vec::new();
+        for link in &links {
+            let name = link.name();
+            assert!(
+                !routes::RESERVED_NAMES.contains(&name),
+                "link \"{name}\" uses a reserved name; the editor reserves {}",
+                routes::RESERVED_NAMES.join(", ")
+            );
+            if let Some(bad) = reserved_url_character(name) {
+                panic!(
+                    "link \"{name}\" has {bad:?} in its name; a name is part of an address, so \
+                     it takes letters, digits, and - _ . ~ only"
+                );
+            }
+            assert!(
+                !tables.contains(&name) && !seen.contains(&name),
+                "link \"{name}\" has the same name as a page; each name belongs to one thing"
+            );
+            assert!(
+                !linked.contains(&name),
+                "two links are named \"{name}\"; each link takes a name of its own"
+            );
+            if let Some(scheme) = refused_scheme(link.url()) {
+                panic!(
+                    "link \"{name}\" leads to a {scheme}: address, which would run in the page; \
+                     a link may take any other scheme"
+                );
+            }
+            linked.push(name);
+        }
+
         match app.front() {
             Front::FirstTable => {}
             Front::Table(name) => assert!(
@@ -399,11 +456,11 @@ impl Server {
         // offered, and nothing about which those are. A page it left out
         // would otherwise be put somewhere nobody chose, or hidden by a
         // second way of saying what `in_switcher` already says.
-        let listed = table::listed_in_order(&app.views(), &app.tables());
+        let listed = table::listed_in_order(&app.views(), &app.tables(), &links);
         let mut placed: Vec<&'static str> = Vec::new();
         for name in app.switcher() {
             assert!(
-                tables.contains(&name) || seen.contains(&name),
+                tables.contains(&name) || seen.contains(&name) || linked.contains(&name),
                 "the switcher names \"{name}\", which this app does not serve"
             );
             assert!(
@@ -417,8 +474,14 @@ impl Server {
             placed.push(name);
         }
         for name in listed {
+            if placed.contains(&name) {
+                continue;
+            }
             assert!(
-                placed.contains(&name),
+                !linked.contains(&name),
+                "the switcher leaves out the link \"{name}\"; every link has a place in it"
+            );
+            panic!(
                 "the switcher leaves out \"{name}\", which in_switcher keeps in it; give it a \
                  place, or have its in_switcher say no"
             );
@@ -682,7 +745,7 @@ mod tests {
     use crate::fixture::{Clashing, Library, Straying};
     use crate::schema::{Column, RowLink, Schema};
     use crate::table::TableLogic;
-    use crate::table::{App, Table};
+    use crate::table::{App, Link, Table};
     use crate::view::{Param, View, ViewArgs, ViewData, ViewLogic};
 
     /// A binary that takes the editor's arguments unchanged.
@@ -1185,6 +1248,172 @@ mod tests {
     #[should_panic(expected = "the switcher leaves out \"genres\", which in_switcher keeps in it")]
     fn the_switcher_may_not_leave_out_a_page_its_in_switcher_keeps_in() {
         let _ = Server::new(Ordered(vec!["books", "on-loan", "shelf"]));
+    }
+
+    /// The fixture's two views and two tables with whatever links a test
+    /// names, offered in the order it names, or in the default order where it
+    /// names none.
+    struct WithLinks {
+        links: Vec<Link>,
+        order: Option<Vec<&'static str>>,
+    }
+
+    impl WithLinks {
+        fn new(links: Vec<Link>) -> Self {
+            Self { links, order: None }
+        }
+
+        fn ordered(links: Vec<Link>, order: Vec<&'static str>) -> Self {
+            Self {
+                links,
+                order: Some(order),
+            }
+        }
+    }
+
+    impl App for WithLinks {
+        fn name(&self) -> &str {
+            "With links"
+        }
+        fn tables(&self) -> Vec<&dyn Table> {
+            vec![&crate::fixture::Books, &crate::fixture::Genres]
+        }
+        fn views(&self) -> Vec<&dyn View> {
+            vec![&crate::fixture::OnLoan, &crate::fixture::Shelf]
+        }
+        fn links(&self) -> Vec<Link> {
+            self.links.clone()
+        }
+        fn switcher(&self) -> Vec<&'static str> {
+            match &self.order {
+                Some(order) => order.clone(),
+                None => table::listed_in_order(&self.views(), &self.tables(), &self.links),
+            }
+        }
+    }
+
+    fn catalogue() -> Link {
+        Link::new("catalogue", "Catalogue", "https://example.com/")
+    }
+
+    fn ledger() -> Link {
+        Link::new(
+            "ledger",
+            "Ledger",
+            "ms-excel:ofe|u|https://example.com/Ledger.xlsx",
+        )
+    }
+
+    #[test]
+    fn the_switcher_may_put_a_link_among_the_pages() {
+        let order = vec!["on-loan", "ledger", "books", "shelf", "genres", "catalogue"];
+        let server = Server::new(WithLinks::ordered(
+            vec![catalogue(), ledger()],
+            order.clone(),
+        ));
+        assert_eq!(server.app.switcher(), order);
+    }
+
+    #[test]
+    #[should_panic(expected = "the switcher leaves out the link \"ledger\"")]
+    fn the_switcher_may_not_leave_out_a_link() {
+        let _ = Server::new(WithLinks::ordered(
+            vec![catalogue(), ledger()],
+            vec!["on-loan", "shelf", "books", "genres", "catalogue"],
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "the switcher names \"ledger\" twice")]
+    fn the_switcher_may_not_name_a_link_twice() {
+        let _ = Server::new(WithLinks::ordered(
+            vec![catalogue(), ledger()],
+            vec![
+                "ledger",
+                "on-loan",
+                "shelf",
+                "books",
+                "genres",
+                "catalogue",
+                "ledger",
+            ],
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "link \"books\" has the same name as a page")]
+    fn a_link_may_not_share_a_tables_name() {
+        let _ = Server::new(WithLinks::new(vec![Link::new(
+            "books",
+            "Books",
+            "https://example.com/",
+        )]));
+    }
+
+    #[test]
+    #[should_panic(expected = "link \"shelf\" has the same name as a page")]
+    fn a_link_may_not_share_a_views_name() {
+        let _ = Server::new(WithLinks::new(vec![Link::new(
+            "shelf",
+            "Shelf",
+            "https://example.com/",
+        )]));
+    }
+
+    #[test]
+    #[should_panic(expected = "two links are named \"catalogue\"")]
+    fn a_link_may_not_share_another_links_name() {
+        let _ = Server::new(WithLinks::new(vec![catalogue(), catalogue()]));
+    }
+
+    #[test]
+    #[should_panic(expected = "link \"health\" uses a reserved name")]
+    fn a_link_may_not_take_a_reserved_name() {
+        let _ = Server::new(WithLinks::new(vec![Link::new(
+            "health",
+            "Health",
+            "https://example.com/",
+        )]));
+    }
+
+    #[test]
+    #[should_panic(expected = "link \"two words\" has ' ' in its name")]
+    fn a_link_may_not_take_a_name_an_address_would_escape() {
+        let _ = Server::new(WithLinks::new(vec![Link::new(
+            "two words",
+            "Two words",
+            "https://example.com/",
+        )]));
+    }
+
+    #[test]
+    #[should_panic(expected = "link \"catalogue\" leads to a javascript: address")]
+    fn a_link_may_not_run_script() {
+        let _ = Server::new(WithLinks::new(vec![Link::new(
+            "catalogue",
+            "Catalogue",
+            " \u{1}JavaScript:alert(1)",
+        )]));
+    }
+
+    #[test]
+    fn a_refused_scheme_is_read_as_a_browser_reads_it() {
+        assert_eq!(refused_scheme("javascript:alert(1)"), Some("javascript"));
+        assert_eq!(refused_scheme("  JAVASCRIPT:alert(1)"), Some("javascript"));
+        assert_eq!(
+            refused_scheme("java\tscr\nipt:alert(1)"),
+            Some("javascript")
+        );
+        assert_eq!(refused_scheme("Data:text/html,hi"), Some("data"));
+        assert_eq!(refused_scheme("vbscript:msgbox(1)"), Some("vbscript"));
+        assert_eq!(refused_scheme("https://example.com/"), None);
+        assert_eq!(
+            refused_scheme("ms-excel:ofe|u|https://example.com/L.xlsx"),
+            None
+        );
+        assert_eq!(refused_scheme("mailto:someone@example.com"), None);
+        assert_eq!(refused_scheme("relative/javascript:path"), None);
+        assert_eq!(refused_scheme("no scheme at all"), None);
     }
 
     #[test]
