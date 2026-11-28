@@ -30,6 +30,46 @@ pub enum Front {
     View(&'static str),
 }
 
+/// An entry in the top bar that is not one of the app's pages: a link to any
+/// address, such as a document another program opens. The browser follows it,
+/// so the server launches nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    name: &'static str,
+    title: String,
+    url: String,
+}
+
+impl Link {
+    /// A link named `name`, which is what [`App::switcher`] places it by,
+    /// labelled `title` in the top bar, and leading to `url`.
+    ///
+    /// The name follows a page's rules: no reserved name, no character an
+    /// address would have to escape, and none of the app's tables, views or
+    /// other links. The address may take any scheme but `javascript:`,
+    /// `data:` and `vbscript:`, which run in the page rather than leading
+    /// away from it. [`Server::new`](crate::Server::new) panics on either.
+    pub fn new(name: &'static str, title: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            name,
+            title: title.into(),
+            url: url.into(),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+}
+
 /// One repository's editor: a name for the shell, the tables it serves, and
 /// the views it computes.
 pub trait App: Send + Sync + 'static {
@@ -51,16 +91,24 @@ pub trait App: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// The names of the pages the top bar offers, in the order it offers
-    /// them. The default is each view its `in_switcher` leaves in, in the
-    /// order of [`App::views`], then each such table, in the order of
-    /// [`App::tables`].
+    /// The links the top bar offers beside the pages, in the order it offers
+    /// them, after the tables, unless [`App::switcher`] orders them
+    /// otherwise. An app with none leaves this alone.
+    fn links(&self) -> Vec<Link> {
+        Vec::new()
+    }
+
+    /// The names of the pages and links the top bar offers, in the order it
+    /// offers them. The default is each view its `in_switcher` leaves in, in
+    /// the order of [`App::views`], then each such table, in the order of
+    /// [`App::tables`], then each link, in the order of [`App::links`].
     ///
     /// `in_switcher` says which pages are offered, and this says only where,
-    /// so an app ordering them otherwise names each of those pages once and
-    /// nothing else. A name is enough, since no view shares a table's.
+    /// so an app ordering them otherwise names each of those pages and each
+    /// link once and nothing else. A name is enough, since no two of them
+    /// share one.
     fn switcher(&self) -> Vec<&'static str> {
-        listed_in_order(&self.views(), &self.tables())
+        listed_in_order(&self.views(), &self.tables(), &self.links())
     }
 
     /// What a bare address opens.
@@ -110,9 +158,13 @@ pub trait App: Send + Sync + 'static {
     }
 }
 
-/// The pages a top bar offers where the app does not order them: each view
-/// that is listed, then each table that is.
-pub(crate) fn listed_in_order(views: &[&dyn View], tables: &[&dyn Table]) -> Vec<&'static str> {
+/// What a top bar offers where the app does not order it: each view that is
+/// listed, then each table that is, then every link.
+pub(crate) fn listed_in_order(
+    views: &[&dyn View],
+    tables: &[&dyn Table],
+    links: &[Link],
+) -> Vec<&'static str> {
     views
         .iter()
         .filter(|view| view.listed())
@@ -123,6 +175,7 @@ pub(crate) fn listed_in_order(views: &[&dyn View], tables: &[&dyn Table]) -> Vec
                 .filter(|table| table.listed())
                 .map(|table| table.route()),
         )
+        .chain(links.iter().map(Link::name))
         .collect()
 }
 
@@ -2174,6 +2227,33 @@ mod tests {
 
         assert_eq!(Mixed.switcher(), ["on-loan", "shelf", "books", "genres"]);
         assert_eq!(fixture::Plain::new().switcher(), ["books"]);
+
+        struct Linked;
+        impl App for Linked {
+            fn name(&self) -> &str {
+                "Linked"
+            }
+            fn tables(&self) -> Vec<&dyn Table> {
+                vec![&Books]
+            }
+            fn views(&self) -> Vec<&dyn View> {
+                vec![&fixture::OnLoan]
+            }
+            fn links(&self) -> Vec<Link> {
+                vec![
+                    Link::new(
+                        "ledger",
+                        "Ledger",
+                        "ms-excel:ofe|u|https://example.com/L.xlsx",
+                    ),
+                    Link::new("catalogue", "Catalogue", "https://example.com/"),
+                ]
+            }
+        }
+        assert_eq!(
+            Linked.switcher(),
+            ["on-loan", "books", "ledger", "catalogue"]
+        );
     }
 
     /// A table whose page shows one genre at a time, chosen by a parameter,

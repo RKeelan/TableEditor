@@ -843,6 +843,64 @@ describe("what the top bar offers", () => {
     ]);
   });
 
+  test("puts the links after the tables", () => {
+    const app: AppPayload = {
+      name: "Library",
+      views: [{ view: "on-loan", title: "On loan" }],
+      tables: [{ table: "books", title: "Books" }],
+      links: [
+        { link: "catalogue", title: "Catalogue", url: "https://example.com/" },
+      ],
+    };
+    expect(offered(app)).toEqual([
+      { kind: "view", name: "on-loan", title: "On loan" },
+      { kind: "table", name: "books", title: "Books" },
+      {
+        kind: "link",
+        name: "catalogue",
+        title: "Catalogue",
+        url: "https://example.com/",
+      },
+    ]);
+  });
+
+  test("puts links wherever the app's order puts them", () => {
+    const app: AppPayload = {
+      name: "Finance",
+      views: [{ view: "retirement", title: "Retirement" }],
+      tables: [
+        { table: "budget", title: "Budget" },
+        { table: "assets", title: "Assets" },
+      ],
+      links: [
+        {
+          link: "accounts",
+          title: "Accounts",
+          url: "ms-excel:ofe|u|https://example.com/Accounts.xlsx",
+        },
+        {
+          link: "ledgers",
+          title: "Ledgers",
+          url: "ms-excel:ofe|u|https://example.com/Ledgers.xlsx",
+        },
+      ],
+      switcher: ["budget", "accounts", "ledgers", "assets", "retirement"],
+    };
+    expect(offered(app).map((o) => `${o.kind}:${o.name}`)).toEqual([
+      "table:budget",
+      "link:accounts",
+      "link:ledgers",
+      "table:assets",
+      "view:retirement",
+    ]);
+    expect(offered(app)[1]).toEqual({
+      kind: "link",
+      name: "accounts",
+      title: "Accounts",
+      url: "ms-excel:ofe|u|https://example.com/Accounts.xlsx",
+    });
+  });
+
   test("skips a name in the app's order that it serves nothing under", () => {
     const app: AppPayload = {
       name: "Library",

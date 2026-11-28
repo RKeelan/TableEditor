@@ -69,26 +69,36 @@ export function switcherTables(tables: readonly TableEntry[]): TableEntry[] {
   return tables.filter((entry) => entry.in_switcher !== false);
 }
 
-/** One page the top bar offers: which kind it is, its name, and its title. */
-export interface Offer {
-  kind: "view" | "table";
-  name: string;
+/** One of the links an app puts in its top bar, as `api/app` lists it: an
+ *  address that is not one of the app's pages, such as a document another
+ *  program opens. */
+export interface LinkEntry {
+  link: string;
   title: string;
+  url: string;
 }
 
+/** One entry the top bar offers: a page, by its kind and name, or a link, by
+ *  its name and address, each with its title. */
+export type Offer =
+  | { kind: "view" | "table"; name: string; title: string }
+  | { kind: "link"; name: string; title: string; url: string };
+
 /** What the top bar offers, in order. Where the app orders it, `switcher`
- *  names the pages, each looked up among the views and then the tables, and a
- *  name that is neither is skipped. Otherwise it is the views and then the
- *  tables, each as `in_switcher` lists them: the views are where the reading
- *  happens, and the tables where the typing happens. An app that offers
- *  nothing gets no switcher at all, which leaves its name and the theme
- *  button. */
+ *  names the entries, each looked up among the views, then the tables, then
+ *  the links, and a name that is none of them is skipped. Otherwise it is the
+ *  views and then the tables, each as `in_switcher` lists them, and then the
+ *  links: the views are where the reading happens, the tables where the
+ *  typing happens, and the links lead away. An app that offers nothing gets
+ *  no switcher at all, which leaves its name and the theme button. */
 export function offered(app: {
   views?: readonly ViewEntry[];
   tables: readonly TableEntry[];
+  links?: readonly LinkEntry[];
   switcher?: readonly string[];
 }): Offer[] {
   const views = app.views ?? [];
+  const links = app.links ?? [];
   const asView = (v: ViewEntry): Offer => ({
     kind: "view",
     name: v.view,
@@ -99,17 +109,26 @@ export function offered(app: {
     name: t.table,
     title: t.title,
   });
+  const asLink = (l: LinkEntry): Offer => ({
+    kind: "link",
+    name: l.link,
+    title: l.title,
+    url: l.url,
+  });
   if (app.switcher) {
     return app.switcher.flatMap((name) => {
       const view = views.find((v) => v.view === name);
       if (view) return [asView(view)];
       const table = app.tables.find((t) => t.table === name);
-      return table ? [asTable(table)] : [];
+      if (table) return [asTable(table)];
+      const link = links.find((l) => l.link === name);
+      return link ? [asLink(link)] : [];
     });
   }
   return [
     ...switcherViews(views).map(asView),
     ...switcherTables(app.tables).map(asTable),
+    ...links.map(asLink),
   ];
 }
 
